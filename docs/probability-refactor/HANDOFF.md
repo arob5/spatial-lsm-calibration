@@ -19,9 +19,9 @@ and proofs are the design's §12; the column below is a summary.
 
 | PR | Branch | Status | Needs | Scope |
 |---|---|---|---|---|
-| P0 | `docs/probability-refactor-workflow` | open #76 | — | The workflow in CLAUDE.md; this file; `design.html` |
-| P1 | `refactor/probability-p1-references` | next | P0 | A script writing reference values from today's code: the prior draws and densities (PR #69's prior transcribed, `example_calibration`, a hierarchy, a copula, a per-PFT simplex), and `ForwardModel` predictions on `test_forward`'s fake runners |
-| P2 | `refactor/probability-p2-foundations` | waiting | P0 | Supports, with `PositiveDefinite`; `ArraySpec`; `labels` v2; `Layout`; encode and decode; shims left in `parameters` (split into P2a and P2b if large) |
+| P0 | `docs/probability-refactor-workflow` | merged #76 | — | The workflow in CLAUDE.md; this file; `design.html` |
+| P1 | `refactor/probability-p1-references` | open #77 | P0 | A script writing reference values from today's code: the prior draws and densities (PR #69's prior transcribed, `example_calibration`, a hierarchy, a copula, a per-PFT simplex), and `ForwardModel` predictions on `test_forward`'s fake runners |
+| P2 | `refactor/probability-p2-foundations` | next | P0 | Supports, with `PositiveDefinite`; `ArraySpec`; `labels` v2; `Layout`; encode and decode; shims left in `parameters` (split into P2a and P2b if large) |
 | P3 | `refactor/probability-p3-prior-model` | waiting | P1, P2 | Laws, families, builders; `FactorSpec`, `DeterministicSpec`, decorators; `joint`, `bind`, `FactoredDistribution`; `condition_on` and `Posterior` without simulators |
 | P4 | `refactor/probability-p4-adapter-prep` | waiting | P2 | F8; the SIPNET map on dicts and `ArraySpec`s; `ObservationSource.standard_deviation`; the observation dims and constants; `observation.model` |
 | P5 | `refactor/probability-p5-simulator` | waiting | P3, P4 | The `Simulator` seam; `SIPNETRuns`, with today's `ForwardModel` delegating to it; `SIPNETSimulator`; F6, F7 |
@@ -97,3 +97,62 @@ deviations, and what the next session must know.
 The design went through five revisions and four review rounds. Revision 5 is
 `design.html`, also published as a private Artifact. This PR adds the workflow
 and this file; no code changes.
+
+### 2026-10-04: P1, the references
+
+**Done.** `tests/data/write_probability_references.py` writes six files to
+`tests/data/probability_references/`, through `io.write_checked_together`,
+from today's `parameters` and `ForwardModel`.
+`tests/test_probability_references.py` reruns the script into a temporary
+directory and compares bytes; it takes about 30 s. There is no library change.
+Tests: 2474 passed and 94 skipped before, 2475 and 94 after.
+
+The cases:
+
+- `single_site_mcmc_vs_eki`: PR #69's prior at 7949640, D = 15. Its two
+  initial carbons are fitted to site 4977's members, read from the tracked raw
+  file (`read_raw`, by each spec's `source_name`). The processed file is a
+  transpose of the raw one, so these are the members the experiment reads.
+- `example_calibration`: the example's prior at sites 1, 27 and 4711.
+- `hierarchy`: `pft_log_mean` on `pft`, `spread`, `soil_carbon` on `site`
+  given the derived `site_log_mean` (through a `pft_of_site` membership) and
+  `spread`, and `offsets` on `site` given `spread` through `iid_over_dim`.
+  Two given terms, so the per-draw `vmap` sampling path is covered.
+- `copula`: `gaussian_copula` over a log-normal and two logit-normals.
+- `per_pft_simplex`: `independent_over_dim(softmax_normal, ...)` with a
+  per-PFT `center` constant on `(pft, allocation_part)`.
+- `forward_example`: `test_forward`'s setup (the example at sites 1 and 27,
+  site 27's drivers cut to 40 steps, two observation sources), with four
+  prior draws and theta = 0 through `ForwardModel.evaluate`. Every row is
+  valid; there is no failing row, since P5 has its own failing-run test.
+
+**Deviations from the design.** None. Choices the design left open: the
+script lives beside PR #72's `write_calibration_references.py` rather than in
+`scripts/`, because it imports `tests/conftest.py`'s stand-in SIPNET. The seed
+is 20261004.
+
+**What P3 and P5 must know.**
+
+- A prior file's `draws` are `prior.sample(jax.random.key(seed), n_draws)`,
+  with both values in the file's attributes. `theta` is the draws, then
+  theta = 0, then `n_standard` rows of N(0, I). `log_prob` is at `theta`.
+  `natural:<name>` and `derived:<name>` are the labeled values at `theta`.
+  `constant:<name>` is what the case needs beyond code: PR #69's members, and
+  the simplex's centers.
+- Entries are labeled by today's unconstrained `entry_names`, with the index
+  levels as string coordinates `entry_<level>` (empty where a level does not
+  apply). A simplex's unconstrained element labels are its first `k - 1`
+  labels.
+- A forward file's `observation_site`, `observation_source` and
+  `observation_time` are today's observation index, in its order.
+- The bytes depend on the platform and on `uv.lock`. If a companion upgrade
+  (pySIPNET's Niwot data, say) or a JAX or TFP bump breaks the byte test,
+  rerun the script and commit the new files, provided `parameters` and
+  `ForwardModel` are still today's code. After P5 delegates `ForwardModel` to
+  `SIPNETRuns`, rewrite `forward_example` only from a commit before P5.
+
+**Housekeeping.** At this session's start, the auto-mode classifier refused
+removal of P0's stale worktree, and also refused reading `design.html`, until
+Andrew allowed both. A worktree-isolated session's hook allows writes only in
+its own worktree, so a session enters the new PR's worktree with
+`EnterWorktree(path=...)` before writing.
