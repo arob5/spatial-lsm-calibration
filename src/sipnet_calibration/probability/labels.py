@@ -68,6 +68,15 @@ Notes
 Every lookup goes through :func:`indexer`, ``pandas.Index.get_indexer``, so
 reading ``n`` labels from ``m`` is linear in ``n + m``; a label is matched by
 value and type, so a site id is never matched by the string of its digits.
+
+Usage
+-----
+::
+
+    coords = as_coords({"site": [620, 865], "pft": ["boreal", "temperate"]})
+    site_pft = pd.Series({620: "boreal", 865: "temperate"}).rename_axis("site").to_xarray().rename("pft")
+    aligned_label_maps({"site_pft": site_pft}, coords, message_name="label maps")   # {"site_pft": [0, 1]}
+    aligned_constants({"median": median_by_site}, coords, dim_order=["site"], message_name="constants")
 """
 
 from __future__ import annotations
@@ -94,6 +103,7 @@ __all__ = [
     "indexer",
     "is_stacked",
     "label_kind",
+    "label_kinds",
 ]
 
 
@@ -196,6 +206,7 @@ def aligned_constants(
         If a constant lacks a label it is read at.
     """
     own_dims = as_names(own_dims, message_name="own_dims")
+    check_own_dims_are_not_read_at_labels(own_dims, labels_by_dim, message_name=message_name)
     out = {}
     for name, constant in constants.items():
         positions = {}
@@ -205,6 +216,7 @@ def aligned_constants(
             check_dim_is_in_the_coords(name, dim, labels_by_dim, message_name=message_name)
             check_dim_is_labeled(name, constant, dim, message_name=message_name)
             held = constant.indexes[dim]
+            check_held_labels_are_unique(name, dim, held, message_name=message_name)
             check_stacked_levels_agree(name, dim, held, labels_by_dim[dim], message_name=message_name)
             positions[dim] = indexer(held, labels_by_dim[dim])
             check_labels_are_covered(name, positions[dim], labels_by_dim[dim], message_name=message_name)
@@ -257,6 +269,7 @@ def aligned_label_maps(
         check_label_map_names_its_dim_and_target(name, dim, target, coords, targets, message_name=message_name)
         check_dim_is_labeled(name, label_map, dim, message_name=message_name)
         held = label_map.indexes[dim]
+        check_held_labels_are_unique(name, dim, held, message_name=message_name)
         check_stacked_levels_agree(name, dim, held, coords[dim], message_name=message_name)
         positions = indexer(held, coords[dim])
         check_labels_are_covered(name, positions, coords[dim], message_name=message_name)
@@ -272,15 +285,16 @@ def indexer(index: pd.Index, labels: Any) -> np.ndarray:
     ``int64``, by hashing, a label matched by value and kind (an integer
     label never matches a string, nor a boolean an integer)."""
     wanted = labels if isinstance(labels, pd.Index) else pd.Index(list(labels) if not isinstance(labels, np.ndarray) else labels)
-    if len(wanted) and len(index) and label_kind(index) != label_kind(wanted):
+    if len(wanted) and len(index) and label_kinds(index) != label_kinds(wanted):
         return np.full(len(wanted), -1, dtype=np.int64)
     return np.asarray(index.get_indexer(wanted), dtype=np.int64)
 
 
 def label_kind(index: pd.Index) -> str:
     """What kind of labels *index* holds: ``"integer"``, ``"string"``,
-    ``"datetime"``, ``"tuple"`` (a ``MultiIndex``), ``"empty"`` or
-    ``"other"``, a mixture included."""
+    ``"datetime"``, ``"tuple"`` (a ``MultiIndex``, whose levels
+    :func:`label_kinds` tells apart), ``"empty"`` or ``"other"``, a mixture
+    included."""
     if isinstance(index, pd.MultiIndex):
         return "tuple"
     if len(index) == 0:
@@ -293,6 +307,14 @@ def label_kind(index: pd.Index) -> str:
     return {"string": "string", "integer": "integer", "datetime64": "datetime", "datetime": "datetime"}.get(
         inferred, "other"
     )
+
+
+def label_kinds(index: pd.Index) -> tuple[str, ...]:
+    """:func:`label_kind` of each level of a ``MultiIndex``, or of a plain
+    index alone."""
+    if isinstance(index, pd.MultiIndex):
+        return tuple(label_kind(index.get_level_values(i)) for i in range(index.nlevels))
+    return (label_kind(index),)
 
 
 def is_stacked(labels: pd.Index) -> bool:
@@ -311,8 +333,9 @@ def _as_plain_index(dim: str, labels: Any) -> pd.Index:
         index = pd.Index(labels, name=dim)
     else:
         index = pd.Index(list(listed), name=dim)
+    check_labels_are_not_missing(dim, index)
     check_labels_are_integers_or_strings(dim, index)
-    return index.astype(object) if label_kind(index) == "string" else index
+    return _canonical_labels(index)
 
 
 def _as_stacked_index(dim: str, labels: pd.MultiIndex) -> pd.MultiIndex:
@@ -322,12 +345,20 @@ def _as_stacked_index(dim: str, labels: pd.MultiIndex) -> pd.MultiIndex:
     levels = []
     for i, level in enumerate(labels.levels):
         check_level_labels_have_one_type(dim, labels.names[i], level)
-        if level.dtype.kind == "M":
-            level = level.astype("datetime64[ns]")
-        elif label_kind(level) == "string" and level.dtype != object:
-            level = level.astype(object)
-        levels.append(level)
+        check_level_times_are_naive_and_in_range(dim, labels.names[i], level)
+        levels.append(level.astype("datetime64[ns]") if level.dtype.kind == "M" else _canonical_labels(level))
     return labels.set_levels(levels)
+
+
+def _canonical_labels(index: pd.Index) -> pd.Index:
+    """Integer labels as an integer dtype, string labels as ``object``, so
+    that every reader meets one representation of each kind."""
+    kind = label_kind(index)
+    if kind == "integer" and index.dtype == object:
+        return index.astype(np.int64)
+    if kind == "string" and index.dtype != object:
+        return index.astype(object)
+    return index
 
 
 def _read_only_copy(array: xr.DataArray) -> xr.DataArray:
@@ -343,7 +374,7 @@ def _read_only_copy(array: xr.DataArray) -> xr.DataArray:
 def check_coords_are_a_mapping(coords: Any) -> None:
     """Coords are ``{dim: labels}``."""
     if not isinstance(coords, Mapping):
-        raise TypeError(f"coords must be a mapping {{dim: labels}}, got {type(coords).__name__}.")
+        raise TypeError(f"coords must be a mapping {{dim: labels}}, got {type(coords).__name__}; pass a dict.")
 
 
 def check_dim_is_a_string(dim: Any) -> None:
@@ -374,19 +405,41 @@ def check_levels_are_named(dim: str, labels: pd.MultiIndex) -> None:
         )
 
 
-def check_labels_are_not_missing(dim: str, labels: pd.MultiIndex) -> None:
-    """No label of a stacked dim is missing at any level."""
-    if any((codes < 0).any() for codes in labels.codes):
-        raise ValueError(f"coords[{dim!r}] holds a missing label at some level; drop or fill it first.")
+def check_labels_are_not_missing(dim: str, labels: pd.Index) -> None:
+    """No label is missing, at any level of a stacked dim."""
+    missing = any((codes < 0).any() for codes in labels.codes) if is_stacked(labels) else labels.isna().any()
+    if missing:
+        raise ValueError(f"coords[{dim!r}] holds a missing label; drop or fill it first.")
 
 
 def check_level_labels_have_one_type(dim: str, level_name: str, level: pd.Index) -> None:
     """A stacked dim's level holds all integers, all strings or all times."""
-    if len(level) and label_kind(level) not in ("integer", "string", "datetime"):
+    if len(level) and label_kind(level) not in ("integer", "string", "datetime") and not isinstance(
+        level.dtype, pd.DatetimeTZDtype
+    ):
         raise TypeError(
             f"coords[{dim!r}] level {level_name!r} holds labels such as {truncated(level.tolist())}, "
             "which are neither all integers, all strings nor all datetime64; convert them first."
         )
+
+
+def check_level_times_are_naive_and_in_range(dim: str, level_name: str, level: pd.Index) -> None:
+    """A level of times is naive and within ``datetime64[ns]``'s range, the
+    one resolution every stacked dim's times are held at."""
+    if level.dtype.kind != "M" and not isinstance(level.dtype, pd.DatetimeTZDtype):
+        return
+    if getattr(level, "tz", None) is not None:
+        raise TypeError(
+            f"coords[{dim!r}] level {level_name!r} holds times with a time zone; give naive UTC times, "
+            "with tz_convert('UTC').tz_localize(None)."
+        )
+    try:
+        level.astype("datetime64[ns]")
+    except (pd.errors.OutOfBoundsDatetime, OverflowError):
+        raise ValueError(
+            f"coords[{dim!r}] level {level_name!r} holds times outside datetime64[ns]'s range "
+            "(1677 to 2262); give times within it."
+        ) from None
 
 
 def check_dim_has_a_label(dim: str, labels: pd.Index) -> None:
@@ -454,6 +507,30 @@ def check_dim_is_labeled(name: str, array: xr.DataArray, dim: str, *, message_na
         raise ValueError(f"{message_name}[{name!r}] has no {dim!r} coordinate; give {dim!r} its labels.")
 
 
+def check_own_dims_are_not_read_at_labels(
+    own_dims: Sequence[str], labels_by_dim: Mapping[str, pd.Index], *, message_name: str
+) -> None:
+    """An own dim is none of the dims read at labels, which would otherwise
+    be passed whole in whatever order the constant holds them."""
+    clashing = [d for d in own_dims if d in labels_by_dim]
+    if clashing:
+        raise ValueError(
+            f"{message_name} declares own_dims {clashing}, which are dims of the coords or element "
+            "axes and so are read at their labels; drop them from own_dims."
+        )
+
+
+def check_held_labels_are_unique(name: str, dim: str, held: pd.Index, *, message_name: str) -> None:
+    """A constant or label map holds each label of a dim once, so that a
+    label finds one value."""
+    if not held.is_unique:
+        repeated = held[held.duplicated()].unique().tolist()
+        raise ValueError(
+            f"{message_name}[{name!r}] holds {dim!r} label(s) {truncated(repeated)} more than once; "
+            "keep one value per label."
+        )
+
+
 def check_stacked_levels_agree(name: str, dim: str, held: pd.Index, labels: pd.Index, *, message_name: str) -> None:
     """A stacked dim is read at labels of the same levels, in the same
     order, as the coords'."""
@@ -473,7 +550,8 @@ def check_labels_are_covered(name: str, positions: np.ndarray, labels: pd.Index,
         raise KeyError(
             f"{message_name}[{name!r}] has no value at {labels.name!r} label(s) "
             f"{truncated(labels[missing[:10]].tolist())}"
-            + (f" ({missing.size} in all)." if missing.size > 10 else ".")
+            + (f" ({missing.size} in all)" if missing.size > 10 else "")
+            + "; give it a value at every label in use."
         )
 
 
@@ -520,5 +598,5 @@ def check_label_map_values_are_labels(
     if unknown:
         raise KeyError(
             f"{message_name}[{name!r}] holds {truncated(unknown)}, which are not labels of "
-            f"{labels.name!r} ({truncated(labels.tolist())})."
+            f"{labels.name!r} ({truncated(labels.tolist())}); map each label to one of them."
         )

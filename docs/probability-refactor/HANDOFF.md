@@ -176,7 +176,25 @@ its own worktree, so a session enters the new PR's worktree with
 `parameters._validation` and `parameters._probes` are re-export shims, and
 `tests/test_package.py` lets `parameters` import `probability` (and nothing
 else) and checks that `probability` imports nothing of the package.
-Tests: 2475 passed and 94 skipped at P1's merge; 2627 and 94 after.
+Tests: 2475 passed and 94 skipped at P1's merge; 2651 and 94 after.
+
+**Review.** One Standard round (code, mutation testing, docs). It found,
+and this PR fixes:
+- a missing string label accepted (pandas 3 holds `None` among strings as
+  `str`);
+- `datetime64` selectors turned into integers or dates by coercion;
+- labeled values whose draws differ in number or order across components
+  paired wrongly;
+- an own dim that is also a coords dim passed unaligned;
+- integer labels held as `object` breaking `Layout.index`;
+- repeated labels in a constant or label map raising pandas' own error;
+- a stacked dim ordered two ways reaching `xr.Dataset` unchecked;
+- a stacked dim's tuples matched across kinds (`620.0` for `620`);
+- time-zone-aware and out-of-range times failing in pandas' words.
+
+Tests now cover each, and the gaps mutation testing found, with one
+exception: the round-trip half of `ArraySpec`'s custom-bijector check, which
+no TFP bijector at hand violates while passing the other half.
 
 **Deviations from the design.** None in substance. Choices it left open:
 

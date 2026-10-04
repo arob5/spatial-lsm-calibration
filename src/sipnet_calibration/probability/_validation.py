@@ -15,6 +15,7 @@ from collections.abc import Set as AbstractSet
 from typing import Any
 
 import numpy as np
+import pandas as pd
 
 __all__ = [
     "as_count",
@@ -41,7 +42,8 @@ def as_sequence(values: Any, *, message_name: str) -> tuple[Any, ...]:
     if hasattr(values, "__array__"):
         array = np.asarray(values)
         check_array_is_one_dimensional(array, message_name=message_name)
-        items: Iterable[Any] = array.tolist()
+        # tolist() would make datetime64[ns] integers and datetime64[D] dates.
+        items: Iterable[Any] = [pd.Timestamp(v) for v in array] if array.dtype.kind == "M" else array.tolist()
     else:
         check_sequence_is_iterable(values, message_name=message_name)
         items = values
@@ -91,9 +93,12 @@ def truncated(items: Iterable[Any], limit: int = 10) -> str:
 
 
 def _plain_item(item: Any) -> Any:
-    """*item* as a plain Python value: a NumPy scalar or a 0-d array unwrapped."""
+    """*item* as a plain Python value: a NumPy scalar or a 0-d array
+    unwrapped, a ``datetime64`` as a ``pandas.Timestamp``."""
     if isinstance(item, np.str_):
         return str(item)
+    if isinstance(item, np.datetime64):
+        return pd.Timestamp(item)
     if hasattr(item, "__array__") and not isinstance(item, (str, bytes)) and np.ndim(item) == 0:
         return np.asarray(item).item()
     return item

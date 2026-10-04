@@ -236,3 +236,64 @@ def test_reading_a_pool_of_labels_is_linear():
     assert time.perf_counter() - start < 1.0
     assert np.array_equal(aligned, constant.sel(site=in_use["site"].values).values)
     assert np.array_equal(positions, in_use["site"].values % 2)
+
+
+# ── the review's cases ────────────────────────────────────────────────────────
+
+
+def test_a_missing_label_is_refused_in_a_plain_dim():
+    """pandas 3 holds ["x", None] as strings, so the kind alone misses it."""
+    with pytest.raises(ValueError, match="missing label"):
+        as_coords({"pft": ["boreal", None]})
+
+
+def test_integer_labels_held_as_objects_become_integers():
+    coords = as_coords({
+        "site": pd.Index([620, 865], dtype=object),
+        "obs": pd.MultiIndex.from_arrays([pd.Index([1, 2], dtype=object), ["a", "b"]], names=["site", "part"]),
+    })
+    assert coords["site"].dtype == np.int64 and coords["obs"].levels[0].dtype == np.int64
+
+
+def test_stacked_times_are_naive_and_within_nanoseconds():
+    aware = pd.MultiIndex.from_arrays([[1], TIMES[:1].tz_localize("UTC")], names=["site", "time"])
+    with pytest.raises(TypeError, match="time zone"):
+        as_coords({"obs": aware})
+    distant = pd.MultiIndex.from_arrays([[1], np.array(["3000-01-01"], dtype="datetime64[s]")], names=["site", "time"])
+    with pytest.raises(ValueError, match="range"):
+        as_coords({"obs": distant})
+
+
+def test_an_own_dim_is_not_a_dim_read_at_labels():
+    with pytest.raises(ValueError, match="drop them from own_dims"):
+        aligned_constants({"c": on_sites([1.0, 2.0, 3.0])}, COORDS, dim_order=["site"], own_dims=["site"], message_name="c")
+
+
+def test_a_constant_or_label_map_holds_each_label_once():
+    sites = [620, 620, 865, 1037]
+    with pytest.raises(ValueError, match="more than once"):
+        aligned_constants({"c": on_sites([1.0, 2.0, 3.0, 4.0], sites=sites)}, COORDS, dim_order=["site"], message_name="c")
+    with pytest.raises(ValueError, match="more than once"):
+        aligned_label_maps({"m": on_sites(["boreal"] * 4, sites=sites, name="pft")}, COORDS, message_name="m")
+
+
+def test_a_lookup_matches_a_stacked_dims_levels_by_kind():
+    assert indexer(OBSERVATIONS, [(620.0, TIMES[0])]).tolist() == [-1]
+    assert indexer(OBSERVATIONS, [(620, "2012-07-01")]).tolist() == [-1]
+    assert indexer(OBSERVATIONS, [(620, TIMES[0])]).tolist() == [0]
+
+
+def test_a_stacked_dim_is_read_at_the_coords_levels_in_their_order():
+    swapped = on_observations([1.0, 2.0, 3.0], index=OBSERVATIONS.swaplevel())
+    with pytest.raises(ValueError, match="levels in their order"):
+        aligned_constants({"c": swapped}, COORDS, dim_order=["lai_observation"], message_name="c")
+    plain = xr.DataArray(["2012"] * 3, dims="lai_observation", coords={"lai_observation": [0, 1, 2]}, name="year")
+    with pytest.raises(ValueError, match="levels in their order"):
+        aligned_label_maps({"m": plain}, COORDS, element_axes={"year": pd.Index(["2012"], name="year")}, message_name="m")
+
+
+def test_label_maps_are_read_only_copies():
+    original = on_sites(["boreal", "boreal", "temperate"], name="pft")
+    held = as_label_maps({"m": original}, message_name="m")["m"]
+    original.values[0] = "temperate"
+    assert held.values[0] == "boreal" and not held.values.flags.writeable

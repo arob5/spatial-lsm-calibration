@@ -230,20 +230,22 @@ one variable per parameter and derived parameter.
 | **site dims** | the sites and the dims they define, a `SiteDims`: each site's id, location, site covariates and site labels | the parameter vector's `site_table`, `site_labels`, `sites` |
 | **site covariate** | a `float64` column of the site table, named in `SiteDims(covariate_names=)`, read as a constant (`SiteDims.covariate`) | `site_covariate_names` |
 | **external input** | an uncertain value a SIPNET rule reads that is propagated, not calibrated, paired with theta by dim name (`sipnet_parameter_map.ExternalInputs`) | the `to_sipnet_parameter_fields` hook |
+| **role** | what a SIPNET parameter written depends on: `calibrated` (a parameter or derived parameter), `propagated` (external inputs only), `constant` (a rule of constants and fixed values), or `fixed` | |
 
 **The probability layer**, `sipnet_calibration.probability`, is replacing the
 parameter layer (CLAUDE.md's "The probability-layer refactor"). The words it
 has brought so far; the rest of its vocabulary is the design's §6 until a PR
 moves it here.
 
-| Word | Meaning | Retires |
+| Word | Meaning | Retires / not to be confused with |
 |---|---|---|
 | **component** | a named array a draw of a model holds, declared by an `ArraySpec` (`probability.spec`): a parameter, a derived value, an observed value, a prediction | "component" for an element; not a **field** |
 | **stacked dim** | a dim whose labels are a `pandas.MultiIndex` with named levels (integers, strings or `datetime64[ns]`), how a ragged set of labels, such as the `(site, time)` pairs a source observes, becomes one dim; a level may be named wherever a dim may, and merges with a plain dim of its name in a layout's index | a batch dim |
 | **label map** | a one-dimensional `xr.DataArray` on a dim of the coords, named for its target (a dim or an element axis), whose values are the target's labels; a function receives it as `int64` positions (`probability.labels`) | "membership", once R1 removes the parameter layer |
 | **layout** | named arrays as one flat vector, a `Layout` (`probability.layout`): components in declaration order, each block in C order, with no `order` argument; theta's and y's | |
+| **values by name** / `ValuesByName` | a layout's structured, traceable form: `{name: (*batch, *block shape)}` | |
+| **labeled values** / `LabeledValues` | a layout's labeled form: a `dict` of one `xr.DataArray` per component on `(*batch dims, *indexed_by, *element axes)`, a dict because two stacked dims with a `site` level cannot share a Dataset; `encode_labeled_values` makes the Dataset netCDF holds | a `ParameterDataset` |
 | **own dim** | a dim of a constant that is neither a dim of the coords nor an element axis, passed whole, which its reader declares in `own_dims=` | |
-| **role** | what a SIPNET parameter written depends on: `calibrated` (a parameter or derived parameter), `propagated` (external inputs only), `constant` (a rule of constants and fixed values), or `fixed` | |
 
 **Representations.**
 

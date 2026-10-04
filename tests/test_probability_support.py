@@ -97,3 +97,14 @@ def test_theta_zero_is_the_identity_matrix():
 def test_the_support_is_registered_with_rank_two():
     assert POSITIVE_DEFINITE.event_ndims == 2 and POSITIVE_DEFINITE.name == "positive definite"
     assert PositiveDefinite in supports.DEFAULT_BIJECTORS
+
+
+def test_the_closure_refuses_an_indefinite_matrix():
+    closure = POSITIVE_DEFINITE.closure()
+    assert not bool(closure.contains(np.diag([2.0, -1.0]))) and not bool(closure.contains(-COVARIANCE))
+
+
+def test_the_symmetry_tolerance_is_one_in_ten_billion():
+    for asymmetry, inside in [(1e-11, True), (1e-9, False)]:
+        matrix = COVARIANCE + np.triu(np.full((3, 3), 4.0 * asymmetry), 1)
+        assert bool(POSITIVE_DEFINITE.contains(matrix)) is inside

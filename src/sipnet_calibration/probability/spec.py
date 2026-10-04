@@ -1,6 +1,17 @@
 """ArraySpec: the declaration of one component, a named array a draw of a
 model holds.
 
+Where this sits
+---------------
+::
+
+    probability.support, probability.names
+      -> probability.spec.ArraySpec   (what a component is: no labels, no numbers)
+      -> probability.layout.Layout    (components at the labels in use)
+
+It reads nothing from disk. :class:`ArraySpec` is its one class;
+:meth:`ArraySpec.unconstrained` gives theta's part for a component.
+
 An :class:`ArraySpec` says what a component's values are, and which axes
 they have. There are two kinds of axes, and their labels come from
 different places:
@@ -130,13 +141,16 @@ class ArraySpec:
         two last axes with one set of labels); or a custom bijector does not
         map onto the support at the probe points.
 
-    Examples
-    --------
-    >>> ArraySpec("respiration_share", units="1", support=OPEN_UNIT_INTERVAL)
-    >>> ArraySpec("allocation", units="1", support=SIMPLEX, indexed_by=("pft",),
-    ...           element_axes={"allocation_part": ("leaf", "wood", "fine_root", "coarse_root")})
-    >>> ArraySpec("biomass_error_covariance", units="Mg2 ha-2", support=POSITIVE_DEFINITE,
-    ...           element_axes={"year": YEARS, "other_year": YEARS})
+    Usage
+    -----
+    ::
+
+        ArraySpec("respiration_share", units="1", support=OPEN_UNIT_INTERVAL)
+        ArraySpec("allocation", units="1", support=SIMPLEX, indexed_by=("pft",),
+                  element_axes={"allocation_part": ("leaf", "wood", "fine_root", "coarse_root")})
+        years = ("2012", "2013", "2014")
+        ArraySpec("biomass_error_covariance", units="Mg2 ha-2", support=POSITIVE_DEFINITE,
+                  element_axes={"year": years, "other_year": years})
     """
 
     __slots__ = ("name", "units", "support", "indexed_by", "element_axes", "bijector", "_custom_bijector")
@@ -174,7 +188,7 @@ class ArraySpec:
         raise AttributeError(f"an ArraySpec is frozen; build another rather than setting {name!r}.")
 
     def __reduce__(self) -> tuple[Any, ...]:
-        return (_rebuilt, (self.name, self._arguments()))
+        return (_spec_from_arguments, (self.name, self._arguments()))
 
     # ── identity ──────────────────────────────────────────────────────────────
 
@@ -224,7 +238,7 @@ def _set(spec: ArraySpec, name: str, value: Any) -> None:
     object.__setattr__(spec, name, value)
 
 
-def _rebuilt(name: str, arguments: Mapping[str, Any]) -> ArraySpec:
+def _spec_from_arguments(name: str, arguments: Mapping[str, Any]) -> ArraySpec:
     """An ArraySpec from its arguments, for pickling."""
     return ArraySpec(name, **arguments)
 
@@ -341,7 +355,7 @@ def check_name_is_an_identifier(name: Any, *, what: str) -> None:
     """A name is a Python identifier, not a keyword and not reserved, since
     functions receive values as keyword arguments named for it."""
     if not isinstance(name, str):
-        raise TypeError(f"{what}'s name is a string, got {type(name).__name__} {name!r}.")
+        raise TypeError(f"{what}'s name is a string, got {type(name).__name__} {name!r}; name it with a string.")
     if not name.isidentifier() or keyword.iskeyword(name):
         raise ValueError(
             f"{what} is named {name!r}, which is not a Python identifier, or is a keyword; values "
@@ -375,7 +389,7 @@ def check_element_axes_are_a_mapping(name: str, element_axes: Any) -> None:
 def check_axis_name_is_a_string(name: str, axis: Any) -> None:
     """An element axis is named by a string, which names a dim of the labeled forms."""
     if not isinstance(axis, str):
-        raise TypeError(f"{name!r} names an element axis {axis!r}; axis names are strings.")
+        raise TypeError(f"{name!r} names an element axis {axis!r}, but axis names are strings; name it with one.")
 
 
 def check_axis_length_is_positive(name: str, axis: str, length: int) -> None:

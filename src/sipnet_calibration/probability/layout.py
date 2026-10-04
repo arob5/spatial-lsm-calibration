@@ -134,7 +134,7 @@ import xarray as xr
 from frozendict import frozendict
 
 from sipnet_calibration.probability._validation import as_names, as_sequence, check_names_are_unique, truncated
-from sipnet_calibration.probability.labels import as_coords, indexer, is_stacked, label_kind
+from sipnet_calibration.probability.labels import as_coords, indexer, is_stacked, label_kind, label_kinds
 from sipnet_calibration.probability.names import COMPONENT_LEVEL, ELEMENT_LEVEL, RESERVED_NAMES
 from sipnet_calibration.probability.spec import ArraySpec
 
@@ -205,7 +205,7 @@ class Layout:
         raise AttributeError(f"a Layout is frozen; build another rather than setting {name!r}.")
 
     def __reduce__(self) -> tuple[Any, ...]:
-        return (_rebuilt, (self.components, dict(self.coords)))
+        return (_layout_from_arguments, (self.components, dict(self.coords)))
 
     # ── identity ──────────────────────────────────────────────────────────────
 
@@ -297,7 +297,7 @@ class Layout:
             shown = []
             for dim in spec.indexed_by:
                 label = self.coords[dim][tables.entry_label_positions[entry, self.dims.index(dim)]]
-                shown.append(", ".join(map(_shown, label)) if isinstance(label, tuple) else _shown(label))
+                shown.append(", ".join(map(_label_text, label)) if isinstance(label, tuple) else _label_text(label))
             text = spec.name + (f"[{', '.join(shown)}]" if shown else "")
             if spec.shape:
                 labels = [axis[k] for axis, k in zip(spec.element_axes.values(), np.unravel_index(tables.entry_element[entry], spec.shape))]
@@ -475,7 +475,7 @@ class Layout:
         batch = self._batch_shape_of(values_by_name)
         check_batch_dims_name_the_leading_axes(batch_dims, batch)
         check_batch_dim_names_are_free(batch_dims, self)
-        return {c.name: self._labeled(c, values_by_name[c.name], batch_dims, batch) for c in self.components}
+        return {c.name: self._labeled_array(c, values_by_name[c.name], batch_dims, batch) for c in self.components}
 
     def labeled_to_values(self, labeled: LabeledValues, *, batch_dims: Sequence[str] | None = None) -> ValuesByName:
         """Labeled values to values by name, a layout operation.
@@ -593,7 +593,7 @@ class Layout:
         shape = tuple(jnp.shape(values_by_name[first]))
         return shape[: len(shape) - len(self.block_shape(first))]
 
-    def _labeled(self, spec: ArraySpec, values: Any, batch_dims: tuple[str, ...], batch: tuple[int, ...]) -> xr.DataArray:
+    def _labeled_array(self, spec: ArraySpec, values: Any, batch_dims: tuple[str, ...], batch: tuple[int, ...]) -> xr.DataArray:
         """One component's values as a labeled DataArray."""
         dims = (*batch_dims, *spec.indexed_by, *spec.element_axes)
         coordinates: dict[str, Any] = {d: np.arange(n, dtype=np.int64) for d, n in zip(batch_dims, batch)}
@@ -766,6 +766,7 @@ def validate_labeled_values(
         leftover.append((c.name, tuple(str(d) for d in array.dims if d not in labels)))
     check_arrays_share_their_batch_dims(leftover)
     found = leftover[0][1]
+    check_arrays_share_their_batch_labels([labeled[c.name] for c in layout.components], found)
     if batch_dims is not None:
         batch_dims = as_names(batch_dims, message_name="batch_dims")
         check_batch_dims_are_the_arrays(batch_dims, found)
@@ -788,17 +789,18 @@ def encode_labeled_values(values: LabeledValues) -> xr.Dataset:
         ``"<dim>__<level>"`` is taken.
     """
     check_values_are_a_mapping(values)
+    for name, array in values.items():
+        check_value_is_a_data_array(name, array)
+    check_values_share_their_labels(list(values.values()))
     stacked: dict[str, list[str]] = {}
     encoded = {}
     for name, array in values.items():
-        check_value_is_a_data_array(name, array)
         for dim in map(str, array.dims):
             index = array.indexes.get(dim)
             if is_stacked(index):
                 stacked.setdefault(dim, list(index.names))
                 array = _unstacked_coordinates(array, dim, index)
         encoded[name] = array
-    check_values_share_their_labels(list(encoded.values()))
     dataset = xr.Dataset(encoded)
     dataset.attrs[STACKED_DIMS_ATTRIBUTE] = json.dumps(stacked)
     return dataset
@@ -872,12 +874,12 @@ class _Tables:
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 
-def _rebuilt(components: tuple[ArraySpec, ...], coords: Mapping[str, pd.Index]) -> Layout:
+def _layout_from_arguments(components: tuple[ArraySpec, ...], coords: Mapping[str, pd.Index]) -> Layout:
     """A layout from its arguments, for pickling."""
     return Layout(components, coords=coords)
 
 
-def _shown(label: Any) -> str:
+def _label_text(label: Any) -> str:
     """A label as an entry name shows it: a time as its ISO date or time."""
     if isinstance(label, (pd.Timestamp, np.datetime64)):
         stamp = pd.Timestamp(label)
@@ -1052,22 +1054,21 @@ def check_selector_keeps_something(key: str, wanted: Sequence[Any]) -> None:
 
 
 def check_labels_have_the_kind(key: str, wanted: Sequence[Any], targets: Sequence[pd.Index]) -> None:
-    """A selector's labels are of the kind of the labels they select, so a
-    site id is never matched by a string."""
-    given = label_kind(pd.Index(list(wanted)))
-    kinds = {label_kind(labels) for labels in targets}
+    """A selector's labels are of the kind of the labels they select, level
+    by level for a stacked dim's tuples, so a site id is never matched by a
+    string or a float."""
+    given = label_kinds(pd.Index(list(wanted)))
+    kinds = {label_kinds(labels) for labels in targets}
     if given not in kinds:
-        raise TypeError(
-            f"the labels of {key!r} are {' or '.join(sorted(kinds))}, got {truncated(list(wanted))}; pass "
-            "labels of that kind."
-        )
+        shown = " or ".join(sorted(", ".join(k) for k in kinds))
+        raise TypeError(f"the labels of {key!r} are {shown}, got {truncated(list(wanted))}; pass labels of that kind.")
 
 
 def check_labels_are_held(key: str, wanted: Sequence[Any], found: np.ndarray) -> None:
     """Every label asked for is held somewhere the selector reaches."""
     unknown = [w for w, f in zip(wanted, found) if not f]
     if unknown:
-        raise KeyError(f"{key!r} has no label(s) {truncated(unknown)}.")
+        raise KeyError(f"{key!r} has no label(s) {truncated(unknown)}; select labels the layout holds.")
 
 
 def check_selection_keeps_a_label(dim: str, labels: pd.Index) -> None:
@@ -1151,7 +1152,10 @@ def check_array_has_its_dims(name: str, dims: tuple[Any, ...], own: tuple[str, .
     which would otherwise be broadcast or dropped silently."""
     missing = [d for d in own if d not in dims]
     if missing:
-        raise ValueError(f"the labeled value of {name!r} is on {tuple(dims)}, which lacks {missing}.")
+        raise ValueError(
+            f"the labeled value of {name!r} is on {tuple(dims)}, which lacks {missing}; give it every dim and "
+            "element axis of its component."
+        )
 
 
 def check_array_labels_are_the_layouts(name: str, dim: str, array: xr.DataArray, labels: pd.Index) -> None:
@@ -1186,10 +1190,24 @@ def check_arrays_share_their_batch_dims(leftover: Sequence[tuple[str, tuple[str,
         raise ValueError(f"the labeled values have different batch dims {dict(leftover)}; give every component the same draws.")
 
 
+def check_arrays_share_their_batch_labels(arrays: Sequence[xr.DataArray], batch_dims: Sequence[str]) -> None:
+    """Every component has as many draws along each batch dim, labeled
+    alike in the same order where labeled, since the rows are read in
+    order: draws in different orders would be paired wrongly."""
+    for dim in batch_dims:
+        sizes = {array.sizes[dim] for array in arrays}
+        labeled = [array.indexes[dim] for array in arrays if dim in array.indexes]
+        if len(sizes) > 1 or any(not labels.equals(labeled[0]) for labels in labeled):
+            raise ValueError(
+                f"the labeled values differ in their {dim!r} draws (sizes {sorted(sizes)}, or labels in "
+                "another order); give every component the same draws, in one order."
+            )
+
+
 def check_batch_dims_are_the_arrays(batch_dims: tuple[str, ...], found: tuple[str, ...]) -> None:
     """``batch_dims`` names exactly the labeled values' batch dims."""
     if sorted(batch_dims) != sorted(found):
-        raise ValueError(f"batch_dims {batch_dims} are not the labeled values' batch dims {found}.")
+        raise ValueError(f"batch_dims {batch_dims} are not the labeled values' batch dims {found}; name those.")
 
 
 def check_batch_dims_are_ordered(found: tuple[str, ...]) -> None:
@@ -1200,14 +1218,22 @@ def check_batch_dims_are_ordered(found: tuple[str, ...]) -> None:
 
 
 def check_values_share_their_labels(arrays: Sequence[xr.DataArray]) -> None:
-    """Values that share a dim share its labels, so one Dataset holds them
-    without reindexing any."""
-    try:
-        xr.align(*arrays, join="exact")
-    except ValueError as error:
-        raise ValueError(
-            f"two labeled values label one dim differently, so one Dataset cannot hold them as they are ({error})."
-        ) from None
+    """Values that share a dim share its labels, in one order, so one
+    Dataset holds them without reindexing any. Compared dim by dim, since
+    ``xr.align`` would take a stacked dim's ``site`` level for the ``site``
+    dim."""
+    first: dict[str, tuple[str, pd.Index]] = {}
+    for array in arrays:
+        for dim in map(str, array.dims):
+            if dim not in array.indexes:
+                continue
+            index = array.indexes[dim]
+            name, held = first.setdefault(dim, (str(array.name), index))
+            if not index.equals(held) or (is_stacked(index) and list(index.names) != list(held.names)):
+                raise ValueError(
+                    f"two labeled values label one dim differently ({name!r} and {array.name!r} on {dim!r}), "
+                    "so one Dataset cannot hold them as they are; select one set of labels, in one order."
+                )
 
 
 def check_encoded_names_are_free(array: xr.DataArray, dim: str, index: pd.MultiIndex) -> None:
@@ -1236,4 +1262,7 @@ def check_level_coordinates_are_present(array: xr.DataArray, dim: str, names: Se
     """Every level coordinate an encoding recorded is present."""
     missing = [n for n in names if n not in array.coords]
     if missing:
-        raise ValueError(f"the Dataset's {array.name!r} lacks the level coordinates {missing} of {dim!r}.")
+        raise ValueError(
+            f"the Dataset's {array.name!r} lacks the level coordinates {missing} of {dim!r}; decode a Dataset "
+            "as encode_labeled_values wrote it."
+        )

@@ -36,9 +36,9 @@ def bijectors_agree(first: tfb.Bijector, second: tfb.Bijector, probes: Any) -> b
 
 def probe_points(shape: tuple[int, ...], *, value_size: int | None = None) -> np.ndarray:
     """The fixed points of unconstrained space at which bijectors, derived
-    parameters and priors are probed.
+    values and laws are probed.
 
-    For an array of shape *shape* (one value, or a parameter's block), whose
+    For an array of shape *shape* (one value, or a component's block), whose
     first *value_size* numbers in C order are its first value: :math:`\\theta = 0`; :math:`\\pm c \\mathbf 1` for
     :math:`c \\in \\{3, 10, 20\\}`; :math:`\\pm c\\, e_i` along each number
     :math:`i` of the first value, for :math:`c \\in \\{10, 20\\}`; and four

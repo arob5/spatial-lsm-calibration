@@ -221,3 +221,26 @@ def test_the_default_bijector_given_explicitly_passes_the_check():
     for support, axes in [(POSITIVE, {}), (SIMPLEX, {"part": 3}), (POSITIVE_DEFINITE, {"year": YEARS, "other_year": YEARS})]:
         spec = ArraySpec("x", units=None, support=support, element_axes=axes, bijector=bijector_for(support))
         assert spec.unconstrained_shape == ArraySpec("x", units=None, support=support, element_axes=axes).unconstrained_shape
+
+
+def test_a_simplex_drops_the_last_label_of_its_last_axis_only():
+    spec = ArraySpec("shares", units="1", support=SIMPLEX, element_axes={"group": ("a", "b"), "part": PARTS})
+    axes = spec.unconstrained().element_axes
+    assert axes["group"].tolist() == ["a", "b"] and axes["part"].tolist() == list(PARTS[:-1])
+
+
+def test_a_custom_positive_definite_bijector_takes_default_axes():
+    custom = tfb.Chain([tfb.CholeskyOuterProduct(), tfb.FillScaleTriL(diag_bijector=tfb.Softplus(), diag_shift=None)])
+    spec = ArraySpec("cov", units=None, support=POSITIVE_DEFINITE, element_axes={"year": YEARS, "other_year": YEARS},
+                     bijector=custom)
+    assert list(spec.unconstrained().element_axes) == ["cov_axis_0"]
+
+
+def test_rows_and_columns_share_their_labels_in_order():
+    with pytest.raises(ValueError, match="same labels"):
+        ArraySpec("x", units=None, support=POSITIVE_DEFINITE, element_axes={"year": YEARS, "other_year": YEARS[::-1]})
+
+
+def test_a_boolean_is_no_axis_length():
+    with pytest.raises(TypeError):
+        ArraySpec("x", units=None, element_axes={"a": True})

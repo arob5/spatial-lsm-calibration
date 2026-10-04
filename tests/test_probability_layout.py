@@ -451,3 +451,77 @@ def test_a_layout_is_frozen_pickles_and_describes_itself(stacked):
     assert list(reversed(stacked)) == ["lai", "covariance", "soil"]
     assert repr(stacked).startswith("Layout(size=16")
 
+
+
+# ── the review's cases ────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "times",
+    [
+        [pd.Timestamp("2012-07-01")],
+        pd.to_datetime(["2012-07-01"]),
+        np.array(["2012-07-01"], dtype="datetime64[ns]"),
+        [np.datetime64("2012-07-01", "ns")],
+        [np.datetime64("2012-07-01")],
+    ],
+)
+def test_times_select_in_any_of_their_forms(stacked, times):
+    picked = stacked.index[stacked.positions(time=times, component=["lai"])]
+    assert [int(s) for s in picked.get_level_values("site")] == [620, 865]
+
+
+def test_a_stacked_dims_tuples_are_checked_level_by_level(stacked):
+    with pytest.raises(TypeError, match="integer, datetime"):
+        stacked.positions(lai_observation=[(620.0, pd.Timestamp("2012-07-01"))])
+    with pytest.raises(TypeError, match="integer, datetime"):
+        stacked.positions(lai_observation=[(620, "2012-07-01")])
+
+
+def test_labeled_values_share_their_draws_in_one_order(stacked):
+    labeled = stacked.flat_to_labeled(stacked.to_natural(theta_of(stacked)), batch_dims=("sample",))
+    with pytest.raises(ValueError, match="same draws, in one order"):
+        stacked.labeled_to_flat({**labeled, "soil": labeled["soil"].isel(sample=[1, 0, 2])})
+    with pytest.raises(ValueError, match="same draws, in one order"):
+        stacked.labeled_to_flat({**labeled, "soil": labeled["soil"].isel(sample=[0, 1])})
+
+
+def test_encoding_refuses_one_stacked_dim_ordered_two_ways():
+    layout = Layout(
+        [ArraySpec("lai", units="1", indexed_by=("obs",)), ArraySpec("residual", units="1", indexed_by=("obs",))],
+        coords={"obs": OBSERVATIONS},
+    )
+    labeled = layout.flat_to_labeled(jnp.arange(8.0))
+    reordered = {**labeled, "lai": labeled["lai"].isel(obs=[3, 2, 1, 0])}
+    assert np.array_equal(layout.labeled_to_flat(reordered), jnp.arange(8.0))
+    with pytest.raises(ValueError, match="label one dim differently"):
+        encode_labeled_values(reordered)
+
+
+def test_labeled_values_must_hold_exactly_the_layouts_labels(stacked):
+    labeled = stacked.flat_to_labeled(stacked.to_natural(theta_of(stacked)), batch_dims=("sample",))
+    wrong = labeled["soil"].assign_coords(site=[620, 865, 4977])
+    wider = xr.concat([labeled["soil"], labeled["soil"].isel(site=[0]).assign_coords(site=[4977])], "site")
+    swapped = labeled["lai"].copy()
+    swapped = swapped.drop_vars(["lai_observation", "site", "time"]).assign_coords(
+        xr.Coordinates.from_pandas_multiindex(OBSERVATIONS.swaplevel(), "lai_observation")
+    )
+    for values, match in [({**labeled, "soil": wrong}, "not the layout's"), ({**labeled, "soil": wider}, "not the layout's"),
+                          ({**labeled, "lai": swapped}, "levels")]:
+        with pytest.raises(ValueError, match=match):
+            validate_labeled_values(values, stacked)
+
+
+def test_a_level_selects_a_label_its_plain_dim_lacks():
+    """Site 1037 is observed but not in the site dim: selecting it keeps its
+    observation and refuses the site dim, which it leaves empty."""
+    layout = Layout(
+        [ArraySpec("soil", units="1", indexed_by=("site",)), ArraySpec("lai", units="1", indexed_by=("obs",))],
+        coords={"site": [620, 865], "obs": OBSERVATIONS},
+    )
+    picked = layout.index[layout.positions(site=[1037])]
+    assert list(picked.get_level_values("component")) == ["lai"]
+    kept = layout.select(site=[1037], component=["lai"])
+    assert kept.coords["obs"].tolist() == [OBSERVATIONS[3]]
+    with pytest.raises(ValueError, match="keeps no label of 'site'"):
+        layout.select(site=[1037])
