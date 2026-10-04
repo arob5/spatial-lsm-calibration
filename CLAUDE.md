@@ -793,6 +793,92 @@ exists on your branch alone — `ModuleNotFoundError` for something you are
 looking at in your editor. For a module that exists on both, the tests pass
 while exercising the root's copy, which is the case worth remembering.
 
+## The probability-layer refactor
+
+`sipnet_calibration.parameters` is being replaced, PR by PR, by a generic
+probability layer, `sipnet_calibration.probability`, from which the prior and
+the observation model are both built. Three documents govern it:
+
+- `docs/probability-refactor/design.html`, the design (open it in a browser).
+  Its §12 is the PR plan and its §13 the decisions. Until a PR moves its words
+  into the glossary above, its §6 is the vocabulary of the new layer.
+- `docs/probability-refactor/HANDOFF.md`, the state of the refactor: which PRs
+  are merged, open or next, what each session learned, the deviations from the
+  design, and the questions waiting for Andrew. It is the source of truth for
+  what to do next.
+- This section, the workflow.
+
+**A session started to continue the refactor** (its prompt says so) follows
+these steps without asking. It stops only where a step says to.
+
+1. **Find the next PR.** `git fetch -q origin`, then read `HANDOFF.md` on
+   `origin/main` (`git show origin/main:docs/probability-refactor/HANDOFF.md`).
+   Statuses lag, since a PR's own row is written before it is merged: check
+   every `open #n` row with `gh pr view <n> --json state`, and treat a merged
+   one as merged (this session's PR updates its row). The next PR is the first
+   row whose status is neither merged nor open.
+2. **Check that what it needs is merged.** For each PR in its "needs" column,
+   `gh pr view <number> --json state,mergedAt`. If any is not `MERGED`, **stop**,
+   and tell Andrew which PR is waiting and on what. Do nothing else.
+3. **Clean up stale worktrees, and only those.** A worktree is stale when its
+   branch is this refactor's (`refactor/probability-*` or
+   `docs/probability-refactor-*`), its PR is merged or closed, and
+   `git -C <path> status --porcelain` prints nothing. For each one,
+   `git worktree remove <path>`, then `git branch -D <branch>`. Never touch any
+   other worktree or branch: they belong to other sessions. Report what was
+   removed.
+4. **Implement in a new worktree.**
+   - Create it:
+     `git worktree add -b refactor/probability-<id>-<topic> .claude/worktrees/probability-<id> origin/main`.
+   - Set up its environment:
+     `uv lock --upgrade-package pysipnet --upgrade-package pyens`, then
+     `uv sync`, then `uv run pytest` for the baseline count.
+   - **Do not upgrade pyEKI.** EnsKit renames it, and it is upgraded only by
+     the PRs the plan names for that (E1–E3).
+   - Implement the row's scope from the design, nothing more. Write reference
+     values from today's code before changing behavior that must be preserved.
+   - When implementation shows the design must change, make the smallest
+     change. Update `design.html` in the same PR, and record the change in
+     `HANDOFF.md`.
+   - Anything out of scope goes in `HANDOFF.md`'s open items, not in the PR.
+5. **Review once.** Run the `review-pr` skill on the branch, for one round:
+   - the Standard tier;
+   - the Deep tier only for a PR whose diff computes densities, likelihoods or
+     inference results (P3, P6, P8);
+   - Solo for P0, P1 and R1's deletions.
+
+   Fix what it finds. Judgment calls go in the report, not in more rounds.
+6. **Update `HANDOFF.md` in the PR.** Set the row's status to
+   `open #<number>`, and add a session entry: what was done, the deviations from
+   the design, the decisions taken, the open questions for Andrew, and what the
+   next session must know. Update CLAUDE.md's layout, alias and glossary entries
+   for what the PR adds.
+7. **Open the PR, never merge it.**
+   - Read `git status --short` and stage explicit paths.
+   - Commit, push the branch, then `gh pr create --base main`. The description
+     gives the scope, the deviations, the test counts before and after, and the
+     review's outcome.
+   - Only Andrew merges.
+8. **Report and hand off.**
+   - Tell Andrew:
+     - the PR's link;
+     - the important findings;
+     - any change to the design;
+     - the open questions.
+   - Then call the `spawn_task` tool (the session chip in the Claude desktop
+     app), so that one click starts the next session:
+     - title: "Probability refactor: next PR";
+     - prompt: "Continue the probability-layer refactor. Follow 'The
+       probability-layer refactor' in CLAUDE.md.";
+     - tldr: the PR just opened, and which PR the next session will take.
+   - The next session waits, at step 2, for this PR to be merged.
+
+The rules elsewhere in this file still hold. In particular:
+- stage explicit paths, and never switch the root checkout's branch;
+- the companion packages are read-only;
+- PR #69 (`feat/single-site-mcmc-vs-eki`) belongs to another session: read
+  it, never edit it.
+
 ## Running on the SCC
 
 Two caches have to be moved off the home directory, which is small and
