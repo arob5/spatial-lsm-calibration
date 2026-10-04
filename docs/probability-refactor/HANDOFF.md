@@ -19,7 +19,7 @@ and proofs are the design's §12; the column below is a summary.
 
 | PR | Branch | Status | Needs | Scope |
 |---|---|---|---|---|
-| P0 | `docs/probability-refactor-workflow` | open (this PR) | — | The workflow in CLAUDE.md; this file; `design.html` |
+| P0 | `docs/probability-refactor-workflow` | open #76 | — | The workflow in CLAUDE.md; this file; `design.html` |
 | P1 | `refactor/probability-p1-references` | next | P0 | A script writing reference values from today's code: the prior draws and densities (PR #69's prior transcribed, `example_calibration`, a hierarchy, a copula, a per-PFT simplex), and `ForwardModel` predictions on `test_forward`'s fake runners |
 | P2 | `refactor/probability-p2-foundations` | waiting | P0 | Supports, with `PositiveDefinite`; `ArraySpec`; `labels` v2; `Layout`; encode and decode; shims left in `parameters` (split into P2a and P2b if large) |
 | P3 | `refactor/probability-p3-prior-model` | waiting | P1, P2 | Laws, families, builders; `FactorSpec`, `DeterministicSpec`, decorators; `joint`, `bind`, `FactoredDistribution`; `condition_on` and `Posterior` without simulators |
