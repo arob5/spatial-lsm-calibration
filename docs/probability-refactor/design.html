@@ -571,7 +571,7 @@ renormalized on \(\mathcal V\), which differs by \(\pi(\mathcal V)\).</p>
 <tbody>
 <tr><td>construction of a spec</td><td>Names and types; the keyword rule; a custom bijector maps onto its support at the probe points.</td></tr>
 <tr><td><code>joint</code></td><td>Every name a part reads is declared; the links are acyclic; a <code>GaussianSpec</code>'s means match their components in layout and units.</td></tr>
-<tr><td><code>bind</code></td><td>Constants, label maps and inputs cover the labels in use. The probe-point checks below run for every random component, whatever its later role: probe points in its unconstrained coordinates, pushed through the deterministic nodes with no simulator ancestor. A factor downstream of a simulator has its event shape checked with <code>jax.eval_shape</code>.</td></tr>
+<tr><td><code>bind</code></td><td>Constants, label maps and inputs cover the labels in use. The probe-point checks below run for every random component, whatever its later role: probe points in its unconstrained coordinates, its law built at two ancestral draws of what it reads when that varies by draw (as PR #72's prior does; P3). A deterministic's outputs are checked at the probe points of the random components behind it, pushed through the deterministic nodes with no simulator ancestor. A factor downstream of a simulator has its event shape checked with <code>jax.eval_shape</code>.</td></tr>
 <tr><td><code>condition_on</code></td><td>Each simulator's <code>check_given</code>, at the corner points of the target. The once-only checks of §4.7.</td></tr>
 </tbody></table></div>
 <p>Two fixed sets of points in theta are used. A check at them is evidence, not
@@ -1333,6 +1333,9 @@ class DeterministicSpec:
         outputs, for one draw; traced and vmapped over draws.
     constants, label_maps : Mapping[str, xr.DataArray]
         Keyword-only. As :class:`FactorSpec`'s.
+    own_dims : tuple of str
+        Keyword-only. As :class:`FactorSpec`'s (P3: §7.3 lets any part
+        declare its own dims).
 
     Attributes
     ----------
@@ -1723,9 +1726,10 @@ class Posterior:
     parameters : Layout
         The parameters' natural layout; ``parameters.unconstrained`` is
         theta's, of ``D`` entries.
-    observations : Layout
+    observations : Layout or None
         The layout of the observed components the likelihood depends on
-        (:math:`O_\theta`), of ``N`` entries.
+        (:math:`O_\theta`), of ``N`` entries; ``None`` when there are none,
+        since a layout holds at least one component (P3).
     y : jax.Array
         ``(N,)``, their values.
     observed : frozendict of str to xr.DataArray
@@ -1775,10 +1779,12 @@ class Posterior:
         """
 
     def log_likelihood(self, theta: ArrayLike) -&gt; Array:
-        """``evaluate(theta).log_likelihood``, ``(J,)``."""
+        """``evaluate(theta).log_likelihood``, ``(J,)``. Until P5 brings
+        simulators, a traced function, ``(..., D) -&gt; (...)`` (P3)."""
 
     def log_density(self, theta: ArrayLike) -&gt; Array:
-        """``evaluate(theta).log_density``, ``(J,)``."""
+        """``evaluate(theta).log_density``, ``(J,)``; traced until P5, as
+        :meth:`log_likelihood`."""
 
     def log_density_given(self, evaluation: PosteriorEvaluation) -&gt; Callable[[Array], Array]:
         r"""The log posterior as a function of the entries of theta that no

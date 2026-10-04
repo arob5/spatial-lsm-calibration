@@ -21,7 +21,7 @@ and proofs are the design's §12; the column below is a summary.
 |---|---|---|---|---|
 | P0 | `docs/probability-refactor-workflow` | merged #76 | — | The workflow in CLAUDE.md; this file; `design.html` |
 | P1 | `refactor/probability-p1-references` | merged #77 | P0 | A script writing reference values from today's code: the prior draws and densities (PR #69's prior transcribed, `example_calibration`, a hierarchy, a copula, a per-PFT simplex), and `ForwardModel` predictions on `test_forward`'s fake runners |
-| P2 | `refactor/probability-p2-foundations` | open #78 | P0 | Supports, with `PositiveDefinite`; `ArraySpec`; `labels` v2; `Layout`; encode and decode; shims left in `parameters` (split into P2a and P2b if large) |
+| P2 | `refactor/probability-p2-foundations` | merged #78 | P0 | Supports, with `PositiveDefinite`; `ArraySpec`; `labels` v2; `Layout`; encode and decode; shims left in `parameters` (split into P2a and P2b if large) |
 | P3 | `refactor/probability-p3-prior-model` | next | P1, P2 | Laws, families, builders; `FactorSpec`, `DeterministicSpec`, decorators; `joint`, `bind`, `FactoredDistribution`; `condition_on` and `Posterior` without simulators |
 | P4 | `refactor/probability-p4-adapter-prep` | waiting | P2 | F8; the SIPNET map on dicts and `ArraySpec`s; `ObservationSource.standard_deviation`; the observation dims and constants; `observation.model` |
 | P5 | `refactor/probability-p5-simulator` | waiting | P3, P4 | The `Simulator` seam; `SIPNETRuns`, with today's `ForwardModel` delegating to it; `SIPNETSimulator`; F6, F7 |
@@ -243,3 +243,95 @@ no TFP bijector at hand violates while passing the other half.
 - Performance: binding 8,000 sites and 80,000 stacked labels, with a
   constant and a label map on them, takes well under a second
   (`test_eighty_thousand_labels_bind_in_under_a_second`).
+
+### 2026-10-04: P3, the prior model
+
+**Done.** Six modules added to `sipnet_calibration.probability`:
+
+- `laws`: `Law`, `as_law`, `pushforward` (TFP bases only);
+- `families`: moved from `parameters`, with `normal`, `inverse_gamma` and
+  `InverseWishart`/`inverse_wishart` added;
+- `builders`: moved from `parameters.prior_functions`, with a `Builder` base
+  exposing `.law` and `.reads`;
+- `parts`: `FactorSpec`, `DeterministicSpec`, `@factor`, `@deterministic`,
+  and the keyword rule (`_keywords`);
+- `model`: `joint`, `ModelSpec`, `FactoredDistribution` (`law`, `select`,
+  `sample`, `log_prob`, `describe`), `block_at_labels`;
+- `posterior`: `condition_on`, `Posterior` (`sample_prior`, `log_prior`,
+  `log_likelihood`, `log_density`, `natural_values`, `to_labeled`,
+  `describe`).
+
+The private `_bound` holds a part bound to the labels in use: its law,
+density and draws, the bind checks ported from today's prior, and the
+log-Jacobian, now on positive-definite matrices too.
+`parameters.families`, `parameters.prior_functions` and
+`parameters._distributions` are re-export shims, and P1's byte test still
+passes through them.
+
+`tests/test_probability_parity.py` redeclares P1's five prior cases as
+specs and shows bit-identical theta order, draws, `log_prior` and natural
+values, the hierarchy's deterministic included. The families are checked
+against SciPy, `InverseWishart` among them. Graph tests cover barren nodes,
+`O_c`, cycles and nothing observed. One test checks that observing a
+hyperparameter equals declaring it an input (Proposition 3.3): the same
+draws and densities, and a different `log_constant`.
+
+**Deviations from the design**, each recorded in `design.html`:
+
+- `Posterior.log_likelihood` and `log_density` are traced functions of
+  theta, `(..., D) -> (...)`, until P5 routes them through `evaluate`;
+- `Posterior.observations` is `None` when nothing in the likelihood is
+  observed, since a `Layout` holds at least one component; `y` is then
+  `(0,)`;
+- a factor that reads a value varying by draw is built and checked at two
+  ancestral draws, as today's prior does. The design's "probe points pushed
+  through the deterministics" is applied to deterministics' outputs only:
+  pushing probes into a law's parameters (a spread of `e^20`) would fail
+  the draw-based support check on sound hierarchies;
+- `DeterministicSpec` takes `own_dims=` too.
+
+**Choices the design left open:**
+
+- "a factor that reads no component draws at once" is read as "reads
+  nothing that varies by draw". Inputs, held observed values, and what is
+  computed from them alone are built once, and the factor draws `n` values
+  at once.
+- A constant or label map the function never reads is refused when the
+  part is declared.
+- `FactoredDistribution.sample(component_names=)` returns only those names.
+  `log_prob` refuses deterministic components and inputs (`ValueError`) and
+  unknown names (`KeyError`).
+- `FactoredDistribution.law` is in P3 for TFP and protocol laws; P6 adds
+  the Gaussian.
+- `log_prior` maps a non-finite factor to `-inf`, factor by factor, so a
+  finite value is unchanged bit for bit.
+- The once-only check of §4.7, "a target kernel finite at the observed
+  values", is made at theta = 0, for each target factor that reads an
+  observed value.
+- `Posterior(model, observed)` and `FactoredDistribution(spec, coords=,
+  inputs=)` are also constructible directly; `condition_on` and `bind` call
+  them.
+- The moved builders keep the parameter layer's messages ("prior", "term"),
+  which today's tests match.
+- `InverseWishart`'s own default event-space bijector refuses float64 input
+  in the pinned TFP. The bind check of a law's own bijector treats such a
+  bijector as absent and relies on the draw-based check.
+
+**What P4 and later must know.**
+
+- Everything simulator-shaped is P5's: `Posterior.evaluate`,
+  `PosteriorEvaluation`, `predict`, `replicate`, `simulator_inputs`,
+  `log_density_given`, `simulator_free_positions` and the corner points.
+  Nothing yet stops a target factor from reading a simulator output. That
+  refusal belongs in `condition_on` once `Simulator` exists, as part of
+  `_roles` in `posterior.py`.
+- `FactoredDistribution` exposes its internals to `Posterior` through
+  underscore names: `_factors`, `_deterministics`, `_fixed` (inputs and
+  what is computed from them alone), `_ancestral` and `_computed`. A
+  simulator node joins `_ancestral`'s and `_computed`'s loops in
+  topological order.
+- `BoundFactor.law_at` dispatches on the law's form; a `GaussianSpec` (P6)
+  is a fourth branch there and in `parts._law_reads`.
+- `parameters.prior` still runs on its own copy of the logic; only the
+  families and builders are shared. R1 deletes it.
+
