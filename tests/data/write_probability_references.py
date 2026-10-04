@@ -7,8 +7,9 @@ thetas, and today's ``ForwardModel`` is evaluated on ``test_forward``'s
 stand-in SIPNET at fixed thetas; the results are stored, one file per case.
 The probability layer that replaces ``sipnet_calibration.parameters`` must
 reproduce them bit for bit: its prior draws and densities (refactor PR P3)
-and its predictions, `ForwardModel.evaluate` (P5). ``tests/test_probability_references.py`` checks
-that this script reproduces its files byte for byte.
+and the predictions of ``ForwardModel.evaluate`` (P5).
+``tests/test_probability_references.py`` checks that this script reproduces
+its files byte for byte.
 
 Input data
 ----------
