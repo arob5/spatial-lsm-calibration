@@ -178,3 +178,16 @@ def test_the_probability_layer_reaches_pyeki_through_one_shim():
     """Only ``probability/_linalg.py`` imports pyEKI, so the move to
     EnsKit's linalg and Gaussian changes that file alone."""
     assert _files_importing("sipnet_calibration.probability", "pyeki") == ["_linalg.py"]
+
+
+def test_the_inference_adapters_read_only_a_posterior():
+    """The inference package imports the probability layer, ``smc`` and
+    ``validation`` and nothing else of the package, so it reads a posterior
+    and knows nothing of SIPNET. Importing it loads no other module of the
+    package but the ``io`` and ``conventions`` those two import, and no
+    PyEns; pySIPNET it loads through ``conventions``, which reads dim names
+    from it."""
+    allowed = ("sipnet_calibration.probability", "sipnet_calibration.smc", "sipnet_calibration.validation")
+    assert _imports_outside("sipnet_calibration.inference", allowed) == []
+    loaded = (*allowed, "sipnet_calibration.io", "sipnet_calibration.conventions")
+    assert _loaded_outside("sipnet_calibration.inference", loaded, ("pyens",)) == "[]"

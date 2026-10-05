@@ -90,6 +90,10 @@ Sampling the posterior:
     Tempered sequential Monte Carlo from a base density to the posterior,
     and importance sampling as its one-step case, over any prior and
     batched log likelihood; it knows nothing of SIPNET.
+:mod:`~sipnet_calibration.inference`
+    A posterior as each algorithm reads it: EKI's forward map, y, noise
+    covariance and initial ensemble; ``smc``'s tempering problem; an MCMC
+    sampler's log density and starting points.
 
 :mod:`~sipnet_calibration.plotting`
     Figures of fields: series, maps and grids of either.
@@ -99,6 +103,7 @@ Dependencies
 The dependency runs one way, from the foundations up::
 
     probability  (imports nothing of the package)  <-  parameters
+    probability, smc, validation  <-  inference
 
     conventions  <-  validation  <-  sites
         <-  fields, site_labels
@@ -132,6 +137,9 @@ only, and :mod:`~sipnet_calibration.plotting` on ``conventions``,
 ``validation``, ``fields``, the site table and the projection; nothing outside
 plotting imports it. :mod:`~sipnet_calibration.compute` depends on nothing here,
 and :mod:`~sipnet_calibration.smc` on ``io`` and ``validation`` only.
+:mod:`~sipnet_calibration.inference` depends on ``probability``, ``smc`` and
+``validation`` only, so it reads a posterior and nothing of SIPNET, and
+imports no algorithm package.
 
 Notes
 -----

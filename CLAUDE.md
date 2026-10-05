@@ -471,6 +471,10 @@ coercion lives in `validation.py`.
   `conventions.SAMPLE`), and the project's reserved names, the site table
   and SIPNET are the adapter layer's (`site_dims.py`,
   `sipnet_parameter_map.py`, `forward.py`).
+- **`inference/`**, the inference adapters, imports `probability`, `smc` and
+  `validation` only, and no algorithm package (tested): it reads a
+  `Posterior` and nothing of SIPNET, so the experiment imports pyEKI or
+  emcee and hands it what an adapter returns.
 - **`tests/conftest.py`** holds every fixture or builder more than one test
   file uses (some Niwot stacks and observation builders are still per file,
   until the module cleanups, PR 5).
@@ -953,8 +957,8 @@ reorg has landed, so the paths below are the real ones; `sites.py`,
 `constraints.py`, `initial_conditions/`, `drivers.py`, `projection.py`, the
 `parameters/` package, the first modules of the `probability/` package,
 `site_dims.py`, `sipnet_parameter_map.py`,
-`calibration.py`, `site_labels.py`, `forward.py`, `compute.py`, `smc.py` and
-the `observation/` package are implemented, `fields.py` has the model-output
+`calibration.py`, `site_labels.py`, `forward.py`, `compute.py`, `smc.py`,
+the `inference/` package and the `observation/` package are implemented, `fields.py` has the model-output
 adapters, the plotting package has series, maps and grids, and the other
 modules carry the contract each is to satisfy.
 `initial_conditions` is a package rather than a module: it spans several
@@ -1173,6 +1177,16 @@ src/sipnet_calibration/
                           # SMCSettings, SMCState; initial_state(), run_smc(),
                           # save_state()/load_state(); next_increment() (CESS),
                           # pareto_k() (ArviZ's PSIS), systematic_resample()
+  inference/              # a Posterior as each algorithm reads it; imports
+                          # probability, smc and validation only (tested), and
+                          # no algorithm package; __init__ re-exports it
+    eki.py                # EKIProblem (forward, y, noise_covariance,
+                          # last_evaluation, initial_ensemble), eki_problem()
+    tempering.py          # PriorBaseDensity, tempering_problem() -> an
+                          # smc.TemperingProblem, predictions as auxiliary
+    mcmc.py               # batched_log_density(), log_density(),
+                          # initial_points()
+    _validation.py        # private: the checks the three share
   fields.py               # the field contract: validate_field(), batch_dims(),
                           # stack_batch_dims()/unstack_batch_dims(),
                           # batch_coordinate(), scalar_batch_labels(),
