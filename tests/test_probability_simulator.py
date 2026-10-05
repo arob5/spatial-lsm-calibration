@@ -446,3 +446,140 @@ def test_a_simulator_output_that_is_not_whole_is_refused(output, match):
     posterior = condition_on(model, {"y": Y})
     with pytest.raises((TypeError, ValueError), match=match):
         posterior.evaluate(jnp.zeros((1, 3)))
+
+
+# ── what review found ─────────────────────────────────────────────────────────
+
+
+def test_a_deterministic_that_hides_a_failure_is_still_masked():
+    """A failed output stays a failure through a deterministic that would turn NaN into numbers."""
+    clean = DeterministicSpec(ArraySpec("clean", units="1", indexed_by=("site",)), function=lambda m: jnp.nan_to_num(m))
+    spec = joint(
+        FactorSpec(ArraySpec("y", units="1", indexed_by=("site",)),
+                   law=lambda clean, sigma: tfd.Independent(tfd.Normal(clean, sigma), 1)),
+        clean, Square(), _x(), _sigma(),
+    )
+    model = spec.bind(coords={"site": SITES})
+    x = np.array([[1.0, 2.0], [6.0, 1.0]])
+    log_prob = np.asarray(model.log_prob({"x": x, "sigma": np.ones(2), "y": np.tile(Y, (2, 1))}))
+    assert np.isfinite(log_prob[0]) and log_prob[1] == -np.inf
+    posterior = condition_on(model, {"y": Y})
+    evaluation = posterior.evaluate(_theta(posterior, x, [1.0, 1.0]))
+    assert np.isnan(np.asarray(evaluation.values["clean"])[1]).all()
+    assert evaluation.valid.tolist() == [True, False]
+
+
+class HalfFails(Square):
+    """``m`` fails where ``x`` reaches :data:`FAILS_AT`; ``m2`` never fails,
+    and is infinite where ``x`` is below 0.1, though reported valid."""
+
+    def __call__(self, given_values):
+        output = super().__call__(given_values)
+        x = given_values["x"].transpose("sample", "site").values
+        values = dict(output.values)
+        valid = dict(output.valid)
+        if "m2" in values:
+            values["m2"] = np.where(x < 0.1, np.inf, values["m2"])
+            valid["m2"] = np.ones(len(x), dtype=bool)
+        return SimulatorOutput(values=values, valid=valid)
+
+    def at(self, coords, outputs):
+        return HalfFails(coords["site"], outputs, log=self.log)
+
+
+def _ignoring_nan(*names):
+    """A law over ``y`` per site reading *names*, blind to a NaN in them."""
+    def law(m, m2, sigma):
+        return tfd.Independent(tfd.Normal(jnp.nan_to_num(m) + jnp.nan_to_num(m2, posinf=0.0), sigma), 1)
+    return law
+
+
+def test_a_part_reading_two_outputs_fails_where_either_failed():
+    spec = joint(
+        FactorSpec(ArraySpec("y", units="1", indexed_by=("site",)), law=_ignoring_nan()),
+        HalfFails(), _x(), _sigma(),
+    )
+    model = spec.bind(coords={"site": SITES})
+    x = np.array([[1.0, 2.0], [6.0, 1.0], [0.05, 1.0]])
+    log_prob = np.asarray(model.log_prob({"x": x, "sigma": np.ones(3), "y": np.tile(Y, (3, 1))}))
+    assert np.isfinite(log_prob[0]) and log_prob[1] == -np.inf and log_prob[2] == -np.inf
+    posterior = condition_on(model, {"y": Y})
+    evaluation = posterior.evaluate(_theta(posterior, x, [1.0, 1.0, 1.0]))
+    assert evaluation.simulator_valid.tolist() == [True, False, False]
+    assert evaluation.valid.tolist() == [True, False, False]
+    assert np.asarray(evaluation.log_likelihood)[1:].tolist() == [-np.inf, -np.inf]
+    drawn = model.sample(KEY, 400)
+    failed = (np.asarray(drawn["x"]) >= FAILS_AT).any(axis=1) | (np.asarray(drawn["x"]) < 0.1).any(axis=1)
+    assert failed.any()
+    assert np.isnan(np.asarray(drawn["y"])[failed]).all() and np.isfinite(np.asarray(drawn["y"])[~failed]).all()
+
+
+def test_an_evaluation_under_a_trace_is_refused_by_name():
+    model, _ = _model()
+    posterior = condition_on(model, {"y": Y})
+    with pytest.raises(ValueError, match="theta is traced"):
+        jax.jit(posterior.log_density)(jnp.zeros((2, 3)))
+
+
+def test_no_draws_call_no_simulator():
+    model, simulator = _model()
+    draws = model.sample(KEY, 0)
+    assert draws["m"].shape == (0, 2) and simulator.log["calls"] == []
+
+
+def test_the_gradient_of_a_failed_row_is_zero_not_nan():
+    model, _ = _model()
+    posterior = condition_on(model, {"y": Y})
+    evaluation = posterior.evaluate(_theta(posterior, [[1.0, 2.0], [1.0, 6.0]], [0.5, 0.5]))
+    density = posterior.log_density_given(evaluation)
+    free = evaluation.theta[:, posterior.simulator_free_positions]
+    gradient = jax.grad(lambda t: jnp.where(jnp.isfinite(density(t)), density(t), 0.0).sum())(free)
+    assert np.isfinite(np.asarray(gradient)).all() and gradient[1, 0] == 0.0
+
+
+class Twice(Simulator):
+    """``z = 2 m``, downstream of :class:`Square`, recording its checks."""
+
+    def __init__(self, log):
+        self.log = log
+
+    name = property(lambda self: "twice")
+    given = property(lambda self: ("m",))
+    outputs = property(lambda self: (ArraySpec("z", units="1", indexed_by=("site",)),))
+
+    def __call__(self, given_values):
+        m = given_values["m"].transpose("sample", "site").values
+        return SimulatorOutput(values={"z": 2 * m}, valid={"z": np.isfinite(m).all(axis=1)})
+
+    def at(self, coords, outputs):
+        return self
+
+    def check_given(self, given_specs, corner_values):
+        self.log.append("checked")
+
+
+def test_a_chain_runs_no_simulator_when_conditioned_and_one_batch_when_evaluated():
+    square, checks = Square(), []
+    spec = joint(
+        FactorSpec(ArraySpec("y", units="1", indexed_by=("site",)),
+                   law=lambda z, sigma: tfd.Independent(tfd.Normal(z, sigma), 1)),
+        Twice(checks), square, _x(), _sigma(),
+    )
+    posterior = condition_on(spec.bind(coords={"site": SITES}), {"y": Y})
+    assert square.log["calls"] == [] and checks == []
+    evaluation = posterior.evaluate(_theta(posterior, [[1.0, 2.0], [1.0, 6.0]], [1.0, 1.0]))
+    assert square.log["calls"] == [(2, ("m",))]
+    np.testing.assert_allclose(evaluation.values["z"][0], [2.0, 8.0])
+    assert evaluation.valid.tolist() == [True, False]
+
+
+def test_an_entry_only_a_barren_simulator_output_depends_on_is_free():
+    spec = joint(
+        FactorSpec(ArraySpec("y", units="1", indexed_by=("site",)),
+                   law=lambda x, sigma: tfd.Independent(tfd.Normal(jnp.log(x), sigma), 1)),
+        FactorSpec(ArraySpec("validation", units="1", indexed_by=("site",)), law=_normal_about("m2")),
+        Square(), _x(), _sigma(),
+    )
+    posterior = condition_on(spec.bind(coords={"site": SITES}), {"y": Y})
+    assert posterior.simulators == {}
+    np.testing.assert_array_equal(posterior.simulator_free_positions, [0, 1, 2])

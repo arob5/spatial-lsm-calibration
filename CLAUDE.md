@@ -1301,10 +1301,18 @@ plotting code. The load-bearing rules:
   what it declares, the checks at the boundary, the verbs an operator is
   written with and the default binding. Which operator reads an observation
   source is a modeling decision an experiment writes in `config.py`.
-- **The forward model is one class over existing pieces.**
-  `forward.ForwardModel(model, parameter_vector, sipnet_parameter_map,
+- **The forward model is runs, a simulator and today's callable over
+  existing pieces.** `forward.SIPNETRuns(sipnet_model, sipnet_parameter_map=,
+  site_dims=, climate=, backend=, out_of_domain=)` runs SIPNET once per sample
+  and site for labeled values and returns, from one pass, predictions per
+  observation vector and model output (`evaluate`); `SIPNETSimulator(runs,
+  observation_vector=)` is the forward map as the probability layer's
+  `Simulator`, which never sees theta, runs only the sites its vector
+  observes, and marks a source's prediction invalid only where a run at one
+  of the source's sites failed. `forward.ForwardModel(model, parameter_vector, sipnet_parameter_map,
   site_dims=, derived_parameters=, climate=, backend=, external_inputs=,
-  out_of_domain=, observation_vector=)` is pyEKI's `(J, D) -> (J, N)`; its
+  out_of_domain=, observation_vector=)`, until R1, is pyEKI's `(J, D) -> (J, N)`
+  through `SIPNETRuns`; its
   module docstring says how the pieces compose: the labeled natural values
   (the parameter layer's seam) merged with the external inputs, read at the
   site dims' sites by the map. The rules a session can get wrong: the observation

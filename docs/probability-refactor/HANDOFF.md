@@ -23,8 +23,8 @@ and proofs are the design's §12; the column below is a summary.
 | P1 | `refactor/probability-p1-references` | merged #77 | P0 | A script writing reference values from today's code: the prior draws and densities (PR #69's prior transcribed, `example_calibration`, a hierarchy, a copula, a per-PFT simplex), and `ForwardModel` predictions on `test_forward`'s fake runners |
 | P2 | `refactor/probability-p2-foundations` | merged #78 | P0 | Supports, with `PositiveDefinite`; `ArraySpec`; `labels` v2; `Layout`; encode and decode; shims left in `parameters` (split into P2a and P2b if large) |
 | P3 | `refactor/probability-p3-prior-model` | merged #79 | P1, P2 | Laws, families, builders; `FactorSpec`, `DeterministicSpec`, decorators; `joint`, `bind`, `FactoredDistribution`; `condition_on` and `Posterior` without simulators |
-| P4 | `refactor/probability-p4-adapter-prep` | open #80 | P2 | F8; the SIPNET map on dicts and `ArraySpec`s; `ObservationSource.standard_deviation`; the observation dims and constants; `observation.model` |
-| P5 | `refactor/probability-p5-simulator` | waiting | P3, P4 | The `Simulator` seam; `SIPNETRuns`, with today's `ForwardModel` delegating to it; `SIPNETSimulator`; F6, F7 |
+| P4 | `refactor/probability-p4-adapter-prep` | merged #80 | P2 | F8; the SIPNET map on dicts and `ArraySpec`s; `ObservationSource.standard_deviation`; the observation dims and constants; `observation.model` |
+| P5 | `refactor/probability-p5-simulator` | open #PRNUMBER | P3, P4 | The `Simulator` seam; `SIPNETRuns`, with today's `ForwardModel` delegating to it; `SIPNETSimulator`; F6, F7 |
 | P6 | `refactor/probability-p6-gaussian` | waiting | P5 | Covariance specs, `GaussianSpec`, `noise_factor`, `gaussian_likelihood`, through the `probability/_linalg.py` shim over today's pyEKI |
 | P7 | `refactor/probability-p7-inference` | waiting | P6 | The `inference` package on today's pyEKI |
 | #69 | `feat/single-site-mcmc-vs-eki` | not this refactor's | P7 | PR #69 migrates in its own session |
@@ -58,6 +58,20 @@ recommendations included, and reports any recommendation it finds doubtful.
   keep the label's year (the design's definition, and what PR #69's LAI
   block assumes), and revisit when a noise factor groups NEE by year;
   the alternative is the year of the window's start where there is one.
+- **A simulator downstream of another (P5, found in review).** The core
+  passes a downstream simulator `NaN` at the samples where the upstream one
+  failed, and the `Simulator` contract has no way to say "skip these". A
+  `SIPNETSimulator` under `out_of_domain="raise"` would then refuse the
+  whole batch. No model chains simulators today. Recommended: leave it, and
+  add a `computed` mask to `Simulator.__call__` when a chain is needed;
+  meanwhile `condition_on` skips `check_given` for a simulator with a
+  simulator upstream, which would otherwise run that one at every corner.
+- **`predict` runs SIPNET again (P5, found in review).** `predict(key,
+  theta)` re-runs the simulator outputs barren factors read, including any
+  `evaluate` already computed, so a predictive pass after an evaluation
+  costs a second batch of runs. Recommended: keep the design's signature
+  for P7, and add `predict(key, evaluation)` if a run's cost makes it
+  matter.
 - **Element axes are read by position in the SIPNET map (P4, found in
   review; predates the refactor).** `CopySimplex` and every rule read a
   value's element axes in the order the array holds them, so a simplex
@@ -500,3 +514,119 @@ Two findings are questions below, not fixes.
 - Two stacked dims with a `site` level cannot share an `xr.Dataset` or one
   DataArray (xarray refuses the shared level), which is why labeled values
   are a dict.
+
+### 2026-10-05: P5, the simulator seam
+
+**Done.**
+
+- **The core.** `probability.parts` gains `Simulator`, an abstract base:
+  `name`, `given`, `outputs`, `__call__(labeled values) -> SimulatorOutput`,
+  `at(coords, outputs)`, and an optional `check_given`. It also gains
+  `SimulatorOutput`: values `(J, *block)`, validity `(J,)` and a record.
+  - `joint` takes simulators.
+  - `bind` binds each simulator with `at`, every output, and runs none.
+  - `FactoredDistribution.sample` and `log_prob` run each simulator once
+    per batch. What is drawn or computed from a failed output is `NaN`,
+    and a density that reads one is `-inf`.
+- **The posterior.** `condition_on` does three new things:
+  - it refuses a target factor, and a factor of `O_c`, with a simulator
+    among its ancestors;
+  - it restricts each simulator to the outputs the likelihood reads;
+  - it calls `check_given` at the corner points, which are the core's now
+    (`_probes.corner_points`, `CORNERS`).
+
+  `Posterior` gains `evaluate -> PosteriorEvaluation`, `log_density_given`,
+  `predict`, `replicate`, `simulator_inputs`, `simulators` and
+  `simulator_free_positions`. `log_likelihood` and `log_density` go through
+  `evaluate` when a simulator is upstream of the likelihood, and stay
+  traced otherwise.
+- **The adapter.** `forward.SIPNETRuns` holds what `ForwardModel` ran. Its
+  `evaluate(values, observation_vectors=, output_variable_names=, freq=,
+  external_inputs=)` makes one pass for several reductions (F6) and returns
+  a `SIPNETRunsEvaluation`. `ForwardModel` delegates to it; one private
+  `test_forward` test was updated, the rest are unchanged.
+  `forward.SIPNETSimulator` is the forward map as a `Simulator`:
+  - it runs only the sites its vector observes;
+  - it marks a source's prediction invalid only where a run at one of that
+    source's sites failed;
+  - `at` restricts it to fewer sources and sites;
+  - `check_given` is the map's fit check plus, under `"raise"`, the corner
+    domain check.
+- **F7.** It needed no code. An external initial state is an input the
+  simulator reads, and a name declared both ways is refused by `joint`.
+  Both are tested.
+- **Tests.** 2858 passed and 94 skipped at P4's merge; 2909 and 94 after.
+  - The SIPNET simulator's predictions equal P1's `forward_example` bit for
+    bit, and P1's byte test still passes through the delegating
+    `ForwardModel`.
+  - A failing run invalidates one source and not the other.
+  - One pass equals three calls.
+- **Shared test helpers.** `tests/conftest.py` gains
+  `two_source_observation_vector` (P1's script now uses it) and
+  `example_calibration_factors` (the parity test now uses it).
+
+**Review.** One Standard round: code, mutation testing, docs. Fixed:
+
+- a deterministic downstream of a failed output was not masked in
+  `_computed`, so `log_prob` and `PosteriorEvaluation.values` could be
+  finite at a failed sample; `log_prob` now also maps each factor to `-inf`
+  where what it reads failed;
+- `condition_on` ran an upstream simulator at every corner point for a
+  chain of simulators;
+- a traced theta raised JAX's `TracerArrayConversionError` rather than a
+  `ValueError` naming the cause;
+- `sample(key, 0)` called the simulator with no samples and crashed;
+- `log_density_given` had `NaN`, not zero, gradients at failed rows;
+- `simulator_free_positions` counted simulators only barren factors read;
+- `SimulatorOutput` was neither keyword-only nor frozen, as documented;
+- Raises sections, stale annotations and docstrings, CLAUDE.md's
+  forward-model bullet, messages without a fix, and a stale check name.
+
+Mutation testing found ten survivors. Tests now kill the masking, the
+two-outputs and finiteness rules, the theta mask and `log_density_given`'s
+`-inf`. Three remain:
+
+- the per-source `ran` and `in_domain` terms, which `NaN` placement already
+  implies, so the mutants are equivalent;
+- `_block_order`, the identity for every vector the public API builds;
+- `NaN` in a row out of the domain whose runs succeeded, which needs a
+  contrived `fail_row` map.
+
+**Deviations from the design**, each recorded in `design.html`:
+
+- A factor downstream of a simulator is checked at bind at a placeholder
+  (each output's bijector's image of 0) for its form only, not with
+  `jax.eval_shape`.
+- `SIPNETRuns.evaluate` returns a `SIPNETRunsEvaluation`, since
+  `ForwardEvaluation` keeps `theta` for `ForwardModel` and PR #69 until R1.
+- `SIPNETSimulator.at(coords, outputs)` takes the core's signature, and
+  `SIPNETRuns.select(sites=)` is added for it.
+- No factor of `O_c` may have a simulator ancestor.
+- `PosteriorEvaluation.values` holds the deterministics the likelihood
+  reads and those computable without a simulator.
+
+**Choices the design left open:**
+
+- `log_likelihood` and `log_density` stay traced without a simulator.
+- `replicate` draws the `O_theta` factors ancestrally.
+- `predict` computes its own pruned outputs.
+- A run plan is built once by `ForwardModel` and `SIPNETSimulator`, and
+  per call by `SIPNETRuns.evaluate`.
+- A combined pass checks the union of its output variables finite.
+- `ForwardModel` imports the core's private `_probes` until R1.
+
+**What P6 and later must know.**
+
+- A Gaussian noise factor (P6) reads `predicted_<source>` from
+  `SIPNETSimulator`, whose block is in `observation_vector.coords` order,
+  by label.
+- `BoundFactor.law_at` for a `GaussianSpec` must cope with the placeholder
+  predictions at bind: the bound checks are structural only downstream of
+  a simulator.
+- `Posterior._likelihood_at` sums the O_theta factors and reports
+  finiteness. `gaussian_likelihood` (P6) and the inference adapters (P7)
+  read `evaluate`'s `valid`, which `simulator_valid` refines (NaN for
+  SMC's failed runs; `-inf` where only the traced part failed).
+- `FactoredDistribution._computed`, `_ancestral` and `_simulate` take a
+  `simulators` mapping, so a caller can pass pruned ones, and record each
+  run's `SimulatorOutput` in `runs`.

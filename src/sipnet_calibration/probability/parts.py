@@ -449,14 +449,15 @@ class Simulator(ABC):
 
     @property
     def law_name(self) -> str:
-        """Its class's name, for a description."""
+        """Its class's name, for the ``law`` column of a model's
+        description, which names what each part evaluates."""
         return type(self).__name__
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}({self.name!r}, given={list(self.given)}, outputs={[o.name for o in self.outputs]})"
 
 
-@dataclass(frozen=True, eq=False)
+@dataclass(frozen=True, eq=False, kw_only=True)
 class SimulatorOutput:
     """What one call of a :class:`Simulator` returns.
 
@@ -476,6 +477,12 @@ class SimulatorOutput:
     values: Mapping[str, np.ndarray]
     valid: Mapping[str, np.ndarray]
     record: Any = None
+
+    def __post_init__(self) -> None:
+        for name in ("values", "valid"):
+            held = getattr(self, name)
+            if isinstance(held, Mapping):
+                object.__setattr__(self, name, frozendict(held))
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────

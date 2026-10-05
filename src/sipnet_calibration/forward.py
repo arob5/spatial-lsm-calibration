@@ -14,11 +14,12 @@ Where this sits
       --ObservationVector.predict and .flat on the worker-->  one site's segment of Flat
       --placed at its run and at positions(site=) by the calling process-->  (R, N)
 
-Three objects compose the same pieces: the parameter layer's vector and
-derived parameters, the site dims, the SIPNET parameter map, pySIPNET's
-``SIPNETModel``, PyEns's ``PartialSpec``/``EnsembleRunner``/``Backend`` and
-its xarray bridge, the observation vector, and the stacking of runs
-(:func:`sipnet_calibration.fields.stack_model_outputs`).
+Three objects compose pieces that exist elsewhere: the site dims, the
+SIPNET parameter map, pySIPNET's ``SIPNETModel``, PyEns's
+``PartialSpec``/``EnsembleRunner``/``Backend`` and its xarray bridge, the
+observation vectors, and the stacking of runs
+(:func:`sipnet_calibration.fields.stack_model_outputs`); ``ForwardModel``
+adds the parameter layer's vector and derived parameters.
 
 - :class:`SIPNETRuns` runs SIPNET once per sample and site for a batch of
   labeled values and returns each requested reduction: predictions per
@@ -263,10 +264,7 @@ from sipnet_calibration.sipnet_parameter_map import (
     validate_external_inputs,
 )
 from sipnet_calibration.probability import ArraySpec, LabeledValues, Simulator, SimulatorOutput
-
-# The corner points are the probability layer's; this module's ForwardModel
-# reads them until R1 removes it.
-from sipnet_calibration.probability._probes import CORNERS, corner_points
+from sipnet_calibration.probability._probes import CORNERS, corner_points  # ForwardModel's, until R1
 from sipnet_calibration.site_dims import SiteDims
 from sipnet_calibration.sites import site_locations, site_lookup
 from sipnet_calibration.validation import as_batched_flat, as_sequence, is_one_vector, truncated
@@ -1629,7 +1627,7 @@ def _stacked_model_output(
     return full.assign_coords(site_locations)
 
 
-def _with_evaluation(error: RuntimeError, evaluation: ForwardEvaluation) -> RuntimeError:
+def _with_evaluation(error: RuntimeError, evaluation: ForwardEvaluation | SIPNETRunsEvaluation) -> RuntimeError:
     error.evaluation = evaluation  # type: ignore[attr-defined]
     return error
 
@@ -2016,7 +2014,7 @@ def check_output_is_finite(dataset: xr.Dataset, site: int) -> None:
 
 
 def check_no_run_failed_in_the_machinery(
-    machinery_failures: Sequence[tuple[dict, BaseException]], evaluation: ForwardEvaluation
+    machinery_failures: Sequence[tuple[dict, BaseException]], evaluation: ForwardEvaluation | SIPNETRunsEvaluation
 ) -> None:
     """No run failed in the machinery, which says nothing of the parameters."""
     if not machinery_failures:
@@ -2057,13 +2055,16 @@ def check_sipnet_parameter_map_is_a_map(sipnet_parameter_map: Any) -> None:
 def check_runs_are_sipnet_runs(runs: Any) -> None:
     """A simulator's runs are a :class:`SIPNETRuns`."""
     if not isinstance(runs, SIPNETRuns):
-        raise TypeError(f"runs must be a SIPNETRuns, got {type(runs).__name__}.")
+        raise TypeError(f"runs must be a SIPNETRuns, got {type(runs).__name__}; build one with SIPNETRuns(...).")
 
 
 def check_observation_vector_is_an_observation_vector(observation_vector: Any) -> None:
     """An observation vector is an :class:`~sipnet_calibration.observation.ObservationVector`."""
     if not isinstance(observation_vector, ObservationVector):
-        raise TypeError(f"an observation vector must be an ObservationVector, got {type(observation_vector).__name__}.")
+        raise TypeError(
+            f"an observation vector must be an ObservationVector, got {type(observation_vector).__name__}; "
+            "build one from ObservationSources."
+        )
 
 
 def check_something_is_asked_for(observation_vectors: Sequence[Any], output_variable_names: Sequence[str]) -> None:
@@ -2110,7 +2111,10 @@ def check_value_covers_the_sites(name: str, variable: xr.DataArray, sites: Seque
     held = set(variable.indexes[SITE].tolist())
     missing = [site for site in sites if site not in held]
     if missing:
-        raise KeyError(f"the value {name!r} has no value for site(s) {truncated(missing)}, which are run.")
+        raise KeyError(
+            f"the value {name!r} has no value for site(s) {truncated(missing)}, which are run; give it at every "
+            "site of the site dims."
+        )
 
 
 def check_values_carry_the_batch_dim(on_batch: Mapping[str, Any], batch_dim: str) -> None:
@@ -2141,7 +2145,9 @@ def check_outputs_are_predictions(outputs: Sequence[str], by_output: Mapping[str
     """A simulator is restricted to its own outputs."""
     unknown = [name for name in outputs if name not in by_output]
     if unknown:
-        raise ValueError(f"the simulator outputs {list(by_output)}, not {truncated(unknown)}.")
+        raise ValueError(
+            f"the simulator outputs {list(by_output)}, not {truncated(unknown)}; restrict it to its own outputs."
+        )
 
 
 def check_sites_are_observed(sites: Sequence[int], observation_vector: ObservationVector) -> None:
@@ -2189,7 +2195,7 @@ def check_every_observation_has_an_entry(observation_source_name: str, order: np
         )
 
 
-def check_some_run_succeeded(evaluation: ForwardEvaluation) -> None:
+def check_some_run_succeeded(evaluation: ForwardEvaluation | SIPNETRunsEvaluation) -> None:
     """Some run succeeded, so there is model output to stack."""
     if not bool(evaluation.run_succeeded.any()):
         raise _with_evaluation(

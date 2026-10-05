@@ -369,8 +369,10 @@ class Posterior:
         Raises
         ------
         ValueError
-            If *theta* is not ``(J, D)`` or ``(D,)`` with ``J >= 1``, or not
-            finite.
+            If *theta* is not ``(J, D)`` or ``(D,)`` with ``J >= 1``, not
+            finite, or traced.
+        TypeError, ValueError
+            If a simulator returns other than a whole ``SimulatorOutput``.
         Exception
             Whatever a simulator's machinery raises.
         """
@@ -449,6 +451,8 @@ class Posterior:
             If *evaluation* is not a :class:`PosteriorEvaluation`.
         ValueError
             If its theta is not ``(J, D)``.
+        KeyError
+            If it lacks a simulator output: it is another posterior's.
         """
         check_evaluation_is_an_evaluation(evaluation)
         check_theta_is_a_batch(tuple(evaluation.theta.shape), self.dimension)
@@ -456,8 +460,13 @@ class Posterior:
         held_theta = evaluation.theta
         lead = (held_theta.shape[0],)
         outputs = [o.name for simulator in self.simulators.values() for o in simulator.outputs]
-        held = {name: evaluation.values[name] for name in outputs}
         computed = evaluation.simulator_valid
+        # A failed row's outputs are NaN; zero them, so the row's discarded
+        # branch of the where below has a finite gradient, not NaN.
+        held = {
+            name: jnp.where(computed.reshape((-1,) + (1,) * (evaluation.values[name].ndim - 1)), evaluation.values[name], 0.0)
+            for name in outputs
+        }
 
         def log_density(theta_free: Array) -> Array:
             theta = held_theta.at[:, free].set(jnp.asarray(theta_free, dtype=jnp.float64))
@@ -486,8 +495,8 @@ class Posterior:
 
         Raises
         ------
-        ValueError
-            As :meth:`evaluate` for *theta*.
+        ValueError, TypeError, Exception
+            As :meth:`evaluate`.
         """
         return self._drawn(key, theta, self._barren, self._fixed, outputs_from="model")
 
@@ -510,8 +519,8 @@ class Posterior:
         ------
         KeyError
             If the model has no simulator *simulator_name*.
-        ValueError
-            As :meth:`evaluate` for *theta*.
+        ValueError, TypeError, Exception
+            As :meth:`evaluate`, when a simulator upstream of it runs.
         """
         check_simulator_is_the_models(simulator_name, self.model)
         theta = self._theta_batch(theta)
@@ -573,6 +582,7 @@ class Posterior:
 
     def _theta_batch(self, theta: Any) -> Array:
         """*theta* as a finite batch, ``(J, D)``, ``J >= 1``."""
+        check_theta_is_concrete(theta)
         theta = jnp.asarray(theta, dtype=jnp.float64)
         theta = theta[None] if theta.ndim == 1 else theta
         check_theta_is_a_batch(tuple(theta.shape), self.dimension)
@@ -614,12 +624,15 @@ class Posterior:
         return total, finite
 
     def _simulator_inputs_at(self, theta: Array, simulator_name: str) -> LabeledValues:
-        """What a simulator reads at a ``(J, D)`` theta, upstream simulators
-        run as the model has them."""
+        """What a simulator reads at a ``(J, D)`` theta, any simulator
+        upstream of it run for the outputs it reads alone."""
         model = self.model
         simulator = model.simulators[simulator_name]
         lead = (theta.shape[0],)
-        per_draw, fixed = model._computed(self._parameter_values(theta), self._fixed, lead, simulator.given)
+        upstream = _simulators_restricted(model, simulator.given)
+        per_draw, fixed = model._computed(
+            self._parameter_values(theta), self._fixed, lead, simulator.given, simulators=upstream
+        )
         return model._labeled_given(simulator, per_draw, fixed, lead)
 
     def _drawn(
@@ -770,10 +783,11 @@ def _simulators_read(model: FactoredDistribution, likelihood: Sequence[BoundFact
 
 
 def _simulator_free_positions(posterior: Posterior) -> np.ndarray:
-    """The entries of theta whose factor has no simulator among its
-    descendants."""
+    """The entries of theta whose factor has none of the posterior's
+    simulators among its descendants: a simulator only barren factors read
+    is not run, so it holds nothing fixed."""
     spec = posterior.model.spec
-    simulator_names = set(posterior.model.simulators)
+    simulator_names = set(posterior.simulators)
     free = [
         positions for bound, positions in zip(posterior._target, posterior._slices)
         if not spec._descendants(bound.name) & simulator_names
@@ -882,12 +896,16 @@ def check_target_density_is_finite_at_the_held_values(posterior: Posterior) -> N
 
 def check_simulators_take_the_corner_points(posterior: Posterior) -> None:
     """Each simulator the likelihood depends on accepts what the prior can
-    produce: its ``check_given`` at the corner points of the target."""
+    produce: its ``check_given`` at the corner points of the target. One
+    downstream of another simulator is not checked, which would run that
+    one at every corner point."""
     if not posterior.simulators:
         return
     spec = posterior.model.spec
     theta = jnp.asarray(_corner_theta(posterior))
     for name, simulator in posterior.simulators.items():
+        if simulator_outputs_behind(spec, simulator.given):
+            continue
         given_specs = {g: spec.component_spec(g) for g in simulator.given}
         simulator.check_given(given_specs, posterior._simulator_inputs_at(theta, name))
 
@@ -896,6 +914,16 @@ def check_theta_is_a_batch(shape: tuple[int, ...], dimension: int) -> None:
     """Theta is a batch, ``(J, D)``."""
     if len(shape) != 2 or shape[1] != dimension:
         raise ValueError(f"theta has shape {shape}; give a batch (J, {dimension}).")
+
+
+def check_theta_is_concrete(theta: Any) -> None:
+    """Theta evaluated with a simulator is a value, not a JAX trace: a
+    simulator runs outside JAX."""
+    if isinstance(theta, jax.core.Tracer):
+        raise ValueError(
+            "theta is traced (jit, grad or vmap), but this evaluation runs a simulator, which runs outside "
+            "JAX; call it outside the trace, or trace log_density_given(evaluation) instead."
+        )
 
 
 def check_theta_has_a_row(shape: tuple[int, ...]) -> None:

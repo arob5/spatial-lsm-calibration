@@ -69,7 +69,8 @@ Binding runs no simulator: it binds each one to the labels in use
 and stands a placeholder in for each of its outputs, its bijector's image
 of 0. A factor downstream of a simulator is checked there for its form
 alone (event shape, TFP batch shape, dtype, a density the model can
-evaluate), and a deterministic downstream for its block shapes. Sampling
+evaluate), and a deterministic downstream for its block shapes when a
+factor reads a value that varies by draw, the case in which draws are made. Sampling
 and the joint density run each simulator once for the whole batch; what is
 drawn or computed from an output that failed is ``NaN``, and a density that
 reads one is ``-inf``.
@@ -520,6 +521,8 @@ class FactoredDistribution:
         ValueError
             If *n* is negative, or a draw lands on a support's boundary,
             where theta is not finite; the message names the factor.
+        TypeError, ValueError
+            If a simulator returns other than a whole ``SimulatorOutput``.
         Exception
             Whatever a simulator's machinery raises.
         """
@@ -553,7 +556,11 @@ class FactoredDistribution:
         ValueError
             If *values* holds a deterministic component or an input, or a
             value does not end in its block shape, or the batch shapes
-            differ.
+            differ; or a simulator would run under a JAX trace.
+        TypeError, ValueError
+            If a simulator returns other than a whole ``SimulatorOutput``.
+        Exception
+            Whatever a simulator's machinery raises.
         """
         check_values_hold_each_event(values, self)
         events = [c for p in self.spec.parts if isinstance(p, FactorSpec) for c in p.event]
@@ -562,12 +569,15 @@ class FactoredDistribution:
         lead = tuple(first[: len(first) - len(self._layout.block_shape(events[0].name))])
         random = {c.name: jnp.asarray(values[c.name], dtype=jnp.float64) for c in events}
         read = [g for bound in self._factors.values() for g in bound.spec.given]
-        per_draw, fixed = self._computed(random, self._fixed, lead, read)
+        runs: dict[str, SimulatorOutput] = {}
+        per_draw, fixed = self._computed(random, self._fixed, lead, read, runs=runs)
         total = jnp.zeros(lead, dtype=jnp.float64)
         for bound in self._factors.values():
             own = {name: per_draw[name] for name in bound.names}
             reads, held = split_reads(bound.spec.given, per_draw, fixed)
-            total = total + finite_or_minus_infinity(bound.log_prob_natural(own, reads, held, lead))
+            density = finite_or_minus_infinity(bound.log_prob_natural(own, reads, held, lead))
+            computed = self._draws_computed(bound.spec.given, runs)
+            total = total + (density if computed is None else jnp.where(jnp.asarray(computed).reshape(lead), density, -jnp.inf))
         return total
 
     # ── supporting methods ────────────────────────────────────────────────────
@@ -606,7 +616,7 @@ class FactoredDistribution:
             computed = self._draws_computed(part.given, runs)
             if isinstance(part, DeterministicSpec):
                 out = self._deterministics[part.name].compute(reads, held, (n,))
-                (values if reads else fixed).update(_masked(out, computed))
+                (values if reads else fixed).update(_masked(out, computed, (n,)))
                 continue
             bound = self._factors[part.name]
             theta = bound.sample_theta(random_key_for(key, part.name), n, reads, held)
@@ -650,7 +660,7 @@ class FactoredDistribution:
                 continue
             reads, held = split_reads(part.given, per_draw, fixed)
             out = self._deterministics[part.name].compute(reads, held, lead)
-            (per_draw if reads else fixed).update(out)
+            (per_draw if reads else fixed).update(_masked(out, self._draws_computed(part.given, runs), lead))
         return per_draw, fixed
 
     def _deterministics_behind(self, names: Sequence[str]) -> set[str]:
@@ -667,12 +677,17 @@ class FactoredDistribution:
         runs: dict[str, SimulatorOutput],
     ) -> dict[str, Array]:
         """One call of *simulator* for the batch *lead*: its outputs,
-        ``{name: (*lead, *block)}``, ``NaN`` where not computed. Its output,
-        checked and ``NaN`` where not computed, is recorded in *runs* by its
-        name."""
+        ``{name: (*lead, *block)}``, ``NaN`` where not computed, as recorded
+        in *runs* by its name. An empty batch calls nothing."""
         n = math.prod(lead)
-        output = simulator(self._labeled_given(simulator, per_draw, fixed, lead))
         shapes = {o.name: self._layout.block_shape(o.name) for o in simulator.outputs}
+        if n == 0:
+            runs[simulator.name] = SimulatorOutput(
+                values=frozendict({name: np.zeros((0, *shape)) for name, shape in shapes.items()}),
+                valid=frozendict({name: np.zeros(0, dtype=bool) for name in shapes}),
+            )
+            return {name: jnp.zeros((*lead, *shape)) for name, shape in shapes.items()}
+        output = simulator(self._labeled_given(simulator, per_draw, fixed, lead))
         check_simulator_output_is_whole(simulator.name, output, shapes, n)
         returned = {name: np.asarray(output.values[name], dtype=np.float64) for name in shapes}
         valid = {
@@ -787,8 +802,8 @@ def _bound_parts(
     are made as the parts are bound, and each such factor is built and
     checked at both. No simulator runs: its outputs are placeholders there,
     each its bijector's image of 0, at which the factors downstream are
-    checked for their form only, and the deterministics downstream not at
-    all."""
+    checked for their form only, and the deterministics downstream for
+    their block shapes, when the draws are made."""
     spec = model.spec
     varying = _names_varying_by_draw(spec)
     downstream = _parts_downstream_of_a_simulator(spec)
@@ -884,12 +899,15 @@ def _layout_of(model: FactoredDistribution, names: Sequence[str]) -> Layout:
     return Layout(specs, coords=coords_of(specs, model.coords))
 
 
-def _masked(values: Mapping[str, Array], computed: np.ndarray | None) -> dict[str, Array]:
-    """*values*, each ``(n, *block)``, ``NaN`` at the draws not *computed*."""
+def _masked(values: Mapping[str, Array], computed: np.ndarray | None, lead: tuple[int, ...]) -> dict[str, Array]:
+    """*values*, each ``(*lead, *block)``, ``NaN`` at the draws not
+    *computed*, which is flat over *lead*."""
     if computed is None:
         return dict(values)
-    mask = jnp.asarray(computed)
-    return {name: jnp.where(mask.reshape((-1,) + (1,) * (v.ndim - 1)), v, jnp.nan) for name, v in values.items()}
+    mask = jnp.asarray(computed).reshape(lead)
+    return {
+        name: jnp.where(mask.reshape(lead + (1,) * (v.ndim - len(lead))), v, jnp.nan) for name, v in values.items()
+    }
 
 
 def _fixed_reads(model: FactoredDistribution, part: Part) -> dict[str, Any]:
@@ -1003,7 +1021,7 @@ def check_model_spec_is_valid(spec: ModelSpec) -> None:
     read, and one set of labels per element axis name."""
     check_model_has_a_part(spec.parts)
     for part in spec.parts:
-        check_part_is_a_factor_or_a_deterministic(part)
+        check_part_is_a_factor_deterministic_or_simulator(part)
         if isinstance(part, Simulator):
             check_simulator_is_valid(part)
     check_model_has_a_factor(spec.parts)
@@ -1025,7 +1043,7 @@ def check_part_is_a_part(part: Any) -> None:
         )
 
 
-def check_part_is_a_factor_or_a_deterministic(part: Any) -> None:
+def check_part_is_a_factor_deterministic_or_simulator(part: Any) -> None:
     """A model spec's part is a factor, a deterministic or a simulator;
     models are flattened into one by :func:`joint`."""
     if not isinstance(part, (FactorSpec, DeterministicSpec, Simulator)):

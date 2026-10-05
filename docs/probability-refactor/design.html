@@ -1895,7 +1895,9 @@ class PosteriorEvaluation:
         ``(J,)`` bool: those simulator outputs were computed. Where it holds
         and ``valid`` does not, the traced part failed numerically.
     values : ValuesByName
-        Every deterministic component, ``(J, *block)``.
+        Every deterministic component, ``(J, *block)``. (P5: those the
+        likelihood reads, simulator outputs among them, and those computable
+        without a simulator; a pruned output is not computed.)
     simulator_records : frozendict of str to Any
         Each simulator's ``SimulatorOutput.record``.
     """
