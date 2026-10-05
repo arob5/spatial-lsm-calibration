@@ -2080,13 +2080,17 @@ both cases and say why, and joint sampling covers them.</p>
   <code>CENTERED_LAW_SPECS</code>: bound with their factor and checked as a
   Gaussian is. A user may declare one directly, as a Student-t noise
   model.</li>
+  <li><b>Names.</b> The code calls R1 the <i>scale rule</i> and R2 the
+  <i>block rule</i>, since R1 also names the removal PR.</li>
   <li><b>Where things live.</b> <code>FullConditional</code> is in
   <code>posterior</code>, as §6's module list has it; the rules are a new
   module, <code>probability.conjugacy</code>: <code>conjugate_rule(model,
   name) -&gt; ConjugateRule</code>, which holds the matched factors, the
   marginal law and the full conditional's arithmetic from residuals;
   <code>marginalize</code>; <code>InverseWishartGivenRows</code>, R2's full
-  conditional when the groups observe <var>q</var> &lt; <var>p</var> rows;
+  conditional, the posterior on the observed rows and the prior on the rest
+  (the inverse Wishart itself when every row is observed), unchecked so
+  that it is <code>NaN</code> at a sample whose mean was not computed;
   and the rule names <code>INVERSE_GAMMA_SCALE</code> and
   <code>INVERSE_WISHART</code>. <code>FullConditional</code> also holds
   <code>posterior</code>.</li>

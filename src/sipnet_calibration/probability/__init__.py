@@ -21,8 +21,8 @@ Where this sits
       -> probability.scale_mixtures  StudentTSpec, MatrixStudentTSpec and their laws
       -> probability.parts     FactorSpec, GaussianSpec, DeterministicSpec, their decorators; Simulator
       -> probability.model     joint -> ModelSpec, bind -> FactoredDistribution
-      -> probability.posterior condition_on -> Posterior: theta's density
-      -> probability.conjugacy marginalize, FullConditional: the conjugate rules
+      -> probability.conjugacy the conjugate rules: conjugate_rule, marginalize
+      -> probability.posterior condition_on -> Posterior: theta's density; FullConditional
     ──────── seam: labeled values, a dict of DataArrays ────────
       -> the adapter layer
 
@@ -68,12 +68,12 @@ Modules
 :mod:`~sipnet_calibration.probability.model`
     The declared model and the model bound to labels: sampling and the
     joint density.
-:mod:`~sipnet_calibration.probability.posterior`
-    Bayes' rule: the target an inference algorithm reads, and the
-    likelihood as a Gaussian, when it is one.
 :mod:`~sipnet_calibration.probability.conjugacy`
     The two conjugate rules: a component integrated out of a model, and a
     parameter's closed-form law given the rest.
+:mod:`~sipnet_calibration.probability.posterior`
+    Bayes' rule: the target an inference algorithm reads, and the
+    likelihood as a Gaussian, when it is one.
 """
 
 from sipnet_calibration.probability.builders import (

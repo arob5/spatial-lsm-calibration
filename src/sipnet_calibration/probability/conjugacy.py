@@ -13,8 +13,8 @@ Two rules are matched on the declarations, never on values. Both are
 optional: a model with an inverse-gamma or inverse-Wishart component is
 valid with those components as parameters, sampled jointly.
 
-R1: an inverse gamma on a covariance scale
--------------------------------------------
+The scale rule: an inverse gamma on a covariance scale
+-------------------------------------------------------
 It applies when a component :math:`v`, scalar or indexed by a dim
 :math:`d`, has a factor reading no component whose law is an inverse gamma
 :math:`\\mathrm{IG}(a, b)` (alone, under ``iid_over_dim`` or under
@@ -34,8 +34,8 @@ A scalar :math:`v` shared by every group gives one Student-t and one
 inverse gamma, with :math:`n = \\sum_s n_s` and :math:`q = \\sum_s q_s`; a
 label of :math:`d` that no group has keeps its prior.
 
-R2: an inverse Wishart on a covariance block
----------------------------------------------
+The block rule: an inverse Wishart on a covariance block
+--------------------------------------------------------
 It applies when a :math:`p \\times p` component :math:`S` has a factor
 reading no component whose law is
 :math:`\\mathcal W^{-1}_p(\\nu, \\Psi)`, and exactly one part reads it: a
@@ -57,7 +57,7 @@ W^{-1}_{p-q}(\\nu, \\Psi_{RR \\cdot O})` and :math:`S_{OO}^{-1} S_{OR} \\mid
 S_{RR \\cdot O} \\sim \\mathcal{MN}(\\Psi_{OO}^{-1}\\Psi_{OR},\\
 \\Psi_{OO}^{-1},\\ S_{RR \\cdot O})`, independent of :math:`S_{OO}`.
 
-R2 does not cover groups that map to different rows of :math:`S`, as when
+The block rule does not cover groups that map to different rows of :math:`S`, as when
 sites' records are ragged, nor a term added to the submatrix; joint
 sampling does.
 
@@ -73,7 +73,8 @@ Functions and classes
     <sipnet_calibration.probability.posterior.Posterior.full_conditional>`
     reads.
 :class:`InverseWishartGivenRows`
-    R2's full conditional when the groups observe some rows of the matrix.
+    The block rule's full conditional: the posterior on the rows the groups
+    observe, the prior on the rest given them.
 
 Usage
 -----
@@ -89,7 +90,7 @@ Usage
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 import jax
@@ -99,9 +100,10 @@ import numpy as np
 import xarray as xr
 from tensorflow_probability.substrates import jax as tfp
 
-from sipnet_calibration.probability._validation import as_names, truncated
+from sipnet_calibration.probability._validation import as_names, check_names_are_unique, truncated
 from sipnet_calibration.probability.covariance import BlockDiagonalSpec, ScaledSpec, SubmatrixSpec
 from sipnet_calibration.probability.families import InverseWishart
+from sipnet_calibration.probability.laws import check_seed_is_given
 from sipnet_calibration.probability.model import (
     FactoredDistribution,
     _covariance_scope,
@@ -122,6 +124,7 @@ __all__ = [
     "INVERSE_WISHART",
     "ConjugateRule",
     "InverseWishartGivenRows",
+    "check_component_name_is_a_string",
     "conjugate_rule",
     "marginalize",
 ]
@@ -130,18 +133,19 @@ tfd = tfp.distributions
 
 Array = jax.Array
 
-#: R1's name: an inverse gamma on a covariance scale.
+#: The scale rule's name: an inverse gamma on a covariance scale.
 INVERSE_GAMMA_SCALE = "inverse gamma scale"
 
-#: R2's name: an inverse Wishart on a covariance block.
+#: The block rule's name: an inverse Wishart on a covariance block.
 INVERSE_WISHART = "inverse Wishart"
 
 
 def marginalize(model: FactoredDistribution, component_names: Sequence[str]) -> FactoredDistribution:
-    """*model* with *component_names* integrated out, each by R1 or R2 in
-    turn: its factor dropped, and the Gaussian factor reading it replaced by
-    the marginal, a Student-t, in its place in declaration order. The
-    result is bound at *model*'s labels and inputs.
+    """*model* with *component_names* integrated out, each by its conjugate
+    rule in turn: its factor dropped, and the Gaussian factor reading it
+    replaced by the marginal, a Student-t or a matrix Student-t, in its place
+    in declaration order. The result is bound at *model*'s labels and
+    inputs.
 
     Raises
     ------
@@ -150,34 +154,38 @@ def marginalize(model: FactoredDistribution, component_names: Sequence[str]) -> 
     KeyError
         If a name is not a component of the model it is integrated out of.
     ValueError
-        If *component_names* is empty, or no rule applies to a name; the
-        message names the condition that failed.
+        If *component_names* is empty or names a component twice, or no rule
+        applies to a name; the message names the condition that failed.
     """
     names = as_names(component_names, message_name="component_names")
     check_names_are_given(names)
+    check_names_are_unique(names, message_name="component_names")
     for name in names:
         model = _marginal_model(model, conjugate_rule(model, name))
     return model
 
 
 def conjugate_rule(model: FactoredDistribution, name: str) -> ConjugateRule:
-    """The rule that applies to the component *name* of *model*: R1 or R2,
-    matched on the declarations.
+    """The rule that applies to the component *name* of *model*, the scale
+    rule or the block rule, matched on the declarations.
 
     Raises
     ------
+    TypeError
+        If *name* is not a string.
     KeyError
         If *name* is not a component.
     ValueError
         If no rule applies, naming the condition that failed.
     """
     spec = model.spec
+    check_component_name_is_a_string(name)
     check_name_is_a_component(name, spec)
     prior = spec._part_of(name)
     check_component_has_a_factor_of_its_own(name, prior)
-    check_prior_reads_no_component(name, prior)
     law = model._factors[prior.name].law
     check_law_has_a_conjugate_rule(name, prior, law, model._layout.index_shape(name))
+    check_prior_reads_no_component(name, prior, spec.input_names)
     if type(law) is InverseWishart:
         return _matrix_match(model, name, prior, law)
     return _scale_match(model, name, prior, law)
@@ -185,7 +193,7 @@ def conjugate_rule(model: FactoredDistribution, name: str) -> ConjugateRule:
 
 @dataclass(frozen=True, eq=False, kw_only=True)
 class ConjugateRule:
-    """A rule matched to a component (the module docstring's R1 or R2): its
+    """A rule matched to a component (the module docstring's two): its
     factor, the Gaussian factor reading it, the marginal law that factor
     becomes, and the full conditional's parameters from residuals. Made by
     :func:`conjugate_rule`. Compared and hashed by identity.
@@ -201,11 +209,12 @@ class ConjugateRule:
     marginal_law : StudentTSpec or MatrixStudentTSpec
         The reader's law with the component integrated out.
     prior_shape, prior_scale : numpy.ndarray or None
-        R1's :math:`a` and :math:`b` over the component's block.
+        The scale rule's :math:`a` and :math:`b` over the component's block.
     prior_law : InverseWishart or None
-        R2's prior.
+        The block rule's prior.
     label_map_name : str or None
-        R2's label map, from the reader's entries to the matrix's rows.
+        The block rule's label map, from the reader's entries to the
+        matrix's rows.
     """
 
     rule: str
@@ -240,8 +249,8 @@ class ConjugateRule:
     ) -> dict[str, Array]:
         """The full conditional's parameters per sample, ``{name: (J,
         ...)}``, from the residuals ``(J, n)`` and what the covariance reads,
-        each ``(J, *block)``: R1's shape and scale per label, :math:`a +
-        n_s/2` and :math:`b + q_s/2`; R2's degrees of freedom :math:`\\nu' +
+        each ``(J, *block)``: the scale rule's shape and scale per label,
+        :math:`a + n_s/2` and :math:`b + q_s/2`; the block rule's degrees of freedom :math:`\\nu' +
         n` and scale :math:`\\Psi_{OO} + E`."""
         if self.rule == INVERSE_WISHART:
             grouped = residual[:, structure.entries]
@@ -275,16 +284,15 @@ class ConjugateRule:
 
     def conditional_law(self, model: FactoredDistribution, structure: Any, parameters: Mapping[str, Array]) -> Any:
         """The full conditional at one sample's *parameters*: an inverse
-        gamma per label (under ``tfd.Independent`` when indexed); an
-        :class:`~sipnet_calibration.probability.families.InverseWishart`
-        when the groups observe every row of the matrix, else an
-        :class:`InverseWishartGivenRows`."""
+        gamma per label (under ``tfd.Independent`` when indexed), or an
+        :class:`InverseWishartGivenRows`, which is the inverse Wishart over
+        the whole matrix when the groups observe every row. Neither checks
+        its parameters, which are ``NaN`` at a sample whose mean was not
+        computed."""
         if self.rule == INVERSE_GAMMA_SCALE:
             law = tfd.InverseGamma(parameters["shape"], parameters["scale"])
             return law if not self.component.indexed_by else tfd.Independent(law, 1)
-        rows, rest = self._rows_and_rest(model, structure)
-        if not len(rest):
-            return InverseWishart(parameters["degrees_of_freedom"], parameters["scale"])
+        rows, _ = self._rows_and_rest(model, structure)
         return InverseWishartGivenRows(
             degrees_of_freedom=self.prior_law.degrees_of_freedom, scale=self.prior_law.scale, rows=rows,
             observed_degrees_of_freedom=parameters["degrees_of_freedom"], observed_scale=parameters["scale"],
@@ -305,7 +313,7 @@ class ConjugateRule:
         )
 
     def _rows_and_rest(self, model: FactoredDistribution, structure: Any) -> tuple[np.ndarray, np.ndarray]:
-        """R2's rows the groups observe, :math:`O`, ascending, and the
+        """The block rule's rows the groups observe, :math:`O`, ascending, and the
         others."""
         p = self.prior_law.scale.shape[-1]
         positions = np.asarray(model._factors[self.reader.name].fixed_reads[self.label_map_name])
@@ -325,8 +333,9 @@ class InverseWishartGivenRows:
             + \\log \\mathcal W^{-1}_p(S; \\nu, \\Psi)
             - \\log \\mathcal W^{-1}_q(S_{OO}; \\nu - (p - q), \\Psi_{OO}),
 
-    against Lebesgue measure on the lower triangle: R2's full conditional
-    when the groups observe :math:`q < p` rows. Compared and hashed by
+    against Lebesgue measure on the lower triangle: the block rule's full
+    conditional, which is :math:`\\mathcal W^{-1}_p(\\nu_O, \\Psi_O)` itself
+    when :math:`O` is every row. Compared and hashed by
     identity.
 
     Attributes
@@ -376,7 +385,7 @@ class InverseWishartGivenRows:
         TypeError
             If *seed* is not given.
         """
-        check_seed_is_given(seed)
+        check_seed_is_given(seed, what="InverseWishartGivenRows")
         sample_shape = tuple(sample_shape) if isinstance(sample_shape, (tuple, list)) else (int(sample_shape),)
         observed_key, rest_key = jax.random.split(seed)
         observed = sample_inverse_wishart(observed_key, self.observed_degrees_of_freedom, self.observed_scale, sample_shape)
@@ -388,7 +397,7 @@ class InverseWishartGivenRows:
 
 
 def _scale_match(model: FactoredDistribution, name: str, prior: FactorSpec, law: Any) -> ConjugateRule:
-    """R1 matched to *name*, or the condition that failed."""
+    """The scale rule matched to *name*, or the condition that failed."""
     (component,) = prior.event
     check_scale_is_indexed_by_one_dim_at_most(component)
     reader = _the_gaussian_reader(model, name)
@@ -418,7 +427,7 @@ def _scale_match(model: FactoredDistribution, name: str, prior: FactorSpec, law:
 
 
 def _matrix_match(model: FactoredDistribution, name: str, prior: FactorSpec, law: InverseWishart) -> ConjugateRule:
-    """R2 matched to *name*, or the condition that failed."""
+    """The block rule matched to *name*, or the condition that failed."""
     (component,) = prior.event
     reader = _the_gaussian_reader(model, name)
     covariance = reader.law.covariance
@@ -550,13 +559,20 @@ def check_component_has_a_factor_of_its_own(name: str, part: Any) -> None:
         )
 
 
-def check_prior_reads_no_component(name: str, prior: FactorSpec) -> None:
-    """A conjugate component's prior reads no component, so its parameters
-    are fixed numbers."""
-    if prior.given:
+def check_component_name_is_a_string(name: Any) -> None:
+    """A component is named by a string."""
+    if not isinstance(name, str):
+        raise TypeError(f"a component name is a {type(name).__name__}; give one name, such as 'v'.")
+
+
+def check_prior_reads_no_component(name: str, prior: FactorSpec, input_names: Sequence[str]) -> None:
+    """A conjugate component's prior reads no component, only constants and
+    inputs, so its parameters are fixed numbers."""
+    read = [g for g in prior.given if g not in input_names]
+    if read:
         raise ValueError(
-            f"no conjugate rule applies to {name!r}: its law reads {truncated(list(prior.given))}, and a rule needs "
-            "a prior of fixed numbers; give its shape and scale as numbers or constants."
+            f"no conjugate rule applies to {name!r}: its prior reads {truncated(read)}, and a rule needs a prior "
+            "of fixed numbers; give its parameters as numbers, constants or inputs."
         )
 
 
@@ -576,7 +592,7 @@ def check_scale_is_indexed_by_one_dim_at_most(component: ArraySpec) -> None:
     if len(component.indexed_by) > 1 or component.element_axes:
         raise ValueError(
             f"no conjugate rule applies to {component.name!r}: it is indexed by {component.indexed_by} with element "
-            f"axes {list(component.element_axes)}, and R1 integrates out a scalar scale or one per label of one dim."
+            f"axes {list(component.element_axes)}, and the scale rule integrates out a scalar scale or one per label of one dim."
         )
 
 
@@ -607,28 +623,22 @@ def check_component_is_not_the_mean(name: str, reader: FactorSpec) -> None:
 
 
 def check_covariance_is_scaled_by(reader: FactorSpec, name: str, scaled: Any) -> None:
-    """R1's Gaussian covariance is ``name`` times a base, alone or per
+    """The scale rule's Gaussian covariance is ``name`` times a base, alone or per
     group."""
     if not (isinstance(scaled, ScaledSpec) and scaled.scale == name):
         raise ValueError(
             f"no conjugate rule applies to {name!r}: the covariance of {reader.name!r} is "
-            f"{reader.law.covariance!r}, and R1 needs ScaledSpec(base, scale={name!r}), alone or as "
+            f"{reader.law.covariance!r}, and the scale rule needs ScaledSpec(base, scale={name!r}), alone or as "
             f"BlockDiagonalSpec(ScaledSpec(base, scale={name!r}), by=...)."
         )
 
 
 def check_covariance_is_a_submatrix_per_group(reader: FactorSpec, name: str, covariance: Any) -> None:
-    """R2's Gaussian covariance is the bare submatrix of ``name`` per group,
+    """The block rule's Gaussian covariance is the bare submatrix of ``name`` per group,
     nothing added."""
     block = covariance.block if isinstance(covariance, BlockDiagonalSpec) else None
     if not (isinstance(block, SubmatrixSpec) and block.component == name):
         raise ValueError(
-            f"no conjugate rule applies to {name!r}: the covariance of {reader.name!r} is {covariance!r}, and R2 "
+            f"no conjugate rule applies to {name!r}: the covariance of {reader.name!r} is {covariance!r}, and the block rule "
             f"needs BlockDiagonalSpec(SubmatrixSpec({name!r}, label_map=...), by=...) with nothing added."
         )
-
-
-def check_seed_is_given(seed: Any) -> None:
-    """A draw is made from a key."""
-    if seed is None:
-        raise TypeError("an InverseWishartGivenRows draws from a key; give seed=jax.random.key(...).")

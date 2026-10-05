@@ -26,9 +26,9 @@ and proofs are the design's §12; the column below is a summary.
 | P4 | `refactor/probability-p4-adapter-prep` | merged #80 | P2 | F8; the SIPNET map on dicts and `ArraySpec`s; `ObservationSource.standard_deviation`; the observation dims and constants; `observation.model` |
 | P5 | `refactor/probability-p5-simulator` | merged #81 | P3, P4 | The `Simulator` seam; `SIPNETRuns`, with today's `ForwardModel` delegating to it; `SIPNETSimulator`; F6, F7 |
 | P6 | `refactor/probability-p6-gaussian` | merged #83 | P5 | Covariance specs, `GaussianSpec`, `noise_factor`, `gaussian_likelihood`, through the `probability/_linalg.py` shim over today's pyEKI |
-| P7 | `refactor/probability-p7-inference` | open #84 | P6 | The `inference` package on today's pyEKI |
+| P7 | `refactor/probability-p7-inference` | merged #84 | P6 | The `inference` package on today's pyEKI |
 | #69 | `feat/single-site-mcmc-vs-eki` | not this refactor's | P7 | PR #69 migrates in its own session |
-| P8 | `refactor/probability-p8-conjugacy` | waiting | P6 | `marginalize`, `full_conditional`, `theta_with` |
+| P8 | `refactor/probability-p8-conjugacy` | open #PR | P6 | `marginalize`, `full_conditional`, `theta_with` |
 | P9 | `refactor/probability-p9-foreign-laws` | waiting | P3 | numpyro and EnsKit `Gaussian` adapters; GPJax as an optional test group |
 | R1 | `refactor/probability-r1-removal` | waiting | #69 migrated | Delete `parameters`, today's `ForwardModel`, the Flat API, the old `describe_calibration`; move the vocabulary into CLAUDE.md's glossary |
 | E1–E3 | `refactor/probability-e<k>-enskit` | waiting | EnsKit PRs 1, 2 and 4, 7 | The pyEKI-to-EnsKit rename, EnsKit's `linalg` and `Gaussian`, EnsKit's EKI driver |
@@ -116,6 +116,26 @@ recommendations included, and reports any recommendation it finds doubtful.
   Recommended: keep the tuple, documented on `initial_points`; the
   alternative is to drop the records, or to say on `PosteriorEvaluation`
   that a stitched one holds tuples.
+- **Another posterior's evaluation (P8, found in review).** A
+  `FullConditional` reads its residuals from a `PosteriorEvaluation`, which
+  does not record its posterior. One from another posterior with the same
+  `D` is accepted, and mixes that posterior's means with this one's
+  observations; `log_density_given` (P5) has the same gap. Recommended:
+  leave it, documented; the alternative is a `posterior` field on
+  `PosteriorEvaluation`, checked by both.
+- **Names that now cover a Student-t (P8, found in review).**
+  `check_gaussian_mean_matches_its_event`,
+  `check_gaussian_event_is_one_vector_on_the_reals`,
+  `check_gaussian_mean_has_its_events_shape` and
+  `check_gaussian_covariance_is_positive_definite` check Student-t factors
+  too; their messages and docstrings say so, their names do not.
+  Recommended: rename them `check_centered_*` in a module cleanup, not in a
+  density PR.
+- **`StudentTSpec(shape=, scale=)` (P8, found in review).** The glossary's
+  *shape* is one value's array shape; these are the inverse gamma's shape
+  and scale parameters, named as `inverse_gamma(shape=, scale=)` names
+  them. Recommended: keep them matching the family; the alternative is
+  `concentration` in both, which renames P3's family.
 
 ## Notes for implementers
 
@@ -881,3 +901,116 @@ in P7"):
 - E3 replaces `initial_ensemble`'s array with EnsKit's `Ensemble`; nothing
   else in `eki.py` names pyEKI.
 - P8 (conjugacy) is next in table order; it needs P6 only.
+
+### 2026-10-05: P8, conjugacy
+
+**Done.** The design's §7.13 rules, which the code calls the **scale
+rule** (R1, an inverse gamma on a covariance scale) and the **block rule**
+(R2, an inverse Wishart on a covariance block), since R1 is also the
+removal PR's name:
+
+- `probability/scale_mixtures.py`: `StudentTSpec` and `MatrixStudentTSpec`,
+  law forms a factor may have, as `GaussianSpec` is, evaluated to
+  `StudentTLaw` and `MatrixStudentTLaw`; `inverse_wishart_log_prob` and
+  `sample_inverse_wishart`, unchecked and traceable.
+- `probability/conjugacy.py`: `conjugate_rule(model, name) ->
+  ConjugateRule` (the matched factors, the marginal law, and the full
+  conditional's parameters from residuals), `marginalize`,
+  `InverseWishartGivenRows`, and the rule names `INVERSE_GAMMA_SCALE` and
+  `INVERSE_WISHART`.
+- `FactoredDistribution.marginalize(names)`;
+  `Posterior.full_conditional(name) -> FullConditional` (`law(evaluation,
+  sample)`, `sample(key, evaluation)`), in `posterior`;
+  `Posterior.theta_with(theta, values)`.
+- `parts.CENTERED_LAW_SPECS`: `GaussianSpec` and the two Student-t forms,
+  which binding, the event check, the mean check and the ancestral draws
+  treat alike.
+
+Tests: 3019 passed and 95 skipped at P7's merge; 3072 and 95 after.
+`tests/test_probability_conjugacy.py`:
+- the scale rule's marginal against quadrature over the scale (a scale
+  per site, one shared by the sites, one over the whole covariance,
+  per-label priors), and its draws' moments;
+- its full conditional against the joint density in the scale, its closed
+  form (summed over groups for one scale; placed by label whatever the
+  coords' order; a site observing nothing keeps its prior), and a
+  60,000-step random-walk Metropolis chain;
+- the block rule's marginal against Monte Carlo over the prior, with every
+  row observed and with some, and its draws' covariance;
+- its full conditional against the joint density in the matrix, and its
+  closed-form moments, the unobserved rows drawn from the prior given the
+  observed;
+- a Gibbs step that draws from an evaluation with no new simulator run,
+  `NaN` where the mean was not computed; `theta_with`; the refusals.
+
+The shared models are bound once per module (`functools.cache`): binding
+checks each factor with thousands of draws, and the file took five minutes
+without it.
+
+**Review.** One Deep round, four reviewers: numerics, edge cases, mutation
+testing, docs. The numerics reviewer found no wrong density: every closed
+form and sampler agreed with SciPy, quadrature or Monte Carlo, the
+completion of the matrix from the prior included. Fixed:
+
+- the block rule's full conditional raised at a sample whose mean was not
+  computed, when the groups observe every row, building a checked
+  `InverseWishart` from `NaN`; it is now always an
+  `InverseWishartGivenRows`, which is the inverse Wishart itself when
+  every row is observed, `NaN` there;
+- `inverse_wishart_log_prob` and the matrix Student-t took `slogdet` and
+  dropped its sign, giving a finite value for an indefinite scale; they now
+  factor it, `NaN` there;
+- `theta_with` let JAX raise for a batch that does not broadcast to
+  theta's, and took a boolean;
+- `marginalize` took a name twice; `full_conditional` raised `KeyError` for
+  a name that is not a string;
+- the prior's reads were checked before its law, so a Gaussian factor was
+  refused with advice about a shape and scale; a prior reading only inputs
+  is now accepted, its parameters fixed;
+- `StudentTSpec` refused a 0-d array and reached pandas' error for repeated
+  labels;
+- docs: an unused pyEKI shim import, the dependency diagram, stale
+  "Gaussian" text, "R1" colliding with the removal PR, `shared_rows`
+  public, a third copy of `check_seed_is_given` (now one, in `laws`).
+
+Mutation testing made 17 mutants, of which 4 survived; tests now kill
+three (the shape summed over groups for one scale, each group's place by
+label, a scale that is also the mean). The fourth, dropping the sort of
+the observed rows, is equivalent: each group's entries are already in row
+order. Three findings are questions above.
+
+**Deviations from the design**, each recorded in `design.html` ("As built
+in P8"):
+
+- the marginal factor's law, which the design left unnamed, is a new law
+  form holding the prior's numbers as labeled arrays, so a marginal model
+  selected at fewer labels is the marginal of the selection;
+- `FullConditional` is in `posterior` (§6's module list) and holds
+  `posterior`; the rules are a new `conjugacy` module, with a public
+  `ConjugateRule`;
+- the scale rule recognizes its prior from the bound law; a scalar scale
+  under a block-diagonal grouping gives one Student-t over the event;
+- the block rule's full conditional is checked against the joint density
+  and its moments rather than a chain over a matrix.
+
+**Choices the design left open:**
+
+- names are integrated out in order, each from the model the last left;
+  the marginal factor takes the reader's place in declaration order, and
+  its provenance joins the reader's and the prior's;
+- a prior reading only inputs counts as "reading no component";
+- a Student-t's covariance is built per evaluation, not held at
+  `condition_on` as a Gaussian's is;
+- `theta_with` checks a value has a theta only when it is concrete, so it
+  stays traceable.
+
+**What the next sessions must know.**
+
+- A Gibbs sampler alternates `posterior.evaluate(theta)` (one simulator
+  batch), `full_conditional(name).sample(key, evaluation)` and
+  `theta_with(theta, {name: draw})`. Rows where the evaluation is invalid
+  draw `NaN`, which `theta_with` refuses: keep the valid rows.
+- `CENTERED_LAW_SPECS` is where a new law centered on a mean joins the
+  binding (P9's EnsKit `Gaussian` adapter may want it).
+- P9 (foreign laws) is next in table order; it needs P3 only. #69's
+  migration and R1 follow.

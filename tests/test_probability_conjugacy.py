@@ -2,15 +2,18 @@
 of a model, the Student-t laws that leaves, the full conditionals, and
 ``Posterior.theta_with``.
 
-R1, an inverse gamma on a covariance scale, is checked against quadrature
-over the scale, its full conditional against the joint density and a long
-random-walk Metropolis chain. R2, an inverse Wishart on a covariance block,
+The scale rule, an inverse gamma on a covariance scale, is checked against
+quadrature over the scale, its full conditional against the joint density
+and a long random-walk Metropolis chain. The block rule, an inverse Wishart
+on a covariance block,
 is checked against Monte Carlo over the prior, including a block of which
 the groups observe only some rows, and its full conditional against the
 joint density and its closed-form moments.
 """
 
 from __future__ import annotations
+
+import functools
 
 import jax
 import jax.numpy as jnp
@@ -38,7 +41,6 @@ from sipnet_calibration.probability import (
     FactorSpec,
     FullConditional,
     GaussianSpec,
-    InverseWishart,
     InverseWishartGivenRows,
     MatrixStudentTLaw,
     MatrixStudentTSpec,
@@ -65,7 +67,7 @@ tfd = tfp.distributions
 KEY = jax.random.key(8)
 RNG = np.random.default_rng(20261005)
 
-# ── R1's model: three sites observing ragged times, a fourth observing none ──
+# ── the scale rule's model: three sites observing ragged times, a fourth none
 
 LABELS = pd.MultiIndex.from_tuples(
     [(3, 0), (3, 1), (5, 0), (5, 1), (5, 2), (9, 0), (9, 1), (9, 2)], names=["site", "t"]
@@ -126,11 +128,24 @@ WHOLE = ScaledSpec(DenseSpec(correlated), scale="v")
 BY_SITE = BlockDiagonalSpec(ScaledSpec(DenseSpec(correlated), scale="v"), by="site")
 
 
-def _scale_model(covariance=BY_SITE, *, per_site=True, mean=None, scale=None, extra=(), constants=CONSTANTS):
+def _scale_model(covariance=BY_SITE, *, per_site=True, mean=None, scale=None, extra=(), constants=CONSTANTS, sites=SITES):
     spec = joint(_y(covariance, constants=constants), _mean() if mean is None else mean, _mu(),
                  _scale(per_site) if scale is None else scale, *extra)
-    return spec.bind(coords={"obs": LABELS, "site": SITES})
+    return spec.bind(coords={"obs": LABELS, "site": sites})
 
+
+
+@functools.cache
+def _per_site_model():
+    """``_scale_model()``, bound once: binding checks each factor with
+    thousands of draws, and the tests only read it."""
+    return _scale_model()
+
+
+@functools.cache
+def _one_scale_model():
+    """``_scale_model(per_site=False)``, bound once."""
+    return _scale_model(per_site=False)
 
 def _log_marginal_by_quadrature(y, m, covariance, shape=SHAPE, scale=SCALE) -> float:
     """log of the integral over v of IG(v; a, b) N(y; m, v R), in log v."""
@@ -149,11 +164,11 @@ def _m(mu) -> np.ndarray:
     return mu + OFFSETS
 
 
-# ── R1: the marginal ─────────────────────────────────────────────────────────
+# ── the scale rule: the marginal ─────────────────────────────────────────────
 
 
 def test_a_scale_per_site_integrates_to_a_student_t_per_site():
-    marginal = _scale_model().marginalize(["v"])
+    marginal = _per_site_model().marginalize(["v"])
     law = marginal.law("y", given={"m": jnp.asarray(_m(0.3))})
     assert isinstance(law, StudentTLaw) and len(law.groups) == 3
     expected = sum(
@@ -178,7 +193,7 @@ def test_a_scale_of_the_whole_covariance_integrates_to_one_student_t():
 
 
 def test_the_marginal_models_density_is_the_prior_times_the_marginal():
-    marginal = _scale_model().marginalize(["v"])
+    marginal = _per_site_model().marginalize(["v"])
     expected = st.norm.logpdf(0.3) + sum(
         _log_marginal_by_quadrature(Y[p], _m(0.3)[p], _base(p)) for p in map(_site_positions, (3, 5, 9))
     )
@@ -208,14 +223,14 @@ def test_draws_of_the_student_t_have_its_mean_and_covariance():
 
 
 def test_draws_of_a_student_t_per_site_are_uncorrelated_across_sites():
-    law = _scale_model().marginalize(["v"]).law("y", given={"m": jnp.zeros(N)})
+    law = _per_site_model().marginalize(["v"]).law("y", given={"m": jnp.zeros(N)})
     draws = np.asarray(law.sample(200_000, seed=KEY))
     expected = SCALE / (SHAPE - 1.0) * scipy.linalg.block_diag(*(_base(_site_positions(s)) for s in (3, 5, 9)))
     np.testing.assert_allclose(np.cov(draws.T), expected, atol=0.05)
 
 
 def test_the_marginal_model_drops_the_scale_and_keeps_its_place_in_order():
-    model = _scale_model()
+    model = _per_site_model()
     marginal = model.marginalize(["v"])
     assert marginal.spec.component_names == ("y", "m", "mu")
     table = marginal.describe()
@@ -227,8 +242,8 @@ def test_the_marginal_model_drops_the_scale_and_keeps_its_place_in_order():
 
 
 def test_a_marginal_selected_at_fewer_sites_is_the_selection_marginalized():
-    marginal = _scale_model().marginalize(["v"]).select(site=[3, 9])
-    selected = _scale_model().select(site=[3, 9]).marginalize(["v"])
+    marginal = _per_site_model().marginalize(["v"]).select(site=[3, 9])
+    selected = _per_site_model().select(site=[3, 9]).marginalize(["v"])
     given = {"m": jnp.asarray(_m(0.2)[np.r_[_site_positions(3), _site_positions(9)]])}
     values = Y[np.r_[_site_positions(3), _site_positions(9)]]
     np.testing.assert_allclose(
@@ -238,7 +253,7 @@ def test_a_marginal_selected_at_fewer_sites_is_the_selection_marginalized():
 
 
 def test_conditioning_the_marginal_gives_a_likelihood_that_is_not_gaussian():
-    posterior = condition_on(_scale_model().marginalize(["v"]), {"y": Y})
+    posterior = condition_on(_per_site_model().marginalize(["v"]), {"y": Y})
     assert posterior.parameter_names == ("mu",)
     theta = jnp.asarray([[0.3]])
     law = posterior.model.law("y", given={"m": jnp.asarray(_m(0.3))})
@@ -248,7 +263,7 @@ def test_conditioning_the_marginal_gives_a_likelihood_that_is_not_gaussian():
 
 
 def test_a_student_t_factor_can_be_a_parameter_drawn_and_scored():
-    marginal = _scale_model().marginalize(["v"])
+    marginal = _per_site_model().marginalize(["v"])
     draws = marginal.sample(KEY, 5)
     assert draws["y"].shape == (5, N) and np.all(np.isfinite(np.asarray(draws["y"])))
     posterior = condition_on(marginal, {})
@@ -256,7 +271,7 @@ def test_a_student_t_factor_can_be_a_parameter_drawn_and_scored():
     assert np.all(np.isfinite(np.asarray(posterior.log_prior(theta))))
 
 
-# ── R1: what it refuses ──────────────────────────────────────────────────────
+# ── the scale rule: what it refuses ──────────────────────────────────────────
 
 
 def test_a_scale_whose_law_is_not_an_inverse_gamma_has_no_rule():
@@ -287,12 +302,36 @@ def test_a_scale_read_by_a_law_that_is_not_gaussian_has_no_rule():
 
 def test_a_scale_read_other_than_as_a_scale_has_no_rule():
     model = _scale_model(DiagonalSpec("v"), per_site=False, constants={})
-    with pytest.raises(ValueError, match="R1 needs ScaledSpec"):
+    with pytest.raises(ValueError, match="the scale rule needs ScaledSpec"):
+        model.marginalize(["v"])
+
+
+def test_a_prior_reading_only_an_input_is_fixed_numbers():
+    prior = FactorSpec(ArraySpec("v", units="1", support=POSITIVE), law=lambda b: inverse_gamma(shape=SHAPE, scale=b))
+    spec = joint(_y(BY_SITE), _mean(), _mu(), prior, inputs=[ArraySpec("b", units="1", support=POSITIVE)])
+    model = spec.bind(coords={"obs": LABELS, "site": SITES}, inputs={"b": SCALE})
+    reference = _one_scale_model().marginalize(["v"]).law("y", given={"m": jnp.zeros(N)})
+    law = model.marginalize(["v"]).law("y", given={"m": jnp.zeros(N)})
+    np.testing.assert_allclose(float(law.log_prob(Y)), float(reference.log_prob(Y)), rtol=1e-12)
+
+
+def test_a_component_whose_law_is_no_prior_of_a_rule_is_refused_by_its_law():
+    with pytest.raises(ValueError, match="neither an inverse gamma"):
+        _per_site_model().marginalize(["y"])
+
+
+def test_a_scale_that_is_also_the_mean_has_no_rule():
+    y = FactorSpec(ArraySpec("y", units="1", support=REAL),
+                   law=GaussianSpec(mean="v", covariance=ScaledSpec(DiagonalSpec(lambda: jnp.ones(1)), scale="v")))
+    model = joint(y, _scale(False)).bind(coords={})
+    with pytest.raises(ValueError, match="centered on it"):
         model.marginalize(["v"])
 
 
 def test_marginalizing_nothing_a_computed_component_or_an_unknown_one_is_refused():
-    model = _scale_model()
+    model = _per_site_model()
+    with pytest.raises(ValueError, match="more than once"):
+        model.marginalize(["v", "v"])
     with pytest.raises(ValueError, match="is empty"):
         model.marginalize([])
     with pytest.raises(ValueError, match="not by a factor of its own"):
@@ -303,7 +342,7 @@ def test_marginalizing_nothing_a_computed_component_or_an_unknown_one_is_refused
         model.marginalize("v")
 
 
-# ── R1: the full conditional ─────────────────────────────────────────────────
+# ── the scale rule: the full conditional ─────────────────────────────────────
 
 
 def _evaluation(posterior, n=4):
@@ -312,7 +351,7 @@ def _evaluation(posterior, n=4):
 
 
 def test_the_scales_full_conditional_is_the_joint_density_in_the_scale():
-    model = _scale_model()
+    model = _per_site_model()
     posterior = condition_on(model, {"y": Y})
     conditional = posterior.full_conditional("v")
     assert isinstance(conditional, FullConditional) and conditional.rule == INVERSE_GAMMA_SCALE
@@ -327,7 +366,7 @@ def test_the_scales_full_conditional_is_the_joint_density_in_the_scale():
 
 
 def test_the_scales_full_conditional_has_the_closed_form_parameters():
-    posterior = condition_on(_scale_model(), {"y": Y})
+    posterior = condition_on(_per_site_model(), {"y": Y})
     evaluation = _evaluation(posterior, n=2)
     mu = float(posterior.natural_values(evaluation.theta)["mu"][1])
     law = posterior.full_conditional("v").law(evaluation, 1)
@@ -342,8 +381,41 @@ def test_the_scales_full_conditional_has_the_closed_form_parameters():
     np.testing.assert_allclose(np.asarray(law.distribution.scale), scales, rtol=1e-10)
 
 
+def _quadratic_forms(mu) -> dict[int, tuple[int, float]]:
+    """Each observing site's entries and residual quadratic form at ``mu``."""
+    residual = Y - _m(mu)
+    out = {}
+    for site in (3, 5, 9):
+        p = _site_positions(site)
+        out[site] = (len(p), float(residual[p] @ np.linalg.solve(_base(p), residual[p])))
+    return out
+
+
+def test_one_scale_shared_by_the_sites_sums_their_entries_and_forms():
+    posterior = condition_on(_one_scale_model(), {"y": Y})
+    evaluation = _evaluation(posterior, n=2)
+    mu = float(posterior.natural_values(evaluation.theta)["mu"][0])
+    law = posterior.full_conditional("v").law(evaluation, 0)
+    forms = _quadratic_forms(mu).values()
+    np.testing.assert_allclose(float(law.concentration), SHAPE + sum(n for n, _ in forms) / 2.0, rtol=1e-12)
+    np.testing.assert_allclose(float(law.scale), SCALE + sum(q for _, q in forms) / 2.0, rtol=1e-10)
+
+
+def test_each_sites_entries_and_form_go_to_its_label_whatever_the_coords_order():
+    sites = [11, 9, 3, 5]
+    posterior = condition_on(_scale_model(sites=sites), {"y": Y})
+    evaluation = _evaluation(posterior, n=1)
+    mu = float(posterior.natural_values(evaluation.theta)["mu"][0])
+    law = posterior.full_conditional("v").law(evaluation, 0)
+    forms = _quadratic_forms(mu)
+    expected_shape = [SHAPE + forms[s][0] / 2.0 if s in forms else SHAPE for s in sites]
+    expected_scale = [SCALE + forms[s][1] / 2.0 if s in forms else SCALE for s in sites]
+    np.testing.assert_allclose(np.asarray(law.distribution.concentration), expected_shape, rtol=1e-12)
+    np.testing.assert_allclose(np.asarray(law.distribution.scale), expected_scale, rtol=1e-10)
+
+
 def test_a_site_observing_nothing_keeps_its_prior():
-    posterior = condition_on(_scale_model(), {"y": Y})
+    posterior = condition_on(_per_site_model(), {"y": Y})
     law = posterior.full_conditional("v").law(_evaluation(posterior), 0)
     assert float(law.distribution.concentration[3]) == SHAPE and float(law.distribution.scale[3]) == SCALE
 
@@ -376,11 +448,11 @@ def test_the_scales_full_conditional_matches_a_long_metropolis_chain():
 
 
 def test_the_full_conditional_draws_one_value_per_sample():
-    posterior = condition_on(_scale_model(), {"y": Y})
+    posterior = condition_on(_per_site_model(), {"y": Y})
     evaluation = _evaluation(posterior, n=6)
     draws = posterior.full_conditional("v").sample(KEY, evaluation)
     assert draws.shape == (6, len(SITES)) and np.all(np.asarray(draws) > 0)
-    scalar = condition_on(_scale_model(per_site=False), {"y": Y})
+    scalar = condition_on(_one_scale_model(), {"y": Y})
     assert scalar.full_conditional("v").sample(KEY, _evaluation(scalar, n=6)).shape == (6,)
 
 
@@ -413,8 +485,8 @@ def test_a_full_conditional_reads_a_simulator_output_from_the_evaluation_and_is_
     assert list(np.asarray(evaluation.simulator_valid)) == [True, False]
     draws = np.asarray(posterior.full_conditional("v").sample(KEY, evaluation))
     assert np.all(np.isfinite(draws[0])) and np.all(np.isnan(draws[1, :3]))
-    reference = condition_on(_scale_model(), {"y": Y}).full_conditional("v")
-    reference_evaluation = condition_on(_scale_model(), {"y": Y}).evaluate(theta[:1])
+    reference = condition_on(_per_site_model(), {"y": Y}).full_conditional("v")
+    reference_evaluation = condition_on(_per_site_model(), {"y": Y}).evaluate(theta[:1])
     np.testing.assert_allclose(
         np.asarray(posterior.full_conditional("v").law(evaluation, 0).distribution.scale),
         np.asarray(reference.law(reference_evaluation, 0).distribution.scale), rtol=1e-12,
@@ -422,17 +494,19 @@ def test_a_full_conditional_reads_a_simulator_output_from_the_evaluation_and_is_
 
 
 def test_a_full_conditional_is_a_parameters():
-    posterior = condition_on(_scale_model(), {"y": Y})
+    posterior = condition_on(_per_site_model(), {"y": Y})
     with pytest.raises(ValueError, match="not a parameter"):
         posterior.full_conditional("y")
     with pytest.raises(KeyError):
         posterior.full_conditional("nope")
     with pytest.raises(ValueError, match="neither an inverse gamma"):
         posterior.full_conditional("mu")
+    with pytest.raises(TypeError):
+        posterior.full_conditional(["v"])
 
 
 def test_a_full_conditional_refuses_another_posteriors_evaluation_and_a_bad_row():
-    posterior = condition_on(_scale_model(), {"y": Y})
+    posterior = condition_on(_per_site_model(), {"y": Y})
     conditional = posterior.full_conditional("v")
     evaluation = _evaluation(posterior, n=2)
     with pytest.raises(TypeError):
@@ -441,7 +515,7 @@ def test_a_full_conditional_refuses_another_posteriors_evaluation_and_a_bad_row(
         conditional.law(evaluation, 2)
     with pytest.raises(TypeError):
         conditional.law(evaluation, 0.0)
-    other = condition_on(_scale_model(per_site=False), {"y": Y})
+    other = condition_on(_one_scale_model(), {"y": Y})
     with pytest.raises(ValueError, match="give a batch"):
         conditional.sample(KEY, _evaluation(other, n=2))
 
@@ -450,7 +524,7 @@ def test_a_full_conditional_refuses_another_posteriors_evaluation_and_a_bad_row(
 
 
 def test_theta_with_sets_a_parameter_through_its_bijection():
-    posterior = condition_on(_scale_model(), {"y": Y})
+    posterior = condition_on(_per_site_model(), {"y": Y})
     theta = posterior.sample_prior(KEY, 3)
     values = np.asarray([[0.5, 1.0, 2.0, 4.0], [1.0, 1.0, 1.0, 1.0], [3.0, 0.1, 0.2, 0.3]])
     updated = posterior.theta_with(theta, {"v": values})
@@ -460,15 +534,24 @@ def test_theta_with_sets_a_parameter_through_its_bijection():
 
 
 def test_theta_with_gives_every_row_one_block_and_is_traceable():
-    posterior = condition_on(_scale_model(), {"y": Y})
+    posterior = condition_on(_per_site_model(), {"y": Y})
     theta = jnp.zeros((2, posterior.dimension))
     block = jnp.asarray([1.0, 2.0, 3.0, 4.0])
     updated = jax.jit(lambda t, v: posterior.theta_with(t, {"v": v}))(theta, block)
     np.testing.assert_allclose(np.asarray(posterior.natural_values(updated)["v"]), np.tile(block, (2, 1)), rtol=1e-12)
 
 
+def test_theta_with_refuses_a_batch_that_does_not_fit_and_a_boolean():
+    posterior = condition_on(_per_site_model(), {"y": Y})
+    theta = jnp.zeros((2, posterior.dimension))
+    with pytest.raises(ValueError, match="does not broadcast"):
+        posterior.theta_with(theta, {"v": jnp.ones((3, 4))})
+    with pytest.raises(TypeError, match="not a number"):
+        posterior.theta_with(theta, {"mu": True})
+
+
 def test_theta_with_refuses_what_is_not_a_parameter_or_has_no_theta():
-    posterior = condition_on(_scale_model(), {"y": Y})
+    posterior = condition_on(_per_site_model(), {"y": Y})
     theta = jnp.zeros((2, posterior.dimension))
     with pytest.raises(KeyError, match="not a parameter"):
         posterior.theta_with(theta, {"y": Y})
@@ -492,7 +575,7 @@ def test_a_gibbs_step_draws_the_scale_without_running_the_simulator_again():
     np.testing.assert_allclose(np.asarray(posterior.natural_values(updated)["v"]), np.asarray(draw), rtol=1e-12)
 
 
-# ── R2's model: an inverse Wishart over three years, shared by the sites ─────
+# ── the block rule's model: an inverse Wishart over three years ─────────────
 
 YEARS = ("2012", "2013", "2014")
 PSI = 3.0 * np.array([[4.0, 1.0, 0.5], [1.0, 3.0, 0.8], [0.5, 0.8, 2.0]])
@@ -528,6 +611,12 @@ def _matrix_model(labels, covariance=None):
     return spec.bind(coords={"obs": labels})
 
 
+@functools.cache
+def _block_model(name):
+    """``_matrix_model`` at the labels called *name*, bound once."""
+    return _matrix_model({"EVERY_ROW": EVERY_ROW, "SOME_ROWS": SOME_ROWS, "RAGGED": RAGGED}[name])
+
+
 def _rows(labels):
     """Each site's entries, in its rows' order, and the rows."""
     years = np.asarray([YEARS.index(y) for y in labels.get_level_values("season")])
@@ -542,7 +631,7 @@ def _y_for(labels) -> np.ndarray:
 
 
 def test_an_inverse_wishart_block_integrates_to_a_matrix_student_t():
-    marginal = _matrix_model(EVERY_ROW).marginalize(["S"])
+    marginal = _block_model("EVERY_ROW").marginalize(["S"])
     law = marginal.law("y", given={"m": jnp.zeros(len(EVERY_ROW))})
     assert isinstance(law, MatrixStudentTLaw)
     y = _y_for(EVERY_ROW)
@@ -555,7 +644,7 @@ def test_an_inverse_wishart_block_integrates_to_a_matrix_student_t():
 
 
 def test_a_block_observed_on_some_rows_integrates_with_fewer_degrees_of_freedom():
-    marginal = _matrix_model(SOME_ROWS).marginalize(["S"])
+    marginal = _block_model("SOME_ROWS").marginalize(["S"])
     law = marginal.law("y", given={"m": jnp.zeros(len(SOME_ROWS))})
     y = _y_for(SOME_ROWS)
     groups, rows = _rows(SOME_ROWS)
@@ -576,7 +665,7 @@ def _log_normal_rows(residual, covariances) -> np.ndarray:
 
 
 def test_draws_of_the_matrix_student_t_have_the_blocks_prior_mean_as_covariance():
-    law = _matrix_model(SOME_ROWS).marginalize(["S"]).law("y", given={"m": jnp.zeros(len(SOME_ROWS))})
+    law = _block_model("SOME_ROWS").marginalize(["S"]).law("y", given={"m": jnp.zeros(len(SOME_ROWS))})
     draws = np.asarray(law.sample(200_000, seed=KEY))
     groups, rows = _rows(SOME_ROWS)
     q, p = len(rows), len(YEARS)
@@ -587,8 +676,8 @@ def test_draws_of_the_matrix_student_t_have_the_blocks_prior_mean_as_covariance(
 
 def test_groups_mapping_to_different_rows_are_refused_naming_them():
     with pytest.raises(ValueError, match=r"different rows: \['\(5,\)'\] differ"):
-        _matrix_model(RAGGED).marginalize(["S"])
-    posterior = condition_on(_matrix_model(RAGGED), {"y": _y_for(RAGGED)})
+        _block_model("RAGGED").marginalize(["S"])
+    posterior = condition_on(_block_model("RAGGED"), {"y": _y_for(RAGGED)})
     with pytest.raises(ValueError, match="different rows"):
         posterior.full_conditional("S")
 
@@ -600,14 +689,14 @@ def test_a_term_added_to_the_submatrix_is_refused():
 
 
 def test_the_matrix_marginal_drops_the_block():
-    marginal = _matrix_model(SOME_ROWS).marginalize(["S"])
+    marginal = _block_model("SOME_ROWS").marginalize(["S"])
     assert marginal.spec.component_names == ("y", "m", "mu")
     assert marginal.describe().loc["y", "law"] == "matrix Student-t"
 
 
 def test_the_blocks_full_conditional_is_the_joint_density_in_the_block():
-    for labels, expected_type in ((EVERY_ROW, InverseWishart), (SOME_ROWS, InverseWishartGivenRows)):
-        model = _matrix_model(labels)
+    for name, labels in (("EVERY_ROW", EVERY_ROW), ("SOME_ROWS", SOME_ROWS)):
+        model = _block_model(name)
         y = _y_for(labels)
         posterior = condition_on(model, {"y": y})
         conditional = posterior.full_conditional("S")
@@ -617,7 +706,7 @@ def test_the_blocks_full_conditional_is_the_joint_density_in_the_block():
         candidates = st.invwishart.rvs(df=NU, scale=PSI, size=5, random_state=3)
         for j in range(2):
             law = conditional.law(evaluation, j)
-            assert type(law) is expected_type
+            assert type(law) is InverseWishartGivenRows
             joint_density = np.asarray([float(model.log_prob({"mu": mu[j], "S": s, "y": y})) for s in candidates])
             conditional_density = np.asarray(law.log_prob(jnp.asarray(candidates)))
             np.testing.assert_allclose(np.diff(conditional_density), np.diff(joint_density), rtol=1e-9, atol=1e-8)
@@ -632,7 +721,7 @@ def _posterior_scatter(labels, posterior, evaluation, j):
 
 
 def test_the_blocks_full_conditional_draws_have_the_posterior_mean():
-    posterior = condition_on(_matrix_model(EVERY_ROW), {"y": _y_for(EVERY_ROW)})
+    posterior = condition_on(_block_model("EVERY_ROW"), {"y": _y_for(EVERY_ROW)})
     evaluation = _evaluation(posterior, n=1)
     law = posterior.full_conditional("S").law(evaluation, 0)
     draws = np.asarray(law.sample(100_000, seed=KEY))
@@ -642,7 +731,7 @@ def test_the_blocks_full_conditional_draws_have_the_posterior_mean():
 
 
 def test_the_unobserved_rows_of_the_block_are_drawn_from_the_prior_given_the_observed():
-    posterior = condition_on(_matrix_model(SOME_ROWS), {"y": _y_for(SOME_ROWS)})
+    posterior = condition_on(_block_model("SOME_ROWS"), {"y": _y_for(SOME_ROWS)})
     evaluation = _evaluation(posterior, n=1)
     draws = np.asarray(posterior.full_conditional("S").law(evaluation, 0).sample(200_000, seed=KEY))
     scatter, n, rows = _posterior_scatter(SOME_ROWS, posterior, evaluation, 0)
@@ -661,9 +750,44 @@ def test_the_unobserved_rows_of_the_block_are_drawn_from_the_prior_given_the_obs
     np.testing.assert_allclose(draws[:, rest][:, :, rest].mean(axis=0), rest_mean, rtol=0.05)
 
 
+def test_the_blocks_full_conditional_is_nan_where_the_mean_was_not_computed():
+    year_of = xr.DataArray(np.asarray(EVERY_ROW.get_level_values("season"), dtype=object), dims=("obs",),
+                           coords={"obs": EVERY_ROW}, name="year")
+    n = len(EVERY_ROW)
+
+    class Mean(Simulator):
+        name = "mean"
+        given = ("mu",)
+        outputs = (ArraySpec("m", units="1", indexed_by=("obs",)),)
+
+        def __call__(self, given_values):
+            mu = given_values["mu"].values
+            return SimulatorOutput(values={"m": np.repeat(mu[:, None], n, axis=1)}, valid={"m": mu <= 2.0})
+
+        def at(self, coords, outputs):
+            return self
+
+    spec = joint(
+        FactorSpec(ArraySpec("y", units="1", support=REAL, indexed_by=("obs",)),
+                   law=GaussianSpec(mean="m", covariance=BlockDiagonalSpec(SubmatrixSpec("S", label_map="year_of"), by="site")),
+                   label_maps={"year_of": year_of}),
+        Mean(), _mu(),
+        FactorSpec(ArraySpec("S", units="1", support=POSITIVE_DEFINITE, element_axes={"year": YEARS, "other_year": YEARS}),
+                   law=inverse_wishart(degrees_of_freedom=NU, scale=PSI)),
+    )
+    posterior = condition_on(spec.bind(coords={"obs": EVERY_ROW}), {"y": _y_for(EVERY_ROW)})
+    theta = posterior.theta_with(posterior.sample_prior(KEY, 2), {"mu": jnp.asarray([0.5, 3.0])})
+    evaluation = posterior.evaluate(theta)
+    conditional = posterior.full_conditional("S")
+    assert np.isnan(float(conditional.law(evaluation, 1).log_prob(jnp.asarray(PSI))))
+    assert np.isfinite(float(conditional.law(evaluation, 0).log_prob(jnp.asarray(PSI))))
+    draws = np.asarray(conditional.sample(KEY, evaluation))
+    assert np.all(np.isfinite(draws[0])) and np.all(np.isnan(draws[1]))
+
+
 def test_the_blocks_full_conditional_draws_one_matrix_per_sample():
-    for labels in (EVERY_ROW, SOME_ROWS):
-        posterior = condition_on(_matrix_model(labels), {"y": _y_for(labels)})
+    for name, labels in (("EVERY_ROW", EVERY_ROW), ("SOME_ROWS", SOME_ROWS)):
+        posterior = condition_on(_block_model(name), {"y": _y_for(labels)})
         draws = np.asarray(posterior.full_conditional("S").sample(KEY, _evaluation(posterior, n=5)))
         assert draws.shape == (5, 3, 3)
         assert np.all(np.linalg.eigvalsh(draws) > 0) and np.allclose(draws, np.swapaxes(draws, -1, -2))
@@ -687,6 +811,21 @@ def test_the_inverse_wishart_density_is_scipys_and_the_families():
 def test_inverse_wishart_draws_have_its_mean():
     draws = np.asarray(sample_inverse_wishart(KEY, NU, PSI, (100_000,)))
     np.testing.assert_allclose(draws.mean(axis=0), PSI / (NU - 3 - 1.0), rtol=0.03)
+
+
+def test_the_log_densities_are_nan_for_a_scale_that_is_not_positive_definite():
+    indefinite = np.diag([1.0, -1.0, 1.0])
+    assert np.isnan(float(inverse_wishart_log_prob(PSI, NU, indefinite)))
+    law = MatrixStudentTLaw(jnp.zeros(3), np.array([[0, 1, 2]]), NU, indefinite)
+    assert np.isnan(float(law.log_prob(jnp.zeros(3))))
+
+
+def test_a_student_t_spec_takes_a_zero_dimensional_array_and_refuses_repeated_labels():
+    spec = StudentTSpec(mean="m", covariance=DenseSpec(correlated), shape=np.array(2.0), scale=jnp.float64(1.0))
+    assert float(spec.shape) == 2.0 and float(spec.scale) == 1.0
+    repeated = xr.DataArray([1.0, 2.0], dims=("site",), coords={"site": [3, 3]})
+    with pytest.raises(ValueError, match="twice"):
+        StudentTSpec(mean="m", covariance=DenseSpec(correlated), shape=repeated, scale=1.0, by="site")
 
 
 def test_a_student_t_spec_refuses_scales_that_are_not_positive_or_on_another_dim():

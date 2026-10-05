@@ -108,7 +108,7 @@ class FactorSpec:
     event : ArraySpec or Sequence[ArraySpec]
         Positional-only. One component, or several indexed by the same dims
         (a **joint factor**), in the order of their entries in theta.
-    law : Law, callable, Builder or GaussianSpec
+    law : Law, callable, Builder, GaussianSpec, StudentTSpec or MatrixStudentTSpec
         Keyword-only. The law, or how to build it per draw:
 
         - a law (a TFP distribution, or an object implementing
@@ -161,9 +161,9 @@ class FactorSpec:
         If the event is empty; a joint factor's components are indexed
         differently; a name repeats across the event, the constants and the
         label maps; the law reads a component of its own event; a constant
-        or label map is never read; *provenance* is empty; or a Gaussian's
-        event is not one component on ``REAL`` indexed by one dim at most
-        with no element axes.
+        or label map is never read; *provenance* is empty; or a Gaussian or
+        Student-t factor's event is not one component on ``REAL`` indexed by
+        one dim at most with no element axes.
 
     Notes
     -----
@@ -220,8 +220,9 @@ class FactorSpec:
 
     @property
     def law_name(self) -> str:
-        """A short name for the law: ``"Gaussian"``, a builder's or family's
-        name, a function's ``__name__``, or the law's class."""
+        """A short name for the law: ``"Gaussian"``, ``"Student-t"`` or
+        ``"matrix Student-t"``, a builder's or family's name, a function's
+        ``__name__``, or the law's class."""
         if isinstance(self.law, CENTERED_LAW_SPECS):
             return _CENTERED_LAW_NAMES[type(self.law)]
         if isinstance(self.law, Builder):
@@ -611,8 +612,8 @@ def _as_specs(specs: Any, *, what: str) -> tuple[ArraySpec, ...]:
 
 def _law_reads(name: str, law: Any) -> tuple[str, ...]:
     """What a factor's law reads: nothing for a law, a builder's
-    :attr:`~Builder.reads`, a Gaussian's mean and covariance's, a
-    function's keywords."""
+    :attr:`~Builder.reads`, a centered law's mean and what its covariance
+    reads, a function's keywords."""
     if is_law(law):
         return ()
     if isinstance(law, (Builder, *CENTERED_LAW_SPECS)):

@@ -519,7 +519,8 @@ class FactoredDistribution:
         """The model with *component_names* integrated out by a conjugate
         rule (:mod:`~sipnet_calibration.probability.conjugacy`): each one's
         factor, and the Gaussian factor that reads it, become one factor, a
-        Student-t, bound at the same labels and inputs. The names are
+        Student-t or a matrix Student-t, bound at the same labels and
+        inputs. The names are
         integrated out in order, each from the model the last one left.
 
         Raises
@@ -529,8 +530,9 @@ class FactoredDistribution:
         KeyError
             If a name is not a component.
         ValueError
-            If *component_names* is empty, or no rule applies to a name; the
-            message names the condition that failed.
+            If *component_names* is empty or names a component twice, or no
+            rule applies to a name; the message names the condition that
+            failed.
         """
         from sipnet_calibration.probability.conjugacy import marginalize
 

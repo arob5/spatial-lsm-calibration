@@ -264,7 +264,7 @@ moves it here.
 | **bind** | give a model spec the labels of its dims and its inputs' values, making a `FactoredDistribution` | |
 | **target** / **barren** / **observed** | after `condition_on`: observed factors are conditioned on; barren ones are unobserved with no observed descendant, dropped; the rest are the target, whose components are theta's; an observed factor with no target ancestor is constant (`O_c`) | |
 | **draw** | one joint value of every component; a batch of draws has batch dim `sample` | |
-| **conjugate rule** / **marginal** | R1 or R2 (`probability.conjugacy`): a component whose inverse-gamma or inverse-Wishart prior is conjugate to the one Gaussian factor reading it; integrated out (`FactoredDistribution.marginalize`), that factor becomes its marginal, a Student-t (`probability.scale_mixtures`) | |
+| **conjugate rule** / **marginal** | the scale rule or the block rule (`probability.conjugacy`, the design's §7.13 R1 and R2): a component whose inverse-gamma or inverse-Wishart prior is conjugate to the one Gaussian factor reading it; integrated out (`FactoredDistribution.marginalize`), that factor becomes its marginal, a Student-t or a matrix Student-t (`probability.scale_mixtures`) | |
 | **full conditional** | a parameter's closed-form law given every other component, by a conjugate rule (`Posterior.full_conditional -> FullConditional`), drawn from an evaluation's residuals with no new simulator run | |
 
 **Representations.**
@@ -1106,8 +1106,9 @@ src/sipnet_calibration/
                           # (law, sample from an evaluation), describe; a
                           # Gaussian factor's covariance the held values fix
                           # is built and factored once here
-    conjugacy.py          # the conjugate rules, R1 (an inverse gamma on a
-                          # covariance scale) and R2 (an inverse Wishart on a
+    conjugacy.py          # the conjugate rules, the scale rule (an inverse
+                          # gamma on a covariance scale) and the block rule
+                          # (an inverse Wishart on a
                           # covariance block): conjugate_rule ->
                           # ConjugateRule, marginalize,
                           # InverseWishartGivenRows

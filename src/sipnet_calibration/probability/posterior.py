@@ -123,7 +123,11 @@ from sipnet_calibration.probability._bound import (
 )
 from sipnet_calibration.probability._probes import corner_points
 from sipnet_calibration.probability._validation import as_count, truncated
-from sipnet_calibration.probability.conjugacy import ConjugateRule, conjugate_rule
+from sipnet_calibration.probability.conjugacy import (
+    ConjugateRule,
+    check_component_name_is_a_string,
+    conjugate_rule,
+)
 from sipnet_calibration.probability.layout import (
     LabeledValues,
     Layout,
@@ -581,12 +585,13 @@ class Posterior:
         Raises
         ------
         TypeError
-            If *values* is not a mapping.
+            If *values* is not a mapping, or a value is not a number.
         KeyError
             If a name is not a parameter.
         ValueError
             If the last axis of *theta* is not ``D`` long, a value does not
-            end in its block shape, or a concrete value has no theta (it lies
+            end in its block shape or its batch does not broadcast to
+            theta's, or a concrete value has no theta (it lies
             outside its support or on a closed end,
             :meth:`Layout.contains <sipnet_calibration.probability.layout.Layout.contains>`).
         """
@@ -597,11 +602,13 @@ class Posterior:
             check_name_is_a_parameter(name, self)
             component = self.parameters[name]
             block = self.parameters.block_shape(name)
+            check_value_is_a_number(name, value)
             value = jnp.asarray(value, dtype=jnp.float64)
             check_value_ends_in_its_block_shape(name, tuple(value.shape), block)
+            check_value_broadcasts_to_theta(name, tuple(value.shape), lead, block)
             value = jnp.broadcast_to(value, (*lead, *block))
             if not isinstance(value, jax.core.Tracer):
-                check_value_has_a_theta(name, _layout_of(self.model, [name]), value, lead)
+                check_value_has_a_theta(name, _layout_of(self.model, [name]), value)
             entries = component.bijector.inverse(value).reshape((*lead, -1))
             theta = theta.at[..., unconstrained.slice_of(name)].set(entries)
         return theta
@@ -665,12 +672,15 @@ class Posterior:
 
         Raises
         ------
+        TypeError
+            If *component_name* is not a string.
         KeyError
             If *component_name* is not a component.
         ValueError
             If it is not a parameter, or no conjugate rule applies, naming the
             condition that failed.
         """
+        check_component_name_is_a_string(component_name)
         check_name_is_a_component(component_name, self.model.spec)
         check_component_is_a_parameter(component_name, self)
         rule = conjugate_rule(self.model, component_name)
@@ -893,7 +903,7 @@ class GaussianLikelihood:
 class FullConditional:
     """The closed-form law of one parameter given every other component of a
     posterior, by a conjugate rule
-    (:mod:`~sipnet_calibration.probability.conjugacy`'s R1 or R2). Made by
+    (:mod:`~sipnet_calibration.probability.conjugacy`'s scale or block rule). Made by
     :meth:`Posterior.full_conditional`. Compared and hashed by identity.
 
     Its residuals come from a :class:`PosteriorEvaluation`: the reading
@@ -928,8 +938,9 @@ class FullConditional:
             If *evaluation*'s theta is not ``(J, D)``, or *sample* is not in
             ``0 .. J - 1``.
         KeyError
-            If *evaluation* lacks a value the residuals need: it is another
-            posterior's.
+            If *evaluation* lacks a value the residuals need. An evaluation
+            of another posterior with the same ``D`` is not detected: give
+            this posterior's.
         """
         parameters = self._parameters(evaluation)
         check_sample_is_a_row(sample, evaluation.theta.shape[0])
@@ -1287,13 +1298,35 @@ def check_name_is_a_parameter(name: Any, posterior: Posterior) -> None:
         )
 
 
+def check_value_is_a_number(name: str, value: Any) -> None:
+    """A value set in theta is numeric: a boolean is not a number, though
+    JAX would convert it."""
+    if not isinstance(value, jax.core.Tracer) and np.asarray(value).dtype.kind not in "iuf":
+        raise TypeError(f"the value of {name!r} is of dtype {np.asarray(value).dtype}, not a number; give floats.")
+
+
+def check_value_broadcasts_to_theta(name: str, shape: tuple[int, ...], lead: tuple[int, ...], block: tuple[int, ...]) -> None:
+    """A value's batch broadcasts to theta's: one block for every row, or
+    one per row."""
+    batch = shape[: len(shape) - len(block)]
+    try:
+        fits = np.broadcast_shapes(batch, lead) == lead
+    except ValueError:
+        fits = False
+    if not fits:
+        raise ValueError(
+            f"the value of {name!r} has batch shape {batch}, which does not broadcast to theta's {lead}; give one "
+            "block, or one per row."
+        )
+
+
 def check_value_ends_in_its_block_shape(name: str, shape: tuple[int, ...], block: tuple[int, ...]) -> None:
     """A value set in theta ends in its block shape."""
-    if shape[len(shape) - len(block):] != block or len(shape) < len(block):
+    if len(shape) < len(block) or shape[len(shape) - len(block):] != block:
         raise ValueError(f"the value of {name!r} has shape {shape}, but its block shape is {block}; give (..., *block).")
 
 
-def check_value_has_a_theta(name: str, layout: Layout, value: Array, lead: tuple[int, ...]) -> None:
+def check_value_has_a_theta(name: str, layout: Layout, value: Array) -> None:
     """A value set in theta has one: inside its support, off a closed end."""
     inside = layout.contains(layout.values_to_flat({name: value}))
     if not bool(jnp.all(inside)):

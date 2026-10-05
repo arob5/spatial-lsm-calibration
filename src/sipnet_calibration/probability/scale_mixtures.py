@@ -6,7 +6,7 @@ Where this sits
 ---------------
 ::
 
-    probability.covariance, laws, families
+    probability.covariance, labels
       -> probability.scale_mixtures      (StudentTSpec, MatrixStudentTSpec, their laws)
       -> probability.parts.FactorSpec    (a factor's law)
       -> probability.conjugacy           (marginalize makes them)
@@ -83,7 +83,6 @@ import pandas as pd
 import xarray as xr
 from tensorflow_probability.substrates import jax as tfp
 
-from sipnet_calibration.probability import _linalg
 from sipnet_calibration.probability._validation import as_names, truncated
 from sipnet_calibration.probability.covariance import (
     CovarianceSpec,
@@ -98,6 +97,7 @@ from sipnet_calibration.probability.covariance import (
     check_terms_are_covariance_specs,
 )
 from sipnet_calibration.probability.labels import aligned_label_maps
+from sipnet_calibration.probability.laws import check_seed_is_given
 
 __all__ = [
     "MatrixStudentTLaw",
@@ -407,7 +407,7 @@ class MatrixStudentTSpec:
             element_axes={self.rows: row_labels}, message_name=f"the matrix Student-t of {scope.factor_name!r}",
         ).values()
         groups = _groups(_group_keys(self.by, scope))
-        observed = shared_rows(scope.factor_name, groups, rows, row_labels)
+        observed = _shared_rows(scope.factor_name, groups, rows, row_labels)
         entries = np.stack([positions[np.argsort(rows[positions])] for _, positions in groups])
         p, q = len(row_labels), len(observed)
         scale = np.asarray(self.scale.values)[np.ix_(observed, observed)]
@@ -481,8 +481,8 @@ class MatrixStudentTLaw:
         return (
             -n * q / 2.0 * jnp.log(jnp.pi)
             + jax.scipy.special.multigammaln((nu + n) / 2.0, q) - jax.scipy.special.multigammaln(nu / 2.0, q)
-            + nu / 2.0 * jnp.linalg.slogdet(self.scale)[1]
-            - (nu + n) / 2.0 * jnp.linalg.slogdet(self.scale + scatter)[1]
+            + nu / 2.0 * _log_determinant(self.scale)
+            - (nu + n) / 2.0 * _log_determinant(self.scale + scatter)
         )
 
     def sample(self, sample_shape: tuple[int, ...] = (), seed: Array | None = None) -> Array:
@@ -524,11 +524,10 @@ def inverse_wishart_log_prob(matrix: Any, degrees_of_freedom: Any, scale: Any) -
     p = matrix.shape[-1]
     lower = jnp.linalg.cholesky(matrix)
     solved = jax.scipy.linalg.cho_solve((lower, True), jnp.broadcast_to(scale, matrix.shape))
-    log_det = 2.0 * jnp.sum(jnp.log(jnp.diagonal(lower, axis1=-2, axis2=-1)), axis=-1)
     return (
-        degrees_of_freedom / 2.0 * jnp.linalg.slogdet(scale)[1] - degrees_of_freedom * p / 2.0 * jnp.log(2.0)
+        degrees_of_freedom / 2.0 * _log_determinant(scale) - degrees_of_freedom * p / 2.0 * jnp.log(2.0)
         - jax.scipy.special.multigammaln(degrees_of_freedom / 2.0, p)
-        - (degrees_of_freedom + p + 1.0) / 2.0 * log_det - jnp.trace(solved, axis1=-2, axis2=-1) / 2.0
+        - (degrees_of_freedom + p + 1.0) / 2.0 * _log_determinant(matrix) - jnp.trace(solved, axis1=-2, axis2=-1) / 2.0
     )
 
 
@@ -548,26 +547,6 @@ def sample_inverse_wishart(key: Array, degrees_of_freedom: Any, scale: Any, samp
     eye = jnp.broadcast_to(jnp.eye(scale.shape[-1], dtype=jnp.float64), draws.shape)
     inverted = jax.scipy.linalg.cho_solve((draw_lower, True), eye)
     return (inverted + jnp.swapaxes(inverted, -1, -2)) / 2.0
-
-
-def shared_rows(factor_name: str, groups: Sequence[tuple[Any, np.ndarray]], rows: np.ndarray, row_labels: pd.Index) -> np.ndarray:
-    """The rows :math:`O` every group maps to, ascending, each group's
-    entries checked to map to distinct rows and every group to the same
-    ones.
-
-    Raises
-    ------
-    ValueError
-        If a group maps two entries to one row, or two groups map to
-        different rows, naming the groups that differ from the first.
-    """
-    for key, positions in groups:
-        check_group_maps_to_distinct_rows(factor_name, key, rows[positions], row_labels)
-    first_key, first = groups[0]
-    observed = np.sort(rows[first])
-    differing = [key for key, positions in groups if not np.array_equal(np.sort(rows[positions]), observed)]
-    check_groups_map_to_the_same_rows(factor_name, first_key, observed, differing, row_labels)
-    return observed
 
 
 # ── private: a spec at the labels in use ──────────────────────────────────────
@@ -631,15 +610,43 @@ def _read_only(array: xr.DataArray) -> xr.DataArray:
     return copy
 
 
+def _shared_rows(factor_name: str, groups: Sequence[tuple[Any, np.ndarray]], rows: np.ndarray, row_labels: pd.Index) -> np.ndarray:
+    """The rows :math:`O` every group maps to, ascending, each group's
+    entries checked to map to distinct rows and every group to the same
+    ones.
+
+    Raises
+    ------
+    ValueError
+        If a group maps two entries to one row, or two groups map to
+        different rows, naming the groups that differ from the first.
+    """
+    for key, positions in groups:
+        check_group_maps_to_distinct_rows(factor_name, key, rows[positions], row_labels)
+    first_key, first = groups[0]
+    observed = np.sort(rows[first])
+    differing = [key for key, positions in groups if not np.array_equal(np.sort(rows[positions]), observed)]
+    check_groups_map_to_the_same_rows(factor_name, first_key, observed, differing, row_labels)
+    return observed
+
+
+def _log_determinant(matrix: Array) -> Array:
+    """:math:`\\log|A|` of positive-definite matrices ``(..., p, p)``, from
+    their Cholesky factors: ``NaN`` for one that is not positive definite."""
+    lower = jnp.linalg.cholesky(matrix)
+    return 2.0 * jnp.sum(jnp.log(jnp.diagonal(lower, axis1=-2, axis2=-1)), axis=-1)
+
+
 def _per_group(value: Any, by: str | None, *, what: str) -> xr.DataArray:
     """A shape or scale as a 0-d DataArray, or one on *by*, positive and
     finite."""
     if isinstance(value, xr.DataArray):
         check_per_group_value_is_on_its_grouping(value, by, what=what)
+        check_per_group_labels_are_unique(value, by, what=what)
         array = value.astype(np.float64)
     else:
         check_value_is_a_number(value, what=what)
-        array = xr.DataArray(np.float64(value))
+        array = xr.DataArray(np.float64(np.asarray(value)))
     check_values_are_positive_and_finite(np.asarray(array.values), what=what)
     return _read_only(array)
 
@@ -670,8 +677,10 @@ def check_is_a_data_array(value: Any, *, what: str) -> None:
 
 
 def check_value_is_a_number(value: Any, *, what: str) -> None:
-    """A shape or scale shared by every group is a real number."""
-    if isinstance(value, bool) or not isinstance(value, (int, float, np.integer, np.floating)):
+    """A shape or scale shared by every group is a real number: a scalar of
+    an integer or float dtype, not a boolean."""
+    kind = np.asarray(value).dtype.kind if not isinstance(value, (str, bytes)) else "U"
+    if isinstance(value, bool) or kind not in "iuf" or np.ndim(value) != 0:
         raise TypeError(f"{what} is a {type(value).__name__}; give a number, or a DataArray on the grouping level.")
 
 
@@ -684,6 +693,12 @@ def check_per_group_value_is_on_its_grouping(value: xr.DataArray, by: str | None
             f"{what} is on {tuple(map(str, value.dims))}; give one number, or with by= a DataArray labeled on "
             "the grouping level alone."
         )
+
+
+def check_per_group_labels_are_unique(value: xr.DataArray, by: str | None, *, what: str) -> None:
+    """A shape or scale per group labels each group once."""
+    if value.ndim and not value.indexes[by].is_unique:
+        raise ValueError(f"{what} labels a group of {by!r} twice; give each label once.")
 
 
 def check_values_are_positive_and_finite(values: np.ndarray, *, what: str) -> None:
@@ -763,9 +778,3 @@ def check_groups_map_to_the_same_rows(
             f"from {first_key}, which maps to {truncated([str(row_labels[r]) for r in observed])}; the inverse-Wishart "
             "closed form needs every group to map to the same rows, so sample the matrix jointly instead."
         )
-
-
-def check_seed_is_given(seed: Any, *, what: str) -> None:
-    """A draw is made from a key."""
-    if seed is None:
-        raise TypeError(f"a {what} draws from a key; give seed=jax.random.key(...).")
