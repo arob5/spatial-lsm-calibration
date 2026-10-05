@@ -119,33 +119,62 @@ def _imports_outside(package: str, allowed: tuple[str, ...]) -> list[str]:
     return outside
 
 
-def _loaded_outside(package: str, allowed: tuple[str, ...]) -> str:
-    """The modules of the package, pySIPNET, PyEns and pyEKI that importing
+def _loaded_outside(package: str, allowed: tuple[str, ...], companions: tuple[str, ...] = ("pysipnet", "pyens", "pyeki")) -> str:
+    """The modules of the package and of the *companions* that importing
     *package* loads, other than *package* and *allowed*, as printed."""
     own = (package, *allowed)
     code = (
         f"import sys; import {package}; own = {own!r}; "
         "print(sorted(m for m in sys.modules if (m.startswith('sipnet_calibration.') "
         "and not any(m == o or m.startswith(o + '.') for o in own)) or m.split('.')[0] in "
-        "('pysipnet', 'pyens', 'pyeki')))"
+        f"{companions!r}))"
     )
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
     return result.stdout.strip()
+
+
+def _files_importing(package: str, top_level: str) -> list[str]:
+    """The files under *package* that import *top_level*, or a module of it."""
+    import ast
+    import importlib
+    from pathlib import Path
+
+    layer = importlib.import_module(package)
+    found = []
+    for path in sorted(Path(layer.__file__).parent.rglob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text())):
+            names = (
+                [alias.name for alias in node.names] if isinstance(node, ast.Import)
+                else [node.module or ""] if isinstance(node, ast.ImportFrom) and node.level == 0
+                else []
+            )
+            if any(name.split(".")[0] == top_level for name in names):
+                found.append(path.name)
+                break
+    return found
 
 
 def test_the_parameter_layer_imports_nothing_of_the_package_outside_itself():
     """The parameter layer is replaceable only while it is independent: no
     module under parameters/ imports another module of the package but the
     probability layer, whose supports, coercion and probe points it
-    re-exports, and importing it loads none, nor pySIPNET, PyEns or pyEKI."""
+    re-exports, and importing it loads none, nor pySIPNET or PyEns. pyEKI
+    it loads only through the probability layer's shim."""
     allowed = ("sipnet_calibration.probability",)
     assert _imports_outside("sipnet_calibration.parameters", allowed) == []
-    assert _loaded_outside("sipnet_calibration.parameters", allowed) == "[]"
+    assert _loaded_outside("sipnet_calibration.parameters", allowed, ("pysipnet", "pyens")) == "[]"
+    assert _files_importing("sipnet_calibration.parameters", "pyeki") == []
 
 
 def test_the_probability_layer_imports_nothing_of_the_package_outside_itself():
     """The probability layer imports no module of the package outside
     itself, by name or relatively, and importing it loads none, nor
-    pySIPNET, PyEns or pyEKI."""
+    pySIPNET or PyEns."""
     assert _imports_outside("sipnet_calibration.probability", ()) == []
-    assert _loaded_outside("sipnet_calibration.probability", ()) == "[]"
+    assert _loaded_outside("sipnet_calibration.probability", (), ("pysipnet", "pyens")) == "[]"
+
+
+def test_the_probability_layer_reaches_pyeki_through_one_shim():
+    """Only ``probability/_linalg.py`` imports pyEKI, so the move to
+    EnsKit's linalg and Gaussian changes that file alone."""
+    assert _files_importing("sipnet_calibration.probability", "pyeki") == ["_linalg.py"]

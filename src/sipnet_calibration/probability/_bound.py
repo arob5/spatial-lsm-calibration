@@ -13,6 +13,12 @@ What a law reads arrives in two parts: values that differ draw by draw
 (``per_draw``, each ``(..., *block)``), over which the law is vmapped, and
 values the same in every draw (``fixed``: inputs, observed values, and
 what is computed from them alone), with which it is built once.
+
+A Gaussian factor (a :class:`~sipnet_calibration.probability.parts.GaussianSpec`)
+holds its covariance spec bound to the labels in use, which builds the
+covariance's operator at each draw; or, once a posterior finds that the
+covariance depends on no parameter, the operator itself, built and
+factored once (``held_covariance``).
 """
 
 from __future__ import annotations
@@ -32,8 +38,8 @@ from tensorflow_probability.substrates import jax as tfp
 
 from sipnet_calibration.probability._probes import bijectors_agree, joint_probe_points
 from sipnet_calibration.probability.builders import Builder
-from sipnet_calibration.probability.laws import CARRIES_ITS_BIJECTOR, is_law
-from sipnet_calibration.probability.parts import DeterministicSpec, FactorSpec, Simulator
+from sipnet_calibration.probability.laws import CARRIES_ITS_BIJECTOR, GaussianLaw, is_law
+from sipnet_calibration.probability.parts import DeterministicSpec, FactorSpec, GaussianSpec, Simulator
 from sipnet_calibration.probability.spec import ArraySpec
 from sipnet_calibration.probability.support import (
     REAL,
@@ -52,6 +58,7 @@ __all__ = [
     "check_deterministic_has_its_block_shapes",
     "check_deterministic_lies_in_its_supports",
     "check_draws_map_to_finite_theta",
+    "check_gaussian_covariance_is_positive_definite",
     "coords_of",
     "deterministics_behind",
     "finite_or_minus_infinity",
@@ -179,7 +186,10 @@ class BoundFactor:
     ``shapes`` its components' unconstrained block shapes, in event order.
     ``law`` is its law at the first draw it was built at, kept for its
     checks and description; ``by_base_density`` whether it is a
-    pushforward through its components' own bijectors.
+    pushforward through its components' own bijectors. A Gaussian factor's
+    ``covariance`` is its covariance spec at the labels in use, and
+    ``held_covariance`` the operator it is evaluated with in every draw,
+    when its covariance depends on nothing that varies by draw.
     """
 
     spec: FactorSpec
@@ -188,6 +198,8 @@ class BoundFactor:
     fixed_reads: Mapping[str, Any]
     law: Any = None
     by_base_density: bool = False
+    covariance: Any = None
+    held_covariance: Any = None
 
     @classmethod
     def build(
@@ -199,6 +211,8 @@ class BoundFactor:
         per_draw_values: Sequence[Mapping[str, Array]],
         fixed_values: Mapping[str, Array],
         downstream_of_a_simulator: bool = False,
+        covariance: Any = None,
+        covariance_is_checked: bool = True,
     ) -> BoundFactor:
         """Build and check a factor at each draw of *per_draw_values* (one
         empty mapping when it reads nothing that varies by draw).
@@ -207,13 +221,19 @@ class BoundFactor:
         simulator outputs, so only the law's form is checked: its event,
         TFP batch shape and dtype, and that it has a density a model can
         evaluate; its support is not, since that would be checked at values
-        no simulation gave."""
+        no simulation gave. A Gaussian factor, given its bound *covariance*,
+        is checked for its event, and its covariance for being positive
+        definite at each draw unless *covariance_is_checked* is false, for a
+        covariance that reads a placeholder."""
         unbuilt = cls(
             spec=spec,
             index_shape=index_shape,
             shapes=tuple((*index_shape, *c.unconstrained_shape) for c in spec.event),
             fixed_reads=fixed_reads,
+            covariance=covariance,
         )
+        if isinstance(spec.law, GaussianSpec):
+            return unbuilt._built_gaussian(per_draw_values, fixed_values, covariance_is_checked=covariance_is_checked)
         probes = unbuilt.probes()
         variants = [unbuilt._at(unbuilt.law_at({**values, **fixed_values}), probes) for values in per_draw_values]
         check_factor_keeps_its_structure(variants)
@@ -251,7 +271,14 @@ class BoundFactor:
         return {c.name: (*self.index_shape, *c.shape) for c in self.components}
 
     @property
+    def gaussian(self) -> bool:
+        """Whether its law is a :class:`GaussianSpec`."""
+        return isinstance(self.spec.law, GaussianSpec)
+
+    @property
     def evaluated_by(self) -> str:
+        if self.gaussian:
+            return "Gaussian"
         return "base density" if self.by_base_density else "change of variables"
 
     # ── the law ───────────────────────────────────────────────────────────────
@@ -259,6 +286,10 @@ class BoundFactor:
     def law_at(self, given: Mapping[str, Array]) -> Any:
         """The law at one draw's values of what it reads."""
         law = self.spec.law
+        if isinstance(law, GaussianSpec):
+            reads = self._reads(given)
+            covariance = self.held_covariance if self.held_covariance is not None else self.covariance.operator(reads)
+            return GaussianLaw(reads[law.mean[0]], covariance)
         if isinstance(law, Builder):
             return law(self.index_shape, **self._reads(given))
         if is_law(law):
@@ -344,6 +375,26 @@ class BoundFactor:
     def _reads(self, given: Mapping[str, Array]) -> dict[str, Any]:
         """What its law reads: the given values it names, and its fixed reads."""
         return {**{name: given[name] for name in self.spec.given}, **self.fixed_reads}
+
+    def covariance_reads(self, given: Mapping[str, Array]) -> dict[str, Any]:
+        """What a Gaussian factor's covariance reads, from *given* and its
+        fixed reads."""
+        names = self.spec.law.covariance.reads
+        return {name: self.fixed_reads[name] if name in self.fixed_reads else given[name] for name in names}
+
+    def _built_gaussian(
+        self, per_draw_values: Sequence[Mapping[str, Array]], fixed_values: Mapping[str, Array], *, covariance_is_checked: bool
+    ) -> BoundFactor:
+        """A Gaussian factor at its first draw, checked at each to be over its
+        event and, when *covariance_is_checked*, to have a positive-definite
+        covariance."""
+        expected = self.natural_shapes[self.names[0]]
+        variants = [dataclasses.replace(self, law=self.law_at({**values, **fixed_values})) for values in per_draw_values]
+        for variant in variants:
+            check_factor_law_is_over_its_event(self.name, variant.law, expected)
+            if covariance_is_checked:
+                check_gaussian_covariance_is_positive_definite(self.name, variant.law.covariance)
+        return variants[0]
 
     def _at(self, law: Any, probes: Array) -> BoundFactor:
         """This factor at *law*, checked to be over its event, and evaluated
@@ -837,6 +888,19 @@ def check_simulator_at_keeps_its_parts(simulator: Simulator, bound: Any, outputs
         raise ValueError(
             f"the simulator {simulator.name!r}'s at() returned {bound!r}, which does not read what it read or "
             f"compute exactly {sorted(outputs)}; at() restricts the labels and outputs only."
+        )
+
+
+def check_gaussian_covariance_is_positive_definite(name: str, covariance: Any) -> None:
+    """A Gaussian factor's covariance is positive definite: its
+    log-determinant and a whitened vector are finite, as they are not for a
+    zero variance or a matrix with no Cholesky factor."""
+    whitened = covariance.whiten(jnp.ones((covariance.shape[0],), dtype=jnp.float64))
+    if not (bool(jnp.isfinite(covariance.logdet())) and bool(jnp.all(jnp.isfinite(whitened)))):
+        raise ValueError(
+            f"the covariance of {name!r} is not positive definite at the values it reads, so the factor has no "
+            "density; give every entry a positive variance, such as a floor on a standard deviation, and every "
+            "block a positive-definite matrix."
         )
 
 

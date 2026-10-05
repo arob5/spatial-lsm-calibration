@@ -16,7 +16,9 @@ package, load neither.
 
 What it reads
 -------------
-An :class:`~sipnet_calibration.observation.vector.ObservationVector`.
+An :class:`~sipnet_calibration.observation.vector.ObservationVector`, and
+for a noise factor a covariance spec
+(:mod:`~sipnet_calibration.probability.covariance`).
 
 Data model
 ----------
@@ -35,10 +37,24 @@ The observed values' ``constituent`` is not carried, since an
 ``ArraySpec`` has none: a prediction is converted into the observed values'
 units, constituent included, before it is one.
 
+A source's **noise factor** is the law of its observed component given its
+prediction,
+
+.. math::
+
+    y_k \\mid m_k, \\phi \\sim \\mathcal N\\big(m_k,\\ \\Sigma_k(\\phi)\\big),
+
+a :class:`~sipnet_calibration.probability.parts.FactorSpec` whose law is a
+:class:`~sipnet_calibration.probability.parts.GaussianSpec`, holding the
+source's constants (``observation_vector.constants(k)``) that its
+covariance reads.
+
 Functions
 ---------
 :func:`observed_components`, :func:`prediction_components`
     The two, one per source.
+:func:`noise_factor`
+    A source's noise factor.
 
 Usage
 -----
@@ -48,14 +64,30 @@ Usage
 
     observed_components(observation_vector)    # (ArraySpec("modis_leaf_area_index", ...), ...)
     prediction_components(observation_vector)  # (ArraySpec("predicted_modis_leaf_area_index", ...), ...)
+
+    def block(time_since_epoch, standard_deviation):
+        lag = jnp.abs(time_since_epoch[:, None] - time_since_epoch[None, :]) / 86_400.0
+        return jnp.diag(jnp.maximum(standard_deviation, 0.66) ** 2) + 0.5**2 * jnp.exp(-lag / 30.0)
+
+    noise_factor(
+        observation_vector, "modis_leaf_area_index",
+        covariance=BlockDiagonalSpec(DenseSpec(block), by="site"),
+        provenance="MCD15A3H LAI_StdDev floored at 0.66; discrepancy 0.5, 30 d (reasoned).",
+    )
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
+
+import xarray as xr
+
 from sipnet_calibration.observation.vector import ObservationVector
-from sipnet_calibration.probability import REAL, ArraySpec
+from sipnet_calibration.probability import REAL, ArraySpec, CovarianceSpec, FactorSpec, GaussianSpec
+from sipnet_calibration.validation import as_names, truncated
 
 __all__ = [
+    "noise_factor",
     "observed_components",
     "prediction_components",
 ]
@@ -78,6 +110,87 @@ def prediction_components(observation_vector: ObservationVector) -> tuple[ArrayS
     )
 
 
+def noise_factor(
+    observation_vector: ObservationVector,
+    observation_source_names: str | Sequence[str],
+    /,
+    *,
+    covariance: CovarianceSpec,
+    constants: Mapping[str, xr.DataArray] | None = None,
+    label_maps: Mapping[str, xr.DataArray] | None = None,
+    provenance: str | None = None,
+) -> FactorSpec:
+    """The noise factor of one source, its observed component centered on its
+    prediction, as the module docstring's data model has it.
+
+    Parameters
+    ----------
+    observation_vector:
+        Positional-only.
+    observation_source_names:
+        Positional-only. One source, by name.
+    covariance:
+        Keyword-only. :math:`\\Sigma_k`; ``BlockDiagonalSpec(..., by="site")``
+        gives one block per site. Of the source's constants
+        (:meth:`ObservationVector.constants <sipnet_calibration.observation.vector.ObservationVector.constants>`),
+        the factor holds those it reads; the components it names, such as a
+        noise variance, are read.
+    constants, label_maps:
+        Keyword-only. More, beside the source's, each read; a label map such
+        as ``observation_vector.year_label_map(k)``.
+    provenance:
+        Keyword-only. Where the noise model comes from.
+
+    Returns
+    -------
+    FactorSpec
+        Over the source's observed component, its law
+        ``GaussianSpec(mean=observation_vector.prediction_name(k), covariance=covariance)``.
+
+    Raises
+    ------
+    KeyError
+        If the source is not in the vector.
+    TypeError, ValueError
+        As :class:`~sipnet_calibration.probability.parts.FactorSpec` and
+        :class:`~sipnet_calibration.probability.parts.GaussianSpec`; and
+        ``ValueError`` for more than one source, or a constant named like
+        one of the source's that the covariance reads.
+
+    Notes
+    -----
+    The factor holds the observed values as the constant ``observed``, when
+    the covariance reads it. Conditioning on other values (synthetic data)
+    then needs a factor made from
+    ``observation_vector.with_observed_values(...)``, or the covariance
+    follows the real data; and a covariance built from the data makes the
+    evidence an empirical-Bayes quantity.
+
+    A noise factor over several sources, whose errors are correlated, is not
+    built: its event would span several observation dims.
+    """
+    names = (observation_source_names,) if isinstance(observation_source_names, str) else as_names(
+        observation_source_names, message_name="observation_source_names"
+    )
+    check_noise_factor_is_over_one_source(names)
+    (name,) = names
+    event = _component(observation_vector, name, name)
+    source_constants = {
+        constant_name: value
+        for constant_name, value in observation_vector.constants(name).items()
+        if constant_name in covariance.reads
+    }
+    extra = {} if constants is None else dict(constants)
+    check_constants_are_named_apart_from_the_sources(name, source_constants, extra)
+    return FactorSpec(
+        event,
+        law=GaussianSpec(mean=observation_vector.prediction_name(name), covariance=covariance),
+        constants={**source_constants, **extra},
+        label_maps=label_maps,
+        provenance=provenance,
+    )
+
+
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 
@@ -89,3 +202,29 @@ def _component(observation_vector: ObservationVector, observation_source_name: s
         support=REAL,
         indexed_by=(observation_vector.observation_dim_name(observation_source_name),),
     )
+
+
+# ── checks ────────────────────────────────────────────────────────────────────
+
+
+def check_noise_factor_is_over_one_source(names: Sequence[str]) -> None:
+    """A noise factor is one source's: one over several, whose event would
+    span several observation dims, is not built."""
+    if len(names) != 1:
+        raise ValueError(
+            f"a noise factor over {list(names)} is asked for; give one source. A noise factor whose errors "
+            "are correlated across sources is not supported: give each source its own."
+        )
+
+
+def check_constants_are_named_apart_from_the_sources(
+    observation_source_name: str, source_constants: Mapping[str, xr.DataArray], constants: Mapping[str, xr.DataArray]
+) -> None:
+    """A noise factor's own constants are not named like the source's that
+    its covariance reads, which one name would then mean twice."""
+    clashing = [name for name in constants if name in source_constants]
+    if clashing:
+        raise ValueError(
+            f"the noise factor of {observation_source_name!r} is given constants {truncated(clashing)}, named "
+            "like the source's own constants its covariance reads; name them apart."
+        )

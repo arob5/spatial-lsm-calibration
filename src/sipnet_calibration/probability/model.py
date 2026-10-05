@@ -30,6 +30,12 @@ every deterministic value substituted, against the product of each
 support's reference measure (:mod:`~sipnet_calibration.probability.laws`).
 A deterministic adds nothing to the density.
 
+A **Gaussian factor**, one whose law is a
+:class:`~sipnet_calibration.probability.parts.GaussianSpec`, has its
+covariance spec bound to the labels in use with the factor: which entries
+form blocks is fixed then, and at each draw only the blocks' values are
+computed (:mod:`~sipnet_calibration.probability.covariance`).
+
 What it reads
 -------------
 Parts and input declarations (:func:`joint`); then, to bind, the labels of
@@ -62,7 +68,10 @@ Binding runs the probe-point checks on every factor, whatever its later
 role: its law at the probe points of its own unconstrained coordinates,
 at two ancestral draws of what it reads when that varies by draw. Each
 deterministic's outputs are checked at the probe points of the random
-components it is computed from, pushed through.
+components it is computed from, pushed through. A Gaussian factor, on
+``REAL``, is checked instead for its event shape and, unless its covariance
+reads a simulator output, for a positive-definite covariance at those
+draws.
 
 Binding runs no simulator: it binds each one to the labels in use
 (:meth:`Simulator.at <sipnet_calibration.probability.parts.Simulator.at>`)
@@ -140,9 +149,11 @@ from sipnet_calibration.probability.layout import (
     validate_values_by_name,
 )
 from sipnet_calibration.probability.names import SAMPLE
+from sipnet_calibration.probability.covariance import _Scope
 from sipnet_calibration.probability.parts import (
     DeterministicSpec,
     FactorSpec,
+    GaussianSpec,
     Simulator,
     SimulatorOutput,
     check_simulator_is_valid,
@@ -228,7 +239,8 @@ class ModelSpec:
         If there is no part; a component or input is declared twice; a part
         reads a name nothing declares, or holds a constant or label map named
         like a component or input; an element axis name has two sets of
-        labels; or the links form a cycle.
+        labels; a Gaussian factor's mean differs from its event in layout or
+        units; or the links form a cycle.
     """
 
     __slots__ = ("parts", "inputs", "_owner", "_order")
@@ -314,8 +326,11 @@ class ModelSpec:
             If a dim is missing, *inputs* names no declared input, or a
             constant, label map or input lacks a label in use.
         ValueError
-            If an input is missing, not finite or outside its support, or a
-            check at the probe points fails, naming the part.
+            If an input is missing, not finite or outside its support; a
+            check at the probe points fails, naming the part; or a Gaussian
+            factor's covariance cannot be built over its labels
+            (:mod:`~sipnet_calibration.probability.covariance`) or is not
+            positive definite.
         """
         return FactoredDistribution(self, coords=coords, inputs=inputs)
 
@@ -841,9 +856,12 @@ def _bound_parts(
             continue
         reads, held = split_reads(part.given, draws, fixed)
         per_draw_values = [{n: v[i] for n, v in reads.items()} for i in range(ANCESTRAL_DRAWS)] if reads else [{}]
+        gaussian = isinstance(part.law, GaussianSpec)
         bound = BoundFactor.build(
             part, index_shape=model._layout.index_shape(part.event[0].name), fixed_reads=frozendict(fixed_reads),
             per_draw_values=per_draw_values, fixed_values=held, downstream_of_a_simulator=part.name in downstream,
+            covariance=part.law.covariance._at(_covariance_scope(model, part, fixed_reads)) if gaussian else None,
+            covariance_is_checked=not gaussian or not _covariance_reads_a_placeholder(spec, part, downstream),
         )
         factors[part.name] = bound
         if ancestral:
@@ -861,6 +879,48 @@ def _bound_parts(
         fixed,
         {name: simulators[name] for name in order if name in simulators},
     )
+
+
+def _covariance_scope(model: FactoredDistribution, part: FactorSpec, fixed_reads: Mapping[str, Any]) -> _Scope:
+    """What a Gaussian factor's covariance spec is bound over: the event's
+    entries, and the dims of everything the factor reads."""
+    (component,) = part.event
+    event_dim = component.indexed_by[0] if component.indexed_by else None
+    spec = model.spec
+    return _Scope(
+        factor_name=part.name,
+        size=math.prod(model._layout.index_shape(component.name)),
+        event_dim=event_dim,
+        labels=None if event_dim is None else model.coords[event_dim],
+        read_dims={name: _dims_read(model, part, name) for name in part.reads},
+        fixed=dict(fixed_reads),
+        specs={name: spec.component_spec(name) for name in part.given},
+        label_map_targets={name: str(label_map.name) for name, label_map in part.label_maps.items()},
+        coords=model.coords,
+    )
+
+
+def _dims_read(model: FactoredDistribution, part: FactorSpec, name: str) -> tuple[str, ...]:
+    """The dims of what a factor reads as *name*, in the order its array
+    arrives: a constant's as :func:`_fixed_reads` orders them, a label
+    map's one dim, a component's or input's ``indexed_by`` and element
+    axes."""
+    if name in part.constants:
+        dims = tuple(map(str, part.constants[name].dims))
+        order = [d for c in part.event for d in (*c.indexed_by, *c.element_axes)]
+        first = [d for d in dict.fromkeys(order) if d in dims]
+        return (*first, *(d for d in dims if d not in first))
+    if name in part.label_maps:
+        return (str(part.label_maps[name].dims[0]),)
+    spec = model.spec.component_spec(name)
+    return (*spec.indexed_by, *spec.element_axes)
+
+
+def _covariance_reads_a_placeholder(spec: ModelSpec, part: FactorSpec, downstream: set[str]) -> bool:
+    """Whether a Gaussian factor's covariance reads a simulator output, or
+    something computed from one, which binding holds a placeholder for."""
+    owners = [spec._owner.get(name) for name in part.law.covariance.reads]
+    return any(isinstance(owner, Simulator) or (owner is not None and owner.name in downstream) for owner in owners)
 
 
 def _names_varying_by_draw(spec: ModelSpec) -> set[str]:
@@ -1032,6 +1092,9 @@ def check_model_spec_is_valid(spec: ModelSpec) -> None:
         check_part_reads_declared_names(part, set(names))
         check_constants_are_named_apart(part, set(names))
     check_element_axes_agree([*(c for p in spec.parts for c in _declared(p)), *spec.inputs])
+    for part in spec.parts:
+        if isinstance(part, FactorSpec) and isinstance(part.law, GaussianSpec):
+            check_gaussian_mean_matches_its_event(part, spec)
 
 
 def check_part_is_a_part(part: Any) -> None:
@@ -1107,6 +1170,21 @@ def check_element_axes_agree(specs: Sequence[ArraySpec]) -> None:
                     "labels; an element axis name means one set of labels across a model, so name them apart."
                 )
             seen.setdefault(axis, (spec.name, labels))
+
+
+def check_gaussian_mean_matches_its_event(part: FactorSpec, spec: ModelSpec) -> None:
+    """A Gaussian factor's mean has its event's layout and units: indexed by
+    the same dims, with the same element axes, in the same units."""
+    (event,) = part.event
+    (name,) = part.law.mean
+    declared = {c.name: c for p in spec.parts for c in _declared(p)} | {i.name: i for i in spec.inputs}
+    mean = declared[name]
+    if (mean.indexed_by, dict(mean.element_axes), mean.units) != (event.indexed_by, dict(event.element_axes), event.units):
+        raise ValueError(
+            f"the Gaussian factor {part.name!r} is centered on {name!r}, indexed by {mean.indexed_by} in "
+            f"{mean.units!r}, but its event is indexed by {event.indexed_by} in {event.units!r}; a mean has its "
+            "event's layout and units, so convert it before it is one."
+        )
 
 
 def check_simulator_runs_outside_a_trace(name: str, values: Sequence[Any]) -> None:

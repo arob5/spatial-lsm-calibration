@@ -30,6 +30,10 @@ Functions and classes
     Whether an object is a law, not a class or a function making one.
 :func:`distribution_name`
     A short name for a law, for a description.
+:class:`GaussianLaw`
+    A Gaussian over a block, holding a structured covariance: what a
+    :class:`~sipnet_calibration.probability.parts.GaussianSpec` evaluates
+    to, and what :func:`as_law` makes of a ``pyeki.gauss.Gaussian``.
 :data:`CARRIES_ITS_BIJECTOR`
     The TFP classes whose ``.distribution`` and ``.bijector`` a model reads.
 
@@ -37,20 +41,26 @@ Notes
 -----
 Adapters for EnsKit's ``Gaussian`` and numpyro's distributions, which
 :func:`as_law` will recognize by class, come with the foreign-law PR (P9);
-until then they are given as objects implementing :class:`Law`.
+until then they are given as objects implementing :class:`Law`. Today's
+``pyeki.gauss.Gaussian``, which EnsKit's replaces, is adapted already, as
+a :class:`GaussianLaw`.
 """
 
 from __future__ import annotations
 
+import math
 from typing import Any, Protocol, runtime_checkable
 
 import jax
+import jax.numpy as jnp
 from tensorflow_probability.substrates import jax as tfp
 
+from sipnet_calibration.probability import _linalg
 from sipnet_calibration.probability.support import Support, bijector_for
 
 __all__ = [
     "CARRIES_ITS_BIJECTOR",
+    "GaussianLaw",
     "Law",
     "as_law",
     "distribution_name",
@@ -87,12 +97,16 @@ def as_law(distribution: Any) -> Law:
 
     A TFP distribution is returned unchanged, and so is any other object
     that implements :class:`Law` (a callable ``log_prob`` and ``sample``).
+    A ``pyeki.gauss.Gaussian`` becomes a :class:`GaussianLaw` over its
+    ``(n,)`` vector.
 
     Raises
     ------
     TypeError
-        If *distribution* is neither.
+        If *distribution* is none of these.
     """
+    if isinstance(distribution, _linalg.Gaussian):
+        return GaussianLaw(distribution.mean, distribution.cov)
     check_distribution_is_a_law(distribution)
     return distribution
 
@@ -160,6 +174,97 @@ def distribution_name(distribution: Any) -> str:
     return kind.__name__
 
 
+class GaussianLaw:
+    """:math:`\\mathcal N(m, \\Sigma)` over a block, its entries in C
+    order: a :class:`Law` holding a structured covariance.
+
+    Parameters
+    ----------
+    mean : ArrayLike
+        Positional-only. :math:`m`, of the block's shape.
+    covariance : PSDLinOp
+        Positional-only. :math:`\\Sigma` over the block's ``n`` entries: one
+        of pyEKI's positive-definite operators (``pyeki.linalg.PSDLinOp``),
+        which must support ``whiten``, ``logdet`` and ``factor``.
+
+    Attributes
+    ----------
+    mean : jax.Array
+        Of the block's shape.
+    covariance : PSDLinOp
+    event_shape : tuple of int
+        The block's shape.
+    gaussian : pyeki.gauss.Gaussian
+        The same law over the flattened block, as pyEKI holds one.
+
+    Raises
+    ------
+    TypeError
+        If *covariance* is not a ``PSDLinOp``.
+    ValueError
+        If *covariance* is not ``(n, n)`` over the block's ``n`` entries.
+
+    Notes
+    -----
+    A covariance that is not positive definite gives a density that is not
+    finite, not an error: its operator's precondition is not checked when
+    it is built (:mod:`~sipnet_calibration.probability.covariance`).
+    """
+
+    __slots__ = ("mean", "covariance", "gaussian")
+
+    def __init__(self, mean: Any, covariance: Any, /) -> None:
+        mean = jnp.asarray(mean, dtype=jnp.float64)
+        check_covariance_is_an_operator(covariance)
+        check_covariance_is_over_the_block(covariance, mean.shape)
+        object.__setattr__(self, "mean", mean)
+        object.__setattr__(self, "covariance", covariance)
+        object.__setattr__(self, "gaussian", _linalg.Gaussian(mean.reshape((-1,)), covariance))
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        raise AttributeError(f"a GaussianLaw is frozen; build another rather than setting {name!r}.")
+
+    def __repr__(self) -> str:
+        return f"GaussianLaw(event_shape={self.event_shape}, covariance={type(self.covariance).__name__})"
+
+    @property
+    def event_shape(self) -> tuple[int, ...]:
+        return tuple(self.mean.shape)
+
+    @property
+    def dtype(self) -> Any:
+        return jnp.float64
+
+    def log_prob(self, value: Any) -> Array:
+        """The log density at *value*, ``(..., *block) -> (...)``,
+
+        .. math::
+
+            -\\tfrac12 \\big(n \\log 2\\pi + \\log\\det\\Sigma
+                + \\lVert W (x - m) \\rVert^2\\big),
+
+        :math:`W` a whitener of :math:`\\Sigma` (``Gaussian.log_density``)."""
+        value = jnp.asarray(value, dtype=jnp.float64)
+        lead = value.shape[: value.ndim - self.mean.ndim]
+        return self.gaussian.log_density(value.reshape((*lead, -1)))
+
+    def sample(self, sample_shape: tuple[int, ...] = (), seed: Array | None = None) -> Array:
+        """Draws :math:`m + L z`, :math:`z \\sim \\mathcal N(0, I)` and
+        :math:`L` the covariance's factor, ``(*sample_shape, *block)``.
+
+        Raises
+        ------
+        TypeError
+            If *seed* is not given.
+        """
+        check_seed_is_given(seed)
+        sample_shape = tuple(sample_shape) if isinstance(sample_shape, (tuple, list)) else (int(sample_shape),)
+        factor = self.covariance.factor()
+        noise = jax.random.normal(seed, (*sample_shape, factor.shape[1]), dtype=jnp.float64)
+        draws = self.mean.reshape((-1,)) + factor.matvec(noise)
+        return draws.reshape((*sample_shape, *self.mean.shape))
+
+
 # ── checks ────────────────────────────────────────────────────────────────────
 
 
@@ -196,3 +301,28 @@ def check_bijector_is_a_tfp_bijector(bijector: Any) -> None:
     """A pushforward's map is a TFP bijector."""
     if not isinstance(bijector, tfb.Bijector):
         raise TypeError(f"pushforward's bijector is a {type(bijector).__name__}; give a TFP bijector.")
+
+
+def check_covariance_is_an_operator(covariance: Any) -> None:
+    """A Gaussian law's covariance is a positive-definite operator."""
+    if not isinstance(covariance, _linalg.PSDLinOp):
+        raise TypeError(
+            f"a GaussianLaw's covariance is a {type(covariance).__name__}; give a positive-definite operator, "
+            "such as one a covariance spec builds."
+        )
+
+
+def check_covariance_is_over_the_block(covariance: Any, shape: tuple[int, ...]) -> None:
+    """A Gaussian law's covariance is over its block's entries."""
+    size = math.prod(shape)
+    if tuple(covariance.shape) != (size, size):
+        raise ValueError(
+            f"a GaussianLaw's covariance is {tuple(covariance.shape)}, but its mean of shape {tuple(shape)} has "
+            f"{size} entries; give a ({size}, {size}) covariance."
+        )
+
+
+def check_seed_is_given(seed: Any) -> None:
+    """A draw is made from a key."""
+    if seed is None:
+        raise TypeError("a GaussianLaw draws from a key; give seed=jax.random.key(...).")
