@@ -78,7 +78,7 @@ Usage
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 
 import xarray as xr
 
@@ -91,7 +91,7 @@ from sipnet_calibration.observation.vector import (
     ObservationVector,
 )
 from sipnet_calibration.probability import REAL, ArraySpec, CovarianceSpec, FactorSpec, GaussianSpec
-from sipnet_calibration.validation import as_names, truncated
+from sipnet_calibration.validation import truncated
 
 __all__ = [
     "noise_factor",
@@ -122,7 +122,7 @@ def prediction_components(observation_vector: ObservationVector) -> tuple[ArrayS
 
 def noise_factor(
     observation_vector: ObservationVector,
-    observation_source_names: str | Sequence[str],
+    observation_source_name: str,
     /,
     *,
     covariance: CovarianceSpec,
@@ -137,8 +137,8 @@ def noise_factor(
     ----------
     observation_vector:
         Positional-only.
-    observation_source_names:
-        Positional-only. One source, by name.
+    observation_source_name:
+        Positional-only. The source, by name.
     covariance:
         Keyword-only. :math:`\\Sigma_k`; ``BlockDiagonalSpec(..., by="site")``
         gives one block per site. Of the source's constants
@@ -164,9 +164,10 @@ def noise_factor(
     TypeError
         As :class:`~sipnet_calibration.probability.parts.FactorSpec` and
         :class:`~sipnet_calibration.probability.parts.GaussianSpec`, and if
-        *covariance* is not a covariance spec or *constants* not a mapping.
+        *observation_source_name* is not a string, *covariance* not a
+        covariance spec or *constants* not a mapping.
     ValueError
-        As those, and for more than one source; a constant named like one
+        As those, and for a constant named like one
         of the source's that the covariance reads; or a covariance reading a
         source constant the source does not have, such as a standard
         deviation it was not given.
@@ -183,13 +184,10 @@ def noise_factor(
     A noise factor over several sources, whose errors are correlated, is not
     built: its event would span several observation dims.
     """
-    names = (observation_source_names,) if isinstance(observation_source_names, str) else as_names(
-        observation_source_names, message_name="observation_source_names"
-    )
-    check_noise_factor_is_over_one_source(names)
+    check_source_name_is_a_string(observation_source_name)
     check_covariance_is_a_covariance_spec(covariance)
     check_constants_are_a_mapping(constants)
-    (name,) = names
+    name = observation_source_name
     event = _component(observation_vector, name, name)
     held = observation_vector.constants(name)
     extra = {} if constants is None else dict(constants)
@@ -221,13 +219,14 @@ def _component(observation_vector: ObservationVector, observation_source_name: s
 # ── checks ────────────────────────────────────────────────────────────────────
 
 
-def check_noise_factor_is_over_one_source(names: Sequence[str]) -> None:
-    """A noise factor is one source's: one over several, whose event would
-    span several observation dims, is not built."""
-    if len(names) != 1:
-        raise ValueError(
-            f"a noise factor over {list(names)} is asked for; give one source. A noise factor whose errors "
-            "are correlated across sources is not supported: give each source its own."
+def check_source_name_is_a_string(observation_source_name: object) -> None:
+    """A noise factor is one source's, named by a string: one over several,
+    whose event would span several observation dims, is not built."""
+    if not isinstance(observation_source_name, str):
+        raise TypeError(
+            f"a noise factor's source is given as a {type(observation_source_name).__name__}; give one source's "
+            "name, such as 'modis_leaf_area_index'. A noise factor whose errors are correlated across sources "
+            "is not supported: give each source its own."
         )
 
 

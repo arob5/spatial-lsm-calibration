@@ -81,14 +81,6 @@ recommendations included, and reports any recommendation it finds doubtful.
   safe. Recommended: P5's `check_given` checks the given `ArraySpec`s'
   element labels, and the map transposes by label where a value carries
   them; or leave it, the risk being a hand-built Dataset.
-- **`noise_factor`'s source argument (P6, found in review).** The design
-  writes `noise_factor(vector, observation_source_names: str |
-  Sequence[str], /, ...)`, and P6 keeps it, accepting one name or a
-  sequence of one. CLAUDE.md's rule refuses a bare string for a sequence
-  argument, and a name argument is singular. Recommended: make it
-  `observation_source_name: str` now, and add the plural form with the
-  correlated-sources factor (open item below); the alternative keeps the
-  design's signature, which breaks the convention until then.
 - **Correlated sources (P6).** A Gaussian whose event spans several
   components, each on its own observation dim, is refused at `GaussianSpec`
   and `noise_factor`. Building it needs: `FactorSpec`'s joint-factor rule
@@ -734,14 +726,18 @@ in a dense sum, a matrix-shaped `GaussianLaw` block, a scale on
 simulator behind a covariance in `_with_held_covariance`, a guard that
 keeps `condition_on` from running a simulator reading only inputs; and the
 finiteness term of `SIPNETSimulator`'s validity, which P6 did not change.
-Judgment calls are the open questions above (`noise_factor`'s argument,
-correlated sources, the reading of D21, asymmetric matrices).
+Judgment calls are the open questions above (correlated sources, the
+reading of D21, asymmetric matrices). Decided by Andrew after the review:
+`noise_factor` takes one source, `observation_source_name: str`, against
+the design's `str | Sequence[str]`; a sequence is a `TypeError`.
 
 **Deviations from the design**, each recorded in `design.html` ("As built
 in P6"):
 
 - one mean, and an event of one component on `REAL` indexed by one dim at
   most with no element axes; correlated sources are refused (open question);
+- `noise_factor(observation_vector, observation_source_name, /, ...)`,
+  singular;
 - `GaussianLaw` is the layer's own `Law` over pyEKI's operators;
 - a Gaussian factor gets no probe-point checks; its covariance is checked
   positive definite at bind only when it reads nothing that varies by draw;

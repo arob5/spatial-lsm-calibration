@@ -296,7 +296,7 @@ def test_a_noise_factor_takes_more_constants_and_label_maps(vector):
     floor = xr.DataArray(0.7)
     year = vector.year_label_map(LAI)
     factor = noise_factor(
-        vector, [LAI],
+        vector, LAI,
         covariance=DiagonalSpec(lambda standard_deviation, floor, year_of: jnp.maximum(standard_deviation, floor) ** 2
                                 + 0.0 * year_of),
         constants={"floor": floor}, label_maps={"year_of": year},
@@ -309,9 +309,11 @@ def test_a_noise_factor_constant_named_like_the_sources_is_refused(vector):
         noise_factor(vector, SOIL, covariance=COVARIANCES[SOIL], constants={"observed": xr.DataArray(1.0)})
 
 
-def test_a_noise_factor_over_several_sources_is_refused(vector):
-    with pytest.raises(ValueError, match="give each source its own"):
-        noise_factor(vector, [LAI, SOIL], covariance=COVARIANCES[LAI])
+@pytest.mark.parametrize("names", [[LAI, SOIL], [LAI]])
+def test_a_noise_factor_is_of_one_source_named_by_a_string(names):
+    vector = ObservationVector(observation_sources=_synthetic_sources())
+    with pytest.raises(TypeError, match="give one source's name"):
+        noise_factor(vector, names, covariance=COVARIANCES[LAI])
 
 
 def test_a_noise_factor_of_a_source_not_in_the_vector_is_refused(vector):
