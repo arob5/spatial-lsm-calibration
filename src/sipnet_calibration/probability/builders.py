@@ -51,7 +51,7 @@ from frozendict import frozendict
 from tensorflow_probability.substrates import jax as tfp
 
 from sipnet_calibration.probability._keywords import function_reads
-from sipnet_calibration.probability.laws import CARRIES_ITS_BIJECTOR, distribution_name
+from sipnet_calibration.probability.laws import CARRIES_ITS_BIJECTOR, distribution_name, is_law
 
 __all__ = [
     "Builder",
@@ -127,10 +127,13 @@ def iid_over_dim(distribution: tfd.Distribution | Callable[..., tfd.Distribution
     Raises
     ------
     TypeError
-        When called for a component indexed by nothing, or, for a fixed law,
-        given values it would ignore; when :attr:`~Builder.reads` is asked
-        of a function breaking the keyword rule.
+        If *distribution* is a law that is not TFP's; when called for a
+        component indexed by nothing, or, for a fixed law, given values it
+        would ignore, or if the function returns a law that is not TFP's;
+        when :attr:`~Builder.reads` is asked of a function breaking the
+        keyword rule.
     """
+    check_law_given_to_a_builder_is_tfps(distribution, "iid_over_dim")
     if isinstance(distribution, tfd.Distribution):
         name = f"iid {distribution_name(distribution)}"
 
@@ -180,8 +183,9 @@ def independent_over_dim(distribution_family: Callable[..., tfd.Distribution], /
     Raises
     ------
     TypeError
-        When called for a component indexed by nothing; when
-        :attr:`~Builder.reads` is asked of a family breaking the keyword rule.
+        When called for a component indexed by nothing, or if the family
+        returns a law that is not TFP's; when :attr:`~Builder.reads` is
+        asked of a family breaking the keyword rule.
     ValueError
         When called, if the family's law is not a batch of one per label, as
         when no argument is per label (:func:`iid_over_dim` is that law).
@@ -301,6 +305,7 @@ class _OverDim(Builder):
     def __call__(self, index_shape: tuple[int, ...], **reads: Any) -> tfd.Distribution:
         check_component_has_index_dims(index_shape, self.name)
         distribution = self.per_label(index_shape, **reads)
+        check_law_given_to_a_builder_is_tfps(distribution, self.name)
         if type(distribution) in CARRIES_ITS_BIJECTOR:
             base = distribution.distribution
             base = tfd.Sample(base, index_shape) if self.repeated else tfd.Independent(base, len(index_shape))
@@ -374,6 +379,18 @@ def _is_pushforward(distribution: tfd.Distribution, base_class: type, bijector_c
 
 
 # ── checks ────────────────────────────────────────────────────────────────────
+
+
+def check_law_given_to_a_builder_is_tfps(distribution: Any, name: str) -> None:
+    """A law a builder repeats over a block is TFP's, which it wraps in
+    ``Sample`` or ``Independent``; a law from another package is not a
+    function to call."""
+    if is_law(distribution) and not isinstance(distribution, tfd.Distribution):
+        raise TypeError(
+            f"{name} repeats TFP laws over a block, and was given a {type(distribution).__name__}; give a TFP "
+            "distribution, or give the factor a function of what it reads returning a law over the whole "
+            "block, such as a numpyro distribution of batch shape () and event shape the block's."
+        )
 
 
 def check_component_has_index_dims(index_shape: tuple[int, ...], name: str) -> None:

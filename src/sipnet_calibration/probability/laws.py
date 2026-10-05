@@ -14,8 +14,12 @@ A **law** is what the layer requires of a distribution: TFP's ``log_prob``
 and ``sample``, with ``log_prob`` against the reference measure of its
 event's support (Lebesgue measure per number on an interval, on the first
 :math:`k - 1` coordinates on the simplex, on the lower triangle for a
-positive-definite matrix). TFP distributions are laws as they are; a law
-from another package is an object that implements :class:`Law` itself.
+positive-definite matrix). TFP distributions are laws as they are. Two
+other kinds are adapted by :func:`as_law`, which a model applies to every
+law a factor is given or builds: pyEKI's ``Gaussian`` becomes a
+:class:`GaussianLaw`, and a numpyro distribution, GPJax's
+``GaussianDistribution`` among them, a :class:`NumpyroLaw`. A law from any
+other package is an object that implements :class:`Law` itself.
 
 Functions and classes
 ---------------------
@@ -34,17 +38,20 @@ Functions and classes
     A Gaussian over a block, holding a structured covariance: what a
     :class:`~sipnet_calibration.probability.parts.GaussianSpec` evaluates
     to, and what :func:`as_law` makes of a ``pyeki.gauss.Gaussian``.
+:class:`NumpyroLaw`
+    A numpyro distribution as a law.
+:class:`PushforwardLaw`
+    What :func:`pushforward` makes of a base from another package.
 :data:`CARRIES_ITS_BIJECTOR`
     The TFP classes whose ``.distribution`` and ``.bijector`` a model reads.
 
 Notes
 -----
-Adapters for EnsKit's ``Gaussian`` and numpyro's distributions, which
-:func:`as_law` will recognize by class, come with the foreign-law PR (P9);
-until then they are given as objects implementing :class:`Law`. Today's
-``pyeki.gauss.Gaussian``, which EnsKit's replaces, :func:`as_law` makes a
-:class:`GaussianLaw`, which a factor's law function may return; a factor
-whose law is given as one directly comes with P9.
+numpyro is not a dependency: a numpyro distribution is recognized by the
+names of the classes in its MRO, so the layer never imports numpyro, and a
+model holds one only when its author has numpyro installed. EnsKit's
+``Gaussian`` will replace pyEKI's through the private ``_linalg`` shim,
+which is where :func:`as_law` finds the class.
 """
 
 from __future__ import annotations
@@ -56,13 +63,15 @@ import jax
 import jax.numpy as jnp
 from tensorflow_probability.substrates import jax as tfp
 
-from sipnet_calibration.probability import _linalg
+from sipnet_calibration.probability import _linalg, _numpyro
 from sipnet_calibration.probability.support import Support, bijector_for
 
 __all__ = [
     "CARRIES_ITS_BIJECTOR",
     "GaussianLaw",
     "Law",
+    "NumpyroLaw",
+    "PushforwardLaw",
     "as_law",
     "distribution_name",
     "is_law",
@@ -96,29 +105,44 @@ class Law(Protocol):
 def as_law(distribution: Any) -> Law:
     """*distribution* as a :class:`Law`.
 
-    A TFP distribution is returned unchanged, and so is any other object
-    that implements :class:`Law` (a callable ``log_prob`` and ``sample``).
-    A ``pyeki.gauss.Gaussian`` becomes a :class:`GaussianLaw` over its
-    ``(n,)`` vector.
+    A TFP distribution is returned unchanged. Two others are adapted, found
+    by class: a ``pyeki.gauss.Gaussian`` becomes a :class:`GaussianLaw` over
+    its ``(n,)`` vector, and a numpyro distribution (an instance of
+    ``numpyro.distributions.Distribution``, GPJax's ``GaussianDistribution``
+    among them) a :class:`NumpyroLaw`. Any other object that implements
+    :class:`Law`, a callable ``log_prob`` and ``sample``, is returned
+    unchanged.
 
     Raises
     ------
     TypeError
         If *distribution* is none of these.
+
+    Notes
+    -----
+    A numpyro distribution is tested for before the protocol: its
+    ``log_prob`` and ``sample`` are callable, but its ``sample`` takes the
+    key first.
     """
+    if isinstance(distribution, tfd.Distribution):
+        return distribution
     if isinstance(distribution, _linalg.Gaussian):
         return GaussianLaw(distribution.mean, distribution.cov)
+    if _numpyro.is_numpyro_distribution(distribution):
+        return NumpyroLaw(distribution)
     check_distribution_is_a_law(distribution)
     return distribution
 
 
 def is_law(distribution: Any) -> bool:
-    """Whether *distribution* is a law: a TFP distribution, or an instance
-    with a callable ``log_prob`` and ``sample``. A class is not one, even a
-    TFP distribution class, whose methods are callable on the class too."""
+    """Whether *distribution* is a law, or one :func:`as_law` adapts: a TFP
+    distribution, a ``pyeki.gauss.Gaussian``, a numpyro distribution, or an
+    instance with a callable ``log_prob`` and ``sample``. A class is not
+    one, even a TFP distribution class, whose methods are callable on the
+    class too."""
     if isinstance(distribution, type):
         return False
-    if isinstance(distribution, tfd.Distribution):
+    if isinstance(distribution, (tfd.Distribution, _linalg.Gaussian)) or _numpyro.is_numpyro_distribution(distribution):
         return True
     return callable(getattr(distribution, "log_prob", None)) and callable(getattr(distribution, "sample", None))
 
@@ -133,35 +157,46 @@ def pushforward(base: Any, *, support: Support | None = None, bijector: tfb.Bije
     Parameters
     ----------
     base:
-        A TFP distribution: the law of :math:`u`, unconstrained.
+        The law of :math:`u`, unconstrained: a TFP distribution, or any law
+        :func:`as_law` adapts, such as a numpyro distribution.
     support, bijector:
         Keyword-only. Where :math:`T` comes from.
 
     Returns
     -------
     Law
-        ``tfd.TransformedDistribution(base, T)``, of that exact class.
+        For a TFP *base*, ``tfd.TransformedDistribution(base, T)``, of that
+        exact class; for any other, a :class:`PushforwardLaw` of the adapted
+        base.
 
     Raises
     ------
     TypeError
         If both or neither of *support* and *bijector* are given, *base* is
-        not a TFP distribution, or *bijector* is not a TFP bijector.
+        not a law, or *bijector* is not a TFP bijector.
     KeyError
         If *support*'s type has no default bijector.
     """
     check_one_of_support_and_bijector_is_given(support, bijector)
-    check_base_is_a_tfp_distribution(base)
+    check_base_is_a_law(base)
     if bijector is None:
         bijector = bijector_for(support)
     check_bijector_is_a_tfp_bijector(bijector)
-    return tfd.TransformedDistribution(base, bijector)
+    if isinstance(base, tfd.Distribution):
+        return tfd.TransformedDistribution(base, bijector)
+    base = as_law(base)
+    check_base_has_an_event_shape(base)
+    return PushforwardLaw(base, bijector)
 
 
 def distribution_name(distribution: Any) -> str:
     """A short name for a law, for a description: the family builders'
     names, or the class and its bijector."""
     kind = type(distribution)
+    if kind is NumpyroLaw:
+        return f"numpyro {type(distribution.distribution).__name__}"
+    if kind is PushforwardLaw:
+        return f"{distribution_name(distribution.distribution)} through {distribution.bijector.name}"
     if kind is tfd.LogNormal:
         return "log-normal"
     if kind is tfd.LogitNormal:
@@ -259,11 +294,170 @@ class GaussianLaw:
             If *seed* is not given.
         """
         check_seed_is_given(seed, what="GaussianLaw")
-        sample_shape = tuple(sample_shape) if isinstance(sample_shape, (tuple, list)) else (int(sample_shape),)
+        sample_shape = _as_sample_shape(sample_shape)
         factor = self.covariance.factor()
         noise = jax.random.normal(seed, (*sample_shape, factor.shape[1]), dtype=jnp.float64)
         draws = self.mean.reshape((-1,)) + factor.matvec(noise)
         return draws.reshape((*sample_shape, *self.mean.shape))
+
+
+class NumpyroLaw:
+    """A numpyro distribution as a :class:`Law`.
+
+    Parameters
+    ----------
+    distribution
+        Positional-only. An instance of
+        ``numpyro.distributions.Distribution``, such as GPJax's
+        ``GaussianDistribution``.
+
+    Attributes
+    ----------
+    distribution
+        The numpyro distribution.
+    event_shape, batch_shape : tuple of int
+        Its own.
+    dtype
+        The dtype of its draws.
+
+    Raises
+    ------
+    TypeError
+        If *distribution* is not a numpyro distribution.
+
+    Notes
+    -----
+    numpyro's ``sample(key, sample_shape)`` becomes ``sample(sample_shape,
+    seed=key)``. ``log_prob`` is vmapped over the axes in front of the
+    distribution's batch and event, on which a model batches its values and
+    which some numpyro distributions, GPJax's among them, do not broadcast.
+    """
+
+    __slots__ = ("distribution",)
+
+    def __init__(self, distribution: Any, /) -> None:
+        check_distribution_is_numpyro(distribution)
+        object.__setattr__(self, "distribution", distribution)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        raise AttributeError(f"a NumpyroLaw is frozen; build another rather than setting {name!r}.")
+
+    def __repr__(self) -> str:
+        return f"NumpyroLaw({type(self.distribution).__name__}, event_shape={self.event_shape})"
+
+    @property
+    def event_shape(self) -> tuple[int, ...]:
+        return tuple(self.distribution.event_shape)
+
+    @property
+    def batch_shape(self) -> tuple[int, ...]:
+        return tuple(self.distribution.batch_shape)
+
+    @property
+    def dtype(self) -> Any:
+        return jax.eval_shape(self.distribution.sample, jax.random.key(0)).dtype
+
+    def log_prob(self, value: Any) -> Array:
+        """The distribution's ``log_prob`` at *value*, ``(..., *batch,
+        *event) -> (..., *batch)``."""
+        value = jnp.asarray(value)
+        ndim = len(self.batch_shape) + len(self.event_shape)
+        lead = value.shape[: value.ndim - ndim]
+        if not lead:
+            return self.distribution.log_prob(value)
+        flat = value.reshape((-1, *value.shape[value.ndim - ndim :]))
+        return jax.vmap(self.distribution.log_prob)(flat).reshape((*lead, *self.batch_shape))
+
+    def sample(self, sample_shape: tuple[int, ...] = (), seed: Array | None = None) -> Array:
+        """Draws, ``(*sample_shape, *batch, *event)``.
+
+        Raises
+        ------
+        TypeError
+            If *seed* is not given.
+        """
+        check_seed_is_given(seed, what="NumpyroLaw")
+        return self.distribution.sample(seed, _as_sample_shape(sample_shape))
+
+
+class PushforwardLaw:
+    """The law of :math:`x = T(u)`, :math:`u` drawn from a law that is not
+    TFP's: what :func:`pushforward` makes of such a base,
+
+    .. math::
+
+        \\log p_x(x) = \\log p_u\\big(T^{-1}(x)\\big)
+            + \\log \\left|\\det \\frac{\\partial T^{-1}(x)}{\\partial x}\\right|,
+
+    the log-determinant TFP's ``inverse_log_det_jacobian`` over the base's
+    event. A model evaluates a factor whose law is a pushforward through its
+    components' own bijectors by the base density instead, exactly.
+
+    Parameters
+    ----------
+    distribution : Law
+        Positional-only. The law of :math:`u`, with an ``event_shape``.
+    bijector : tfb.Bijector
+        Positional-only. :math:`T`.
+
+    Attributes
+    ----------
+    distribution, bijector
+        As given.
+    event_shape : tuple of int
+        :math:`T`'s image of the base's event shape.
+    batch_shape : tuple of int
+        The base's, ``()`` if it has none.
+    dtype
+        The base's.
+    """
+
+    __slots__ = ("distribution", "bijector")
+
+    def __init__(self, distribution: Law, bijector: tfb.Bijector, /) -> None:
+        object.__setattr__(self, "distribution", distribution)
+        object.__setattr__(self, "bijector", bijector)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        raise AttributeError(f"a PushforwardLaw is frozen; build another rather than setting {name!r}.")
+
+    def __repr__(self) -> str:
+        return f"PushforwardLaw({distribution_name(self.distribution)}, {self.bijector.name})"
+
+    @property
+    def event_shape(self) -> tuple[int, ...]:
+        return tuple(self.bijector.forward_event_shape(self.distribution.event_shape))
+
+    @property
+    def batch_shape(self) -> tuple[int, ...]:
+        return tuple(getattr(self.distribution, "batch_shape", ()))
+
+    @property
+    def dtype(self) -> Any:
+        return self.distribution.dtype
+
+    def log_prob(self, value: Any) -> Array:
+        """The log density at *value*, by change of variables."""
+        value = jnp.asarray(value, dtype=jnp.float64)
+        event_ndims = len(self.distribution.event_shape)
+        log_jacobian = self.bijector.inverse_log_det_jacobian(value, event_ndims=event_ndims)
+        return self.distribution.log_prob(self.bijector.inverse(value)) + log_jacobian
+
+    def sample(self, sample_shape: tuple[int, ...] = (), seed: Array | None = None) -> Array:
+        """:math:`T(u)` at draws of :math:`u`, ``(*sample_shape, *event)``.
+
+        Raises
+        ------
+        TypeError
+            If *seed* is not given.
+        """
+        check_seed_is_given(seed, what="PushforwardLaw")
+        return self.bijector.forward(self.distribution.sample(_as_sample_shape(sample_shape), seed=seed))
+
+
+def _as_sample_shape(sample_shape: Any) -> tuple[int, ...]:
+    """A sample shape given as an integer or a sequence, as a tuple."""
+    return tuple(sample_shape) if isinstance(sample_shape, (tuple, list)) else (int(sample_shape),)
 
 
 # ── checks ────────────────────────────────────────────────────────────────────
@@ -288,13 +482,31 @@ def check_one_of_support_and_bijector_is_given(support: Any, bijector: Any) -> N
         )
 
 
-def check_base_is_a_tfp_distribution(base: Any) -> None:
-    """A pushforward's base is a TFP distribution, the one kind of law it
-    can wrap until the foreign-law adapters exist."""
-    if not isinstance(base, tfd.Distribution):
+def check_base_is_a_law(base: Any) -> None:
+    """A pushforward's base is a law, or one :func:`as_law` adapts."""
+    if not is_law(base):
         raise TypeError(
-            f"pushforward's base is a {type(base).__name__}; give a TFP distribution of the "
-            "unconstrained values."
+            f"pushforward's base is a {type(base).__name__}; give a law of the unconstrained values, such as "
+            "a TFP or numpyro distribution."
+        )
+
+
+def check_base_has_an_event_shape(base: Any) -> None:
+    """A pushforward's base says its event shape, which the bijector's
+    log-Jacobian is summed over."""
+    if getattr(base, "event_shape", None) is None:
+        raise TypeError(
+            f"pushforward's base, a {type(base).__name__}, has no event_shape, which its bijector's "
+            "log-Jacobian is summed over; give the law an event_shape attribute."
+        )
+
+
+def check_distribution_is_numpyro(distribution: Any) -> None:
+    """A numpyro law adapts a numpyro distribution."""
+    if not _numpyro.is_numpyro_distribution(distribution):
+        raise TypeError(
+            f"a NumpyroLaw adapts a numpyro distribution, not a {type(distribution).__name__}; give the "
+            "distribution to as_law, which adapts what it recognizes."
         )
 
 

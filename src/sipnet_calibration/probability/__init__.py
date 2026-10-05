@@ -14,7 +14,7 @@ Where this sits
     probability.labels      coords (stacked dims too), constants, label maps
       -> probability.spec      ArraySpec: one component's declaration and T
       -> probability.layout    Layout: named arrays as one flat vector, and its forms
-    probability.laws        Law, as_law, pushforward; GaussianLaw
+    probability.laws        Law, as_law, pushforward; GaussianLaw, NumpyroLaw, PushforwardLaw
       -> probability.families  one value's law: log_normal, ..., normal, inverse_gamma, inverse_wishart
       -> probability.builders  a law over a block: iid_over_dim, independent_over_dim, gaussian_copula
     probability.covariance  covariance specs: DiagonalSpec, DenseSpec, ..., BlockDiagonalSpec
@@ -29,8 +29,9 @@ Where this sits
 No module here imports from ``sipnet_calibration`` outside ``probability``,
 which ``tests/test_package.py`` enforces, and only the private
 ``probability._linalg`` imports pyEKI, whose operators and ``Gaussian`` the
-Gaussian laws are built on. It computes in ``float64``, which importing the
-package turns on.
+Gaussian laws are built on. numpyro and GPJax it never imports: it adapts
+their distributions, recognized by class name. It computes in ``float64``,
+which importing the package turns on.
 
 Modules
 -------
@@ -111,7 +112,7 @@ from sipnet_calibration.probability.covariance import (
     SubmatrixSpec,
     SumSpec,
 )
-from sipnet_calibration.probability.laws import GaussianLaw, Law, as_law, pushforward
+from sipnet_calibration.probability.laws import GaussianLaw, Law, NumpyroLaw, PushforwardLaw, as_law, pushforward
 from sipnet_calibration.probability.layout import (
     LabeledValues,
     Layout,
@@ -198,9 +199,11 @@ __all__ = [
     "MatrixStudentTLaw",
     "MatrixStudentTSpec",
     "ModelSpec",
+    "NumpyroLaw",
     "PositiveDefinite",
     "Posterior",
     "PosteriorEvaluation",
+    "PushforwardLaw",
     "ScaledSpec",
     "Simplex",
     "Simulator",

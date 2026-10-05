@@ -983,6 +983,48 @@ def pushforward(base: Any, *, support: Support | None = None,
         If both or neither of *support* and *bijector* are given, or
         :func:`as_law` cannot adapt *base*.
     """</code></pre>
+<p><i>As built in P9:</i></p>
+<ul>
+  <li><b>Recognition by name.</b> numpyro is not a dependency of the package.
+  A numpyro distribution is recognized by the qualified names of the classes
+  in its MRO (<code>numpyro.distributions.distribution.Distribution</code>),
+  in a private module, <code>probability._numpyro</code>, so no file imports
+  numpyro or GPJax and importing the layer loads neither (tested). numpyro is
+  in the <code>dev</code> dependency group for the tests, and GPJax in an
+  optional <code>gpjax</code> group.</li>
+  <li><b>The adapters.</b> <code>as_law</code> makes a numpyro distribution a
+  <code>NumpyroLaw</code>, which reorders <code>sample</code>'s arguments and
+  vmaps <code>log_prob</code> over the axes in front of its batch and event:
+  GPJax's <code>GaussianDistribution.log_prob</code> does not broadcast over
+  them, and the core batches its values there. EnsKit's <code>Gaussian</code>
+  is not released; pyEKI's is adapted, as P6 built it, to a
+  <code>GaussianLaw</code>, found through the <code>_linalg</code> shim, so E2
+  changes the class there alone.</li>
+  <li><b>Where adaptation happens.</b> <code>FactorSpec</code> holds a bare law
+  adapted, and the bound factor adapts what a law function returns, so a law
+  function may return any of the three kinds unwrapped.
+  <code>is_law</code> answers for the kinds <code>as_law</code> adapts
+  too.</li>
+  <li><b>A foreign pushforward.</b> <code>pushforward</code> of a TFP base still
+  returns an exact <code>tfd.TransformedDistribution</code> (parity); of any
+  other base, a <code>PushforwardLaw</code>, which a bound factor recognizes as
+  a pushforward through its components' bijectors and evaluates by the base
+  density, as the example of §10.3 needs. A base must say its
+  <code>event_shape</code>, which the bijector's log-Jacobian is summed
+  over.</li>
+  <li><b>Laws with no density.</b> The P3 check looks inside the adapters and
+  numpyro's wrappers (<code>Independent</code>, <code>ExpandedDistribution</code>,
+  <code>MaskedDistribution</code>, <code>TransformedDistribution</code>, the
+  mixtures), and refuses numpyro's discrete laws (by their support's
+  <code>is_discrete</code>), <code>Delta</code>, <code>Unit</code> and the LKJ
+  laws. On the simplex, numpyro's <code>Dirichlet</code> is accepted beside
+  TFP's: its density is against the same measure.</li>
+  <li><b>The builders stay TFP's.</b> <code>iid_over_dim</code> and
+  <code>independent_over_dim</code> wrap a law in TFP's <code>Sample</code> or
+  <code>Independent</code>, and refuse a law from another package with a
+  <code>TypeError</code> that says to give the factor a law over the whole
+  block instead.</li>
+</ul>
 <p>The families <code>log_normal</code>, <code>log_normal_from_interval</code>,
 <code>log_normal_from_samples</code>, <code>logit_normal</code>,
 <code>logit_normal_from_interval</code>, <code>logit_normal_from_samples</code>
