@@ -362,9 +362,7 @@ class InverseWishart(tfd.TransformedDistribution):
         self._scale = jnp.asarray(scale, dtype=jnp.float64)
         check_inverse_wishart_arguments_are_valid(self._degrees_of_freedom, self._scale)
         super().__init__(
-            distribution=tfd.WishartTriL(
-                df=self._degrees_of_freedom, scale_tril=jnp.linalg.cholesky(jnp.linalg.inv(self._scale))
-            ),
+            distribution=tfd.WishartTriL(df=self._degrees_of_freedom, scale_tril=_inverse_cholesky(self._scale)),
             bijector=tfb.Chain([
                 tfb.CholeskyOuterProduct(), tfb.CholeskyToInvCholesky(), tfb.Invert(tfb.CholeskyOuterProduct()),
             ]),
@@ -404,6 +402,14 @@ def inverse_wishart(*, degrees_of_freedom: Any, scale: Any) -> InverseWishart:
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
+
+
+def _inverse_cholesky(matrix: Array) -> Array:
+    """The lower Cholesky factor of ``inv(matrix)``, from ``matrix``'s own
+    factor by triangular solves rather than an explicit inverse."""
+    lower = jnp.linalg.cholesky(matrix)
+    inverse = jax.scipy.linalg.cho_solve((lower, True), jnp.eye(matrix.shape[-1], dtype=matrix.dtype))
+    return jnp.linalg.cholesky((inverse + inverse.T) / 2.0)
 
 
 def _logit_normal_on(support: Interval, loc: Array, scale: Array) -> tfd.Distribution:

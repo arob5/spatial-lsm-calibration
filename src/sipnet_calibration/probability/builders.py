@@ -12,10 +12,10 @@ Where this sits
 What a builder is
 -----------------
 A :class:`Builder` is a factor's law for the labels in use: the model calls
-it as ``builder(index_shape, **reads)``, the index shape being the number
-of labels in use of each dim the factor's components are indexed by, which
-for labels independent and identically distributed nothing it reads
-carries, and ``reads`` the values it names. It returns a law of TFP batch
+it as ``builder(index_shape, **reads)``: the index shape is the number of
+labels in use of each dim the factor's components are indexed by, which a
+builder needs because, for labels independent and identically distributed,
+nothing it reads has those dims; ``reads`` are the values it names. It returns a law of TFP batch
 shape ``()`` over the factor's blocks. Each builder exposes what it wraps,
 :attr:`Builder.law`, and what it reads, :attr:`Builder.reads`, so a model
 reads its given components and constants off it by the keyword rule.
@@ -123,12 +123,19 @@ def iid_over_dim(distribution: tfd.Distribution | Callable[..., tfd.Distribution
     Builder
         Its :attr:`~Builder.law` is *distribution*; it reads nothing, or what
         the function reads.
+
+    Raises
+    ------
+    TypeError
+        When called for a component indexed by nothing, or, for a fixed law,
+        given values it would ignore; when :attr:`~Builder.reads` is asked
+        of a function breaking the keyword rule.
     """
     if isinstance(distribution, tfd.Distribution):
         name = f"iid {distribution_name(distribution)}"
 
         def fixed(index_shape: tuple[int, ...], **reads: Any) -> tfd.Distribution:
-            check_fixed_prior_reads_nothing(name, reads)
+            check_fixed_law_reads_nothing(name, reads)
             return distribution
 
         return _OverDim(per_label=fixed, repeated=True, name=name, wrapped=distribution, reads_of=None)
@@ -172,6 +179,9 @@ def independent_over_dim(distribution_family: Callable[..., tfd.Distribution], /
 
     Raises
     ------
+    TypeError
+        When called for a component indexed by nothing; when
+        :attr:`~Builder.reads` is asked of a family breaking the keyword rule.
     ValueError
         When called, if the family's law is not a batch of one per label, as
         when no argument is per label (:func:`iid_over_dim` is that law).
@@ -282,14 +292,14 @@ class _OverDim(Builder):
     @cached_property
     def reads(self) -> tuple[str, ...]:
         # Read when a factor asks, so a builder made for the parameter
-        # layer, which passes what its term names, never meets the rule.
+        # layer, which passes everything a prior term names, never meets it.
         if self.reads_of is None:
             return ()
         reads = function_reads(self.reads_of, message_name=f"{self.name}'s law")
         return tuple(name for name in reads if name not in self.bound)
 
     def __call__(self, index_shape: tuple[int, ...], **reads: Any) -> tfd.Distribution:
-        check_prior_over_a_dim_has_a_dim(index_shape, self.name)
+        check_component_has_index_dims(index_shape, self.name)
         distribution = self.per_label(index_shape, **reads)
         if type(distribution) in CARRIES_ITS_BIJECTOR:
             base = distribution.distribution
@@ -321,8 +331,8 @@ class _GaussianCopula(Builder):
         return ()
 
     def __call__(self, index_shape: tuple[int, ...], **reads: Any) -> tfd.Distribution:
-        check_prior_without_a_dim_has_none(index_shape, self.name)
-        check_fixed_prior_reads_nothing(self.name, reads)
+        check_components_have_no_index_dims(index_shape, self.name)
+        check_fixed_law_reads_nothing(self.name, reads)
         to_values = tfb.Chain([
             tfb.JointMap({n: tfb.Chain([b, tfb.Reshape([], [1])]) for n, b in zip(self.names, self.bijectors)}),
             tfb.Restructure({n: i for i, n in enumerate(self.names)}),
@@ -366,33 +376,33 @@ def _is_pushforward(distribution: tfd.Distribution, base_class: type, bijector_c
 # ── checks ────────────────────────────────────────────────────────────────────
 
 
-def check_prior_over_a_dim_has_a_dim(index_shape: tuple[int, ...], name: str) -> None:
+def check_component_has_index_dims(index_shape: tuple[int, ...], name: str) -> None:
     """A law over the index dims is given to a component indexed by some."""
     if not index_shape:
         raise TypeError(
-            f"{name} is a prior over a parameter's index dims, given to a component indexed by "
+            f"{name} is a law over a component's index dims, given to a component indexed by "
             "nothing; give that component the law itself."
         )
 
 
-def check_fixed_prior_reads_nothing(name: str, reads: Mapping[str, Any]) -> None:
+def check_fixed_law_reads_nothing(name: str, reads: Mapping[str, Any]) -> None:
     """A builder's fixed law is given nothing and reads no constant, which
     it would otherwise ignore."""
     if reads:
         raise TypeError(
-            f"{name} is a fixed prior, but its term is given or reads {sorted(reads)}, which it would "
-            "ignore; write a prior function of them, or, for labels independent and identically "
-            "distributed, iid_over_dim(lambda spread: tfd.Normal(0.0, spread))."
+            f"{name} is a fixed law, but it is given {sorted(reads)}, which it would ignore; write a "
+            "function of them returning a law, or, for labels independent and identically distributed, "
+            "iid_over_dim(lambda spread: tfd.Normal(0.0, spread))."
         )
 
 
-def check_prior_without_a_dim_has_none(index_shape: tuple[int, ...], name: str) -> None:
+def check_components_have_no_index_dims(index_shape: tuple[int, ...], name: str) -> None:
     """A law of components indexed by nothing is not given indexed ones,
     whose draws would otherwise be refused for their shape, far from the
     reason."""
     if index_shape:
         raise TypeError(
-            f"{name} is a prior of parameters indexed by nothing, given components of index shape "
+            f"{name} is a law of components indexed by nothing, given components of index shape "
             f"{index_shape}; give those components a law over their index dims."
         )
 

@@ -54,13 +54,12 @@ from sipnet_calibration.probability._validation import (
 )
 from sipnet_calibration.probability.builders import Builder
 from sipnet_calibration.probability.labels import as_constants, as_label_maps
-from sipnet_calibration.probability.laws import Law, distribution_name
+from sipnet_calibration.probability.laws import Law, distribution_name, is_law
 from sipnet_calibration.probability.spec import ArraySpec
 
 __all__ = [
     "DeterministicSpec",
     "FactorSpec",
-    "check_part_reads_what_it_holds",
     "deterministic",
     "factor",
 ]
@@ -125,12 +124,13 @@ class FactorSpec:
         If *event* is not one or more :class:`ArraySpec`; *law* is none of
         the three forms, or a function breaking the keyword rule; a bare
         law is given to a factor that is indexed, joint, or holds constants;
-        or a constant or label map is not a DataArray.
+        a constant or label map is not a DataArray; or *provenance* is not a
+        string.
     ValueError
         If the event is empty; a joint factor's components are indexed
         differently; a name repeats across the event, the constants and the
-        label maps; the law reads a component of its own event; or a
-        constant or label map is never read.
+        label maps; the law reads a component of its own event; a constant
+        or label map is never read; or *provenance* is empty.
 
     Notes
     -----
@@ -191,7 +191,7 @@ class FactorSpec:
         function's ``__name__``, or the law's class."""
         if isinstance(self.law, Builder):
             return self.law.name
-        if isinstance(self.law, tfd.Distribution) or _is_law_object(self.law):
+        if is_law(self.law):
             return distribution_name(self.law)
         return getattr(self.law, "__name__", type(self.law).__name__)
 
@@ -372,16 +372,10 @@ def _as_specs(specs: Any, *, what: str) -> tuple[ArraySpec, ...]:
     return specs
 
 
-def _is_law_object(law: Any) -> bool:
-    """Whether *law* implements the law protocol and is no builder or plain
-    function."""
-    return callable(getattr(law, "log_prob", None)) and callable(getattr(law, "sample", None))
-
-
 def _law_reads(name: str, law: Any) -> tuple[str, ...]:
     """What a factor's law reads: nothing for a law, a builder's
     :attr:`~Builder.reads`, a function's keywords."""
-    if isinstance(law, tfd.Distribution) or _is_law_object(law):
+    if is_law(law):
         return ()
     if isinstance(law, Builder):
         return law.reads
@@ -475,7 +469,7 @@ def check_bare_law_needs_nothing_bound(spec: FactorSpec) -> None:
     """A bare law is over one component indexed by nothing, and reads no
     constant: a law over labels, or of constants read at them, is built for
     the labels in use."""
-    if not (isinstance(spec.law, tfd.Distribution) or _is_law_object(spec.law)):
+    if not is_law(spec.law):
         return
     if len(spec.event) > 1:
         raise TypeError(
@@ -526,8 +520,12 @@ def check_law_is_one_of_the_forms(name: str, law: Any) -> None:
 
 def check_provenance_is_a_string_or_none(spec: FactorSpec) -> None:
     """A provenance, when given, is a sentence."""
-    if spec.provenance is not None and (not isinstance(spec.provenance, str) or not spec.provenance.strip()):
-        raise TypeError(
-            f"the factor {spec.name!r} has provenance {spec.provenance!r}; give a sentence saying where "
-            "the law comes from, or leave it out."
+    if spec.provenance is None:
+        return
+    if not isinstance(spec.provenance, str):
+        raise TypeError(f"the factor {spec.name!r} has provenance {spec.provenance!r}; give a string, or leave it out.")
+    if not spec.provenance.strip():
+        raise ValueError(
+            f"the factor {spec.name!r} has an empty provenance; give a sentence saying where the law comes "
+            "from, or leave it out."
         )

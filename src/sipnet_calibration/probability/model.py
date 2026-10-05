@@ -50,8 +50,8 @@ Functions and classes
 :class:`ModelSpec`
     The declared model: ``component_spec``, ``bind``, ``describe``.
 :class:`FactoredDistribution`
-    The model at labels: ``law``, ``select``, ``sample``, ``log_prob``,
-    ``describe``.
+    The model at labels: ``block_shape``, ``law``, ``select``, ``sample``,
+    ``log_prob``, ``describe``.
 :func:`block_at_labels`
     A labeled value or an array as a component's block at the labels in use.
 
@@ -101,6 +101,7 @@ from sipnet_calibration.probability._bound import (
     check_draws_map_to_finite_theta,
     coords_of,
     deterministics_behind,
+    finite_or_minus_infinity,
     random_key_for,
     split_reads,
 )
@@ -115,13 +116,13 @@ from sipnet_calibration.probability.labels import (
     aligned_constants,
     aligned_label_maps,
     as_coords,
+    is_stacked,
 )
 from sipnet_calibration.probability.layout import (
     Layout,
     ValuesByName,
     validate_values_by_name,
 )
-from sipnet_calibration.probability.names import COMPONENT_LEVEL
 from sipnet_calibration.probability.parts import DeterministicSpec, FactorSpec
 from sipnet_calibration.probability.spec import ArraySpec
 
@@ -129,7 +130,6 @@ __all__ = [
     "FactoredDistribution",
     "ModelSpec",
     "block_at_labels",
-    "check_model_spec_is_valid",
     "joint",
 ]
 
@@ -424,6 +424,8 @@ class FactoredDistribution:
 
         Raises
         ------
+        TypeError
+            If *given* is not a mapping.
         KeyError
             If no component is called *component_name*, or *given* lacks a
             name the factor reads.
@@ -454,7 +456,7 @@ class FactoredDistribution:
             and :meth:`ModelSpec.bind`; ``KeyError`` for ``component=``,
             since the spec decides the components.
         """
-        check_selectors_name_no_component(selectors)
+        check_selectors_name_dims_or_levels(selectors, self.coords)
         selected = self._layout.select(**selectors)
         return FactoredDistribution(self.spec, coords=selected.coords, inputs=dict(self.inputs))
 
@@ -495,8 +497,10 @@ class FactoredDistribution:
 
     def log_prob(self, values: Mapping[str, Any]) -> Array:
         """The joint log density of every factor's event, ``{name: (*batch,
-        *block)} -> (*batch,)``, against each support's reference measure.
-        Deterministic components are computed. Traceable.
+        *block)} -> (*batch,)``, against each support's reference measure,
+        ``-inf`` where a factor's density is not finite (a value outside or
+        on the boundary of its support). Deterministic components are
+        computed. Traceable.
 
         Raises
         ------
@@ -521,7 +525,7 @@ class FactoredDistribution:
         for bound in self._factors.values():
             own = {name: per_draw[name] for name in bound.names}
             reads, held = split_reads(bound.spec.given, per_draw, fixed)
-            total = total + bound.log_prob_natural(own, reads, held, lead)
+            total = total + finite_or_minus_infinity(bound.log_prob_natural(own, reads, held, lead))
         return total
 
     # ── supporting methods ────────────────────────────────────────────────────
@@ -590,10 +594,14 @@ def block_at_labels(spec: ArraySpec, value: Any, coords: Mapping[str, pd.Index],
 
     A DataArray is read by label: its dims are the spec's ``indexed_by`` and
     element axes, in any order, each holding at least the labels in use. Any
-    other value is an array of the block shape.
+    other value is an array of the block shape. *message_name* names the
+    mapping the value came from (``"inputs"``), so a message names it as
+    ``inputs['offset']``.
 
     Raises
     ------
+    TypeError
+        If the value is not numeric: a boolean, a string or an object.
     KeyError
         If a DataArray lacks a label in use.
     ValueError
@@ -601,17 +609,20 @@ def block_at_labels(spec: ArraySpec, value: Any, coords: Mapping[str, pd.Index],
         value is not finite or lies outside the spec's support.
     """
     expected = (*(len(coords[d]) for d in spec.indexed_by), *spec.shape)
+    subject = f"{message_name}[{spec.name!r}]"
     if isinstance(value, xr.DataArray):
+        check_value_is_numeric(value.dtype, subject)
         dims = (*spec.indexed_by, *spec.element_axes)
-        check_labeled_value_is_on_its_dims(spec.name, tuple(map(str, value.dims)), dims, message_name=message_name)
+        check_labeled_value_is_on_its_dims(spec.name, tuple(map(str, value.dims)), dims, message_name=subject)
         labels = {**{d: coords[d] for d in spec.indexed_by}, **spec.element_axes}
         (block,) = aligned_constants(
             {spec.name: value.astype(np.float64)}, labels, dim_order=dims, message_name=message_name
         ).values()
     else:
+        check_value_is_numeric(np.asarray(value).dtype, subject)
         block = jnp.asarray(value, dtype=jnp.float64)
         check_value_has_its_block_shape(spec.name, tuple(block.shape), expected)
-    check_value_is_finite_and_in_its_support(spec, block, message_name=message_name)
+    check_value_is_finite_and_in_its_support(spec, block, message_name=subject)
     return block
 
 
@@ -641,7 +652,7 @@ def _input_values(spec: ModelSpec, inputs: Any, coords: Mapping[str, pd.Index]) 
     check_inputs_are_a_mapping(inputs)
     check_inputs_name_the_declared(inputs, spec)
     return {
-        i.name: block_at_labels(i, inputs[i.name], coords, message_name=f"the input {i.name!r}") for i in spec.inputs
+        i.name: block_at_labels(i, inputs[i.name], coords, message_name="inputs") for i in spec.inputs
     }
 
 
@@ -693,7 +704,7 @@ def _bound_parts(
             draws |= bound.natural_values(theta)
     for bound in deterministics.values():
         if any(g in varying for g in bound.spec.given):
-            _check_deterministic_at_the_probes(model, bound, deterministics, fixed)
+            _evaluate_deterministic_at_the_probes(model, bound, deterministics, fixed)
     order = [p.name for p in spec.parts]
     return (
         {name: factors[name] for name in order if name in factors},
@@ -733,7 +744,7 @@ def _fixed_reads(model: FactoredDistribution, part: Part) -> dict[str, Any]:
     return {**constants, **label_maps}
 
 
-def _check_deterministic_at_the_probes(
+def _evaluate_deterministic_at_the_probes(
     model: FactoredDistribution,
     bound: BoundDeterministic,
     deterministics: Mapping[str, BoundDeterministic],
@@ -822,6 +833,7 @@ def check_model_spec_is_valid(spec: ModelSpec) -> None:
     check_model_has_a_part(spec.parts)
     for part in spec.parts:
         check_part_is_a_factor_or_a_deterministic(part)
+    check_model_has_a_factor(spec.parts)
     check_inputs_are_array_specs(spec.inputs)
     names = [c.name for p in spec.parts for c in _declared(p)] + [i.name for i in spec.inputs]
     check_names_are_unique(names, message_name="the model's components and inputs")
@@ -862,6 +874,12 @@ def check_model_has_a_part(parts: Sequence[Any]) -> None:
     """A model has at least one part."""
     if not parts:
         raise ValueError("a model has no part; give at least one FactorSpec.")
+
+
+def check_model_has_a_factor(parts: Sequence[Part]) -> None:
+    """A model has a factor: deterministics alone define no distribution."""
+    if not any(isinstance(p, FactorSpec) for p in parts):
+        raise ValueError("a model of deterministics alone defines no distribution; give at least one FactorSpec.")
 
 
 def check_part_reads_declared_names(part: Part, declared: set[str]) -> None:
@@ -975,18 +993,31 @@ def check_labeled_value_is_on_its_dims(name: str, dims: tuple[str, ...], expecte
         raise ValueError(f"{message_name} is on {dims}, but {name!r} is on {expected}; give it on those dims.")
 
 
+def check_value_is_numeric(dtype: np.dtype, subject: str) -> None:
+    """A value given for a component or input is a number: a boolean or a
+    string is not one, though NumPy would convert it."""
+    if np.dtype(dtype).kind not in "fiu":
+        raise TypeError(f"{subject} is of dtype {dtype}, not a number; give floats.")
+
+
 def check_value_is_finite_and_in_its_support(spec: ArraySpec, block: Array, *, message_name: str) -> None:
     """A value given for a component or input is finite and lies in its support."""
     if not bool(jnp.all(jnp.isfinite(block))):
         raise ValueError(f"{message_name} is not finite everywhere; give finite values.")
     if not bool(jnp.all(spec.support.contains(block))):
-        raise ValueError(f"{message_name} lies outside {spec.name!r}'s support {spec.support.name!r} somewhere.")
+        raise ValueError(f"{message_name} lies outside its support {spec.support.name!r} somewhere; give values inside it.")
 
 
-def check_selectors_name_no_component(selectors: Mapping[str, Any]) -> None:
-    """A selection keeps labels; the spec decides the components."""
-    if COMPONENT_LEVEL in selectors:
-        raise KeyError("select takes dims and levels, not component=; the model spec decides the components.")
+def check_selectors_name_dims_or_levels(selectors: Mapping[str, Any], coords: Mapping[str, pd.Index]) -> None:
+    """A selection keeps labels of dims or levels in use; the spec decides
+    the components."""
+    levels = {name for labels in coords.values() if is_stacked(labels) for name in labels.names}
+    unknown = [key for key in selectors if key not in coords and key not in levels]
+    if unknown:
+        raise KeyError(
+            f"select takes dims and levels in use, {truncated(sorted({*coords, *levels}))}, not "
+            f"{truncated(unknown)}; the model spec decides the components."
+        )
 
 
 def check_values_hold_each_event(values: Any, model: FactoredDistribution) -> None:

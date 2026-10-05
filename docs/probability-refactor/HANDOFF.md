@@ -48,6 +48,9 @@ recommendations included, and reports any recommendation it finds doubtful.
   that runs CLAUDE.md's standard companion upgrade would then break every pyEKI
   import, PR #69's included. The refactor's sessions do not upgrade pyEKI.
   Pinning its revision in `[tool.uv.sources]` would protect everyone.
+- **Singular and discrete laws (P3).** Binding accepts a law with no
+  density on the declared support, `tfd.LKJ` on a positive-definite
+  component for one; see P3's session entry for the recommendation.
 - **The recommended decisions** (§13): D1, D2, D5, D7, D8, D9, D10, D11, D12,
   D13, D14, D18–D24.
 
@@ -272,9 +275,37 @@ passes through them.
 specs and shows bit-identical theta order, draws, `log_prior` and natural
 values, the hierarchy's deterministic included. The families are checked
 against SciPy, `InverseWishart` among them. Graph tests cover barren nodes,
-`O_c`, cycles and nothing observed. One test checks that observing a
+`O_c`, cycles and nothing observed. Tests: 2651 passed and 94 skipped at
+P2's merge; 2788 and 94 after. One test checks that observing a
 hyperparameter equals declaring it an input (Proposition 3.3): the same
 draws and densities, and a different `log_constant`.
+
+**Review.** One Deep round, with four reviewers: numerics, edge cases,
+mutation testing and docs. It found no density that is wrong; A1 checked
+them against SciPy, closed forms and grid integration. This PR fixes:
+
+- a law class (`law=tfd.Normal`) taken for a law object; it is now read
+  as a function of its arguments (`laws.is_law`, which also replaces three
+  copies of the same test);
+- booleans and strings accepted as input and observed values;
+- `FactoredDistribution.log_prob` returning NaN outside a support, where
+  the posterior gives `-inf`;
+- a model of deterministics alone accepted;
+- a float32 law refused with a message that never named the dtype;
+- an empty provenance raising TypeError rather than ValueError;
+- `select`'s message for an unknown selector advising `component=`;
+- the inverse Wishart's scale factor formed with an explicit inverse;
+- the builders' messages and check names still in the parameter layer's
+  words, with three of its tests' `match=` strings updated to match;
+- Raises sections and `__all__` lists that did not match the code.
+
+Tests now cover the `-inf` mapping, a chain of two deterministics between
+factors, the base-event-shape guard of the pushforward test, and the
+autodiff log-Jacobian on the simplex. The last normalizes a Dirichlet
+under `IteratedSigmoidCentered` by grid integration. Mutation testing's
+`[:-1]` against `[1:]` in that Jacobian is an equivalent mutant: the
+coordinate projections of the simplex share one Jacobian. The joint
+factor's guard has no test, since no TFP bijector at hand reaches it.
 
 **Deviations from the design**, each recorded in `design.html`:
 
@@ -334,4 +365,17 @@ draws and densities, and a different `log_constant`.
   is a fourth branch there and in `parts._law_reads`.
 - `parameters.prior` still runs on its own copy of the logic; only the
   families and builders are shared. R1 deletes it.
+
+**Open question for Andrew.**
+
+- **Laws with no density on the declared support.** Binding checks a law
+  only at probe points and draws. It therefore accepts a law that is
+  singular or discrete on its support and evaluates it as a density:
+  `tfd.LKJ` on a positive-definite component, whose draws have unit
+  diagonal, or `tfd.Poisson` on `POSITIVE`. The interval case is as old as
+  PR #72; the positive-definite support is new here, which makes LKJ the
+  likely trap. Recommendation: refuse by class the TFP laws known to be
+  singular or discrete on these supports (LKJ, CholeskyLKJ, and laws with
+  an integer event); the alternative is to document that this is the
+  user's responsibility.
 

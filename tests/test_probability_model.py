@@ -81,13 +81,14 @@ def test_describe_has_a_row_per_part():
     ("parts", "message"),
     [
         ((), "no part"),
+        ((DeterministicSpec(ArraySpec("v", units="1"), function=lambda spread: spread),), "deterministics alone"),
         ((_spread(), _spread()), "more than once"),
         ((_value(), _location()), "no part declares"),
         ((FactorSpec(ArraySpec("spread", units="1", support=POSITIVE),
                      law=lambda location: log_normal(median=1.0, geometric_sd=2.0)),
           FactorSpec(ArraySpec("location", units="1"), law=lambda spread: tfd.Normal(0.0, spread))), "cycle"),
     ],
-    ids=["empty", "twice", "undeclared", "cycle"],
+    ids=["empty", "no factor", "twice", "undeclared", "cycle"],
 )
 def test_joint_refuses_a_malformed_graph(parts, message):
     with pytest.raises(ValueError, match=message):
@@ -155,6 +156,8 @@ def test_an_input_is_read_by_label_or_as_a_block():
         ({"offset": np.array([1.0, np.nan, 1.0])}, ValueError, "not finite"),
         ({"offset": np.array([1.0, -1.0, 1.0])}, ValueError, "outside"),
         ({"offset": np.ones(2)}, ValueError, "block shape"),
+        ({"offset": np.array([True, True, True])}, TypeError, "not a number"),
+        ({"offset": xr.DataArray(["1", "2", "3"], dims="site", coords={"site": SITES})}, TypeError, "not a number"),
         ({"offset": xr.DataArray([1.0, 2.0], dims="site", coords={"site": [10, 20]})}, KeyError, "no value at"),
         ({"offset": xr.DataArray(np.ones((3, 2)), dims=("site", "x"), coords={"site": SITES})}, ValueError, "on those dims"),
     ],
@@ -184,8 +187,9 @@ def test_a_constant_is_read_at_the_labels_in_use():
          "outside its declared support"),
         (FactorSpec(ArraySpec("carbon", units="1"), law=tfd.HalfNormal(jnp.float64(1.0))),
          "no density at some values"),
+        (FactorSpec(ArraySpec("carbon", units="1"), law=tfd.Normal(0.0, 1.0)), "not float64"),
     ],
-    ids=["shape", "mass outside", "smaller support"],
+    ids=["shape", "mass outside", "smaller support", "float32"],
 )
 def test_bind_checks_each_factor_at_the_probe_points(part, message):
     with pytest.raises(ValueError, match=message):
@@ -282,8 +286,10 @@ def test_select_binds_again_at_fewer_labels():
     whole = model.log_prob({"value": np.array([0.0, 0.0, 0.0])})
     part = selected.log_prob({"value": np.array([0.0, 0.0])})
     np.testing.assert_allclose(whole - part, st.norm(3.0, 1.0).logpdf(0.0))
-    with pytest.raises(KeyError, match="component"):
+    with pytest.raises(KeyError, match="dims and levels in use"):
         model.select(component=["value"])
+    with pytest.raises(KeyError, match="dims and levels in use"):
+        model.select(pft=["a"])
 
 
 def test_describe_says_how_each_factor_is_evaluated():
@@ -297,3 +303,28 @@ def test_a_bound_model_is_frozen():
     model = _model()
     with pytest.raises(AttributeError, match="frozen"):
         model.coords = {}
+
+
+def test_log_prob_is_minus_infinity_outside_a_support():
+    model = joint(_spread()).bind(coords={})
+    np.testing.assert_array_equal(model.log_prob({"spread": jnp.array([-1.0, 0.0])}), [-np.inf, -np.inf])
+
+
+def test_a_chain_of_deterministics_varies_by_draw():
+    twice = DeterministicSpec(ArraySpec("twice", units="1"), function=lambda spread: 2.0 * spread)
+    again = DeterministicSpec(ArraySpec("again", units="1"), function=lambda twice: twice + 1.0)
+    reading = FactorSpec(ArraySpec("reading", units="1"), law=lambda again: tfd.Normal(jnp.float64(0.0), again))
+    model = joint(reading, again, twice, _spread()).bind(coords={})
+    draws = model.sample(KEY, 2000)
+    np.testing.assert_allclose(draws["again"], 2.0 * draws["spread"] + 1.0)
+    standardized = np.asarray(draws["reading"] / draws["again"])
+    assert abs(standardized.std() - 1.0) < 0.05
+
+
+def test_a_transformed_law_whose_base_is_not_thetas_block_is_a_change_of_variables():
+    base = tfd.Independent(tfd.Normal(jnp.zeros((1, 2)), jnp.float64(1.0)), 2)
+    law = tfd.TransformedDistribution(base, tfb.Chain([tfb.Exp(), tfb.Reshape([2], [1, 2])]))
+    model = joint(FactorSpec(ArraySpec("pair", units="1", support=POSITIVE, element_axes={"k": 2}), law=law)).bind(coords={})
+    assert model.describe().loc["pair", "evaluated_by"] == "change of variables"
+    x = jnp.array([[0.5, 2.0]])
+    np.testing.assert_allclose(model.log_prob({"pair": x}), st.lognorm(1.0).logpdf(np.asarray(x)).sum(-1), rtol=1e-10)

@@ -85,6 +85,7 @@ from sipnet_calibration.probability._bound import (
     BoundFactor,
     coords_of,
     deterministics_behind,
+    finite_or_minus_infinity,
     split_reads,
 )
 from sipnet_calibration.probability._validation import as_count, truncated
@@ -100,7 +101,6 @@ from sipnet_calibration.probability.parts import DeterministicSpec, FactorSpec
 
 __all__ = [
     "Posterior",
-    "check_something_is_left_to_infer",
     "condition_on",
 ]
 
@@ -204,7 +204,7 @@ class Posterior:
         for name in observed_parts:
             check_event_is_wholly_observed(model._factors[name].spec, observed)
         values = {
-            name: block_at_labels(spec.component_spec(name), value, model.coords, message_name=f"the observed {name!r}")
+            name: block_at_labels(spec.component_spec(name), value, model.coords, message_name="observed")
             for name, value in observed.items()
         }
         roles = _roles(model, observed_parts)
@@ -319,7 +319,7 @@ class Posterior:
         total = jnp.zeros(lead, dtype=jnp.float64)
         for bound, positions in zip(self._target, self._slices):
             reads, held = split_reads(bound.spec.given, per_draw, fixed)
-            total = total + _finite_or_minus_infinity(bound.log_prob_theta(theta[..., positions], reads, held))
+            total = total + finite_or_minus_infinity(bound.log_prob_theta(theta[..., positions], reads, held))
         return total
 
     def log_likelihood(self, theta: Any) -> Array:
@@ -339,7 +339,7 @@ class Posterior:
         for bound in self._likelihood:
             own = {name: self._fixed[name] for name in bound.names}
             reads, held = split_reads(bound.spec.given, per_draw, fixed)
-            total = total + _finite_or_minus_infinity(bound.log_prob_natural(own, reads, held, lead))
+            total = total + finite_or_minus_infinity(bound.log_prob_natural(own, reads, held, lead))
         return total
 
     def log_density(self, theta: Any) -> Array:
@@ -478,10 +478,6 @@ def _layout_of(model: FactoredDistribution, names: Sequence[str]) -> Layout:
 def _slice_of(unconstrained: Layout, bound: BoundFactor) -> np.ndarray:
     """A target factor's entries of theta, its components' in event order."""
     return np.concatenate([np.arange(unconstrained.slice_of(n).start, unconstrained.slice_of(n).stop) for n in bound.names])
-
-
-def _finite_or_minus_infinity(log_density: Array) -> Array:
-    return jnp.where(jnp.isfinite(log_density), log_density, -jnp.inf)
 
 
 # ── checks ────────────────────────────────────────────────────────────────────

@@ -32,7 +32,7 @@ from tensorflow_probability.substrates import jax as tfp
 
 from sipnet_calibration.probability._probes import bijectors_agree, joint_probe_points
 from sipnet_calibration.probability.builders import Builder
-from sipnet_calibration.probability.laws import CARRIES_ITS_BIJECTOR
+from sipnet_calibration.probability.laws import CARRIES_ITS_BIJECTOR, is_law
 from sipnet_calibration.probability.parts import DeterministicSpec, FactorSpec
 from sipnet_calibration.probability.spec import ArraySpec
 from sipnet_calibration.probability.support import (
@@ -46,16 +46,18 @@ from sipnet_calibration.probability.support import (
 
 __all__ = [
     "ANCESTRAL_DRAWS",
-    "coords_of",
-    "deterministics_behind",
-    "split_reads",
     "ANCESTRAL_SEED",
     "BoundDeterministic",
     "BoundFactor",
+    "check_deterministic_has_its_block_shapes",
+    "check_deterministic_lies_in_its_supports",
     "check_draws_map_to_finite_theta",
-    "check_factor_keeps_its_structure",
+    "coords_of",
+    "deterministics_behind",
+    "finite_or_minus_infinity",
     "log_jacobian",
     "random_key_for",
+    "split_reads",
 ]
 
 tfd = tfp.distributions
@@ -83,6 +85,12 @@ _OUTER_PROBE = 3.0
 def random_key_for(key: Array, name: str) -> Array:
     """A part's key: ``jax.random.fold_in(key, crc32(name))``."""
     return jax.random.fold_in(key, zlib.crc32(name.encode()))
+
+
+def finite_or_minus_infinity(log_density: Array) -> Array:
+    """*log_density* with every non-finite value, NaN included, as ``-inf``:
+    a density that is not finite is no density."""
+    return jnp.where(jnp.isfinite(log_density), log_density, -jnp.inf)
 
 
 def coords_of(specs: Sequence[ArraySpec], coords: Mapping[str, pd.Index]) -> dict[str, pd.Index]:
@@ -195,7 +203,7 @@ class BoundFactor:
         law = self.spec.law
         if isinstance(law, Builder):
             return law(self.index_shape, **self._reads(given))
-        if isinstance(law, tfd.Distribution) or not _is_function(law):
+        if is_law(law):
             return law
         return law(**self._reads(given))
 
@@ -465,16 +473,6 @@ def log_jacobian(support: Support, bijector: tfb.Bijector, theta: Array) -> Arra
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 
-def _is_law_object(law: Any) -> bool:
-    """Whether *law* implements the law protocol."""
-    return callable(getattr(law, "log_prob", None)) and callable(getattr(law, "sample", None))
-
-
-def _is_function(law: Any) -> bool:
-    """Whether a factor's law is a function to call, not a law object."""
-    return callable(law) and not _is_law_object(law)
-
-
 def _flattened(values: Mapping[str, Array], lead_ndim: int) -> dict[str, Array]:
     """Each value with its leading *lead_ndim* axes flattened into one."""
     return {name: value.reshape((-1, *value.shape[lead_ndim:])) for name, value in values.items()}
@@ -634,18 +632,22 @@ def check_factor_law_is_over_its_event(name: str, law: Any, expected: Any) -> No
     """A factor's law is a ``float64`` law over its components' blocks:
     event shape the block shape (a dict of them for a joint factor), TFP
     batch shape ``()``."""
-    if not (isinstance(law, tfd.Distribution) or _is_law_object(law)):
+    if not is_law(law):
         raise TypeError(f"the law of {name!r} built a {type(law).__name__}, not a law.")
     event, batch, dtype = _event_shape_and_dtype(law)
     dtypes = dtype.values() if isinstance(dtype, Mapping) else [dtype]
     batches = batch.values() if isinstance(batch, Mapping) else [batch]
-    if event != expected or any(b != () for b in batches) or any(d != jnp.float64 for d in dtypes):
+    if any(d != jnp.float64 for d in dtypes):
         raise ValueError(
-            f"the law of {name!r} has event shape {event}, TFP batch shape {batch} and dtype {dtype}, but "
-            f"must be a float64 law over the blocks of the components it declares: event shape "
-            f"{expected}, TFP batch shape (). Labels independent and identically distributed are "
-            "iid_over_dim, one law per label independent_over_dim; a joint factor's draws are a dict "
-            "keyed by its components' names."
+            f"the law of {name!r} is of dtype {dtype}, not float64; build it from float64 arrays, such as "
+            "tfd.Normal(jnp.float64(0.0), jnp.float64(1.0)), or with the family builders."
+        )
+    if event != expected or any(b != () for b in batches):
+        raise ValueError(
+            f"the law of {name!r} has event shape {event} and TFP batch shape {batch}, but must be a law "
+            f"over the blocks of the components it declares: event shape {expected}, TFP batch shape (). "
+            "Labels independent and identically distributed are iid_over_dim, one law per label "
+            "independent_over_dim; a joint factor's draws are a dict keyed by its components' names."
         )
 
 

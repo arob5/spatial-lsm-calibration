@@ -20,7 +20,9 @@ import xarray as xr
 from tensorflow_probability.substrates import jax as tfp
 
 from sipnet_calibration.probability import (
+    OPEN_UNIT_INTERVAL,
     POSITIVE,
+    SIMPLEX,
     ArraySpec,
     DeterministicSpec,
     FactorSpec,
@@ -32,7 +34,7 @@ from sipnet_calibration.probability import (
     normal,
 )
 
-tfd = tfp.distributions
+tfd, tfb = tfp.distributions, tfp.bijectors
 
 SITES = [10, 20, 30]
 Y = np.array([0.5, -0.2, 1.0])
@@ -247,3 +249,26 @@ def test_a_posterior_is_frozen():
     assert isinstance(posterior, Posterior)
     with pytest.raises(AttributeError, match="frozen"):
         posterior.y = None
+
+
+def test_a_density_that_is_not_finite_is_minus_infinity():
+    share = FactorSpec(ArraySpec("share", units="1", support=OPEN_UNIT_INTERVAL),
+                       law=tfd.Beta(jnp.float64(2.0), jnp.float64(0.5)))
+    posterior = condition_on(joint(share).bind(coords={}), {})
+    # At theta = 40 the share rounds to 1, where this Beta's density is infinite.
+    log_prior = posterior.log_prior(jnp.array([[0.0], [40.0]]))
+    assert np.isfinite(log_prior[0]) and log_prior[1] == -np.inf
+
+
+def test_the_autodiff_jacobian_on_the_simplex_normalizes_a_dirichlet():
+    share = FactorSpec(
+        ArraySpec("share", units="1", support=SIMPLEX, element_axes={"part": 3},
+                  bijector=tfb.IteratedSigmoidCentered()),
+        law=tfd.Dirichlet(jnp.array([2.0, 3.0, 4.0])),
+    )
+    posterior = condition_on(joint(share).bind(coords={}), {})
+    assert posterior.model.describe().loc["share", "evaluated_by"] == "change of variables"
+    grid = np.linspace(-12.0, 12.0, 241)
+    theta = np.stack(np.meshgrid(grid, grid, indexing="ij"), axis=-1).reshape((-1, 2))
+    mass = np.exp(np.asarray(posterior.log_prior(theta))).sum() * (grid[1] - grid[0]) ** 2
+    np.testing.assert_allclose(mass, 1.0, rtol=1e-3)

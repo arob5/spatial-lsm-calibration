@@ -26,8 +26,12 @@ Functions and classes
 :func:`pushforward`
     The law of :math:`T(u)`, :math:`u` drawn from a base law, through a
     support's bijector or a given one.
+:func:`is_law`
+    Whether an object is a law, not a class or a function making one.
 :func:`distribution_name`
     A short name for a law, for a description.
+:data:`CARRIES_ITS_BIJECTOR`
+    The TFP classes whose ``.distribution`` and ``.bijector`` a model reads.
 
 Notes
 -----
@@ -50,6 +54,7 @@ __all__ = [
     "Law",
     "as_law",
     "distribution_name",
+    "is_law",
     "pushforward",
 ]
 
@@ -90,6 +95,17 @@ def as_law(distribution: Any) -> Law:
     """
     check_distribution_is_a_law(distribution)
     return distribution
+
+
+def is_law(distribution: Any) -> bool:
+    """Whether *distribution* is a law: a TFP distribution, or an instance
+    with a callable ``log_prob`` and ``sample``. A class is not one, even a
+    TFP distribution class, whose methods are callable on the class too."""
+    if isinstance(distribution, type):
+        return False
+    if isinstance(distribution, tfd.Distribution):
+        return True
+    return callable(getattr(distribution, "log_prob", None)) and callable(getattr(distribution, "sample", None))
 
 
 def pushforward(base: Any, *, support: Support | None = None, bijector: tfb.Bijector | None = None) -> Law:
@@ -149,9 +165,7 @@ def distribution_name(distribution: Any) -> str:
 
 def check_distribution_is_a_law(distribution: Any) -> None:
     """A law is a TFP distribution, or implements :class:`Law`."""
-    if isinstance(distribution, tfd.Distribution):
-        return
-    if not (callable(getattr(distribution, "log_prob", None)) and callable(getattr(distribution, "sample", None))):
+    if not is_law(distribution):
         raise TypeError(
             f"a {type(distribution).__name__} is not a law; give a TFP distribution, or an object "
             "with log_prob(value) and sample(sample_shape, seed=key)."

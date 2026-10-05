@@ -137,8 +137,15 @@ def test_a_factor_declares_array_specs_and_a_law(event, law, error):
 
 def test_a_provenance_is_a_sentence_or_absent():
     assert FactorSpec(SPREAD, law=log_normal(median=1.0, geometric_sd=2.0)).provenance is None
-    with pytest.raises(TypeError, match="provenance"):
+    with pytest.raises(ValueError, match="empty provenance"):
         FactorSpec(SPREAD, law=log_normal(median=1.0, geometric_sd=2.0), provenance="  ")
+    with pytest.raises(TypeError, match="give a string"):
+        FactorSpec(SPREAD, law=log_normal(median=1.0, geometric_sd=2.0), provenance=3)
+
+
+def test_a_law_class_is_read_as_a_function_of_its_arguments():
+    spec = FactorSpec(ArraySpec("x", units="1"), law=tfd.Normal)
+    assert spec.given == ("loc", "scale")
 
 
 def test_parts_are_frozen():
