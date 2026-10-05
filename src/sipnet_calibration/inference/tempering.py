@@ -7,9 +7,10 @@ normalized log prior :math:`\\log \\pi_\\theta`, the normalized log
 likelihood :math:`\\log L`, ``NaN`` for a failed run, and a normalized base
 density :math:`q` to draw from. A posterior gives the first two, each a
 density in theta, so the evidence it estimates is :math:`Z = \\int
-\\pi_\\theta L \\, d\\theta`, the posterior's normalizing constant (less its
-``log_constant``, which no theta changes). The base is the prior unless
-another is given, such as a Student-t fitted to an EKI ensemble.
+\\pi_\\theta L \\, d\\theta`. The observed factors with no target ancestor
+contribute only a constant :math:`C`, whose log is ``posterior.log_constant``,
+so the evidence of every observed value is :math:`C Z`. The base is the prior
+unless another is given, such as a Student-t fitted to an EKI ensemble.
 
 The log likelihood is one :meth:`~sipnet_calibration.probability.Posterior.evaluate`
 per batch: ``NaN`` where a simulator output it reads was not computed
@@ -17,7 +18,7 @@ per batch: ``NaN`` where a simulator output it reads was not computed
 a failed run and scores :math:`-\\infty`, and :math:`-\\infty` where only
 the traced part failed. When the likelihood is Gaussian, each sample's
 predictions :math:`G(\\theta)`, ``(n, N)`` in y's order, travel with it as
-its auxiliary values.
+its auxiliary values; otherwise the log likelihood carries none.
 
 Usage
 -----
@@ -35,6 +36,7 @@ Usage
 
 from __future__ import annotations
 
+import numbers
 from dataclasses import dataclass
 from typing import Any
 
@@ -48,6 +50,7 @@ from sipnet_calibration.smc import BaseDensity, LikelihoodEvaluation, TemperingP
 
 __all__ = [
     "PriorBaseDensity",
+    "check_base_has_an_integer_dimension",
     "check_base_has_the_posteriors_dimension",
     "tempering_problem",
 ]
@@ -68,12 +71,14 @@ def tempering_problem(posterior: Posterior, *, base: BaseDensity | None = None) 
     Raises
     ------
     TypeError
-        If *posterior* is not a ``Posterior``.
+        If *posterior* is not a ``Posterior``, or *base* has no integer
+        ``dimension``.
     ValueError
         If *base*'s dimension is not the posterior's ``D``.
     """
     check_posterior_is_a_posterior(posterior)
     base = PriorBaseDensity(posterior) if base is None else base
+    check_base_has_an_integer_dimension(base)
     check_base_has_the_posteriors_dimension(base, posterior.dimension)
     return TemperingProblem(
         log_prior=posterior.log_prior,
@@ -113,7 +118,13 @@ class PriorBaseDensity:
 
     def sample(self, rng: np.random.Generator, n_samples: int) -> Array:
         """*n_samples* draws of the prior, ``(n_samples, D)``, keyed by a JAX
-        key seeded from one integer *rng* draws."""
+        key seeded from one integer *rng* draws.
+
+        Raises
+        ------
+        TypeError, ValueError
+            As :meth:`Posterior.sample_prior`.
+        """
         key = jax.random.key(int(rng.integers(np.iinfo(np.int64).max)))
         return self.posterior.sample_prior(key, n_samples)
 
@@ -160,11 +171,25 @@ def _gaussian_likelihood_or_none(posterior: Posterior) -> GaussianLikelihood | N
 # ── checks ────────────────────────────────────────────────────────────────────
 
 
+def check_base_has_an_integer_dimension(base: Any) -> None:
+    """Check the base density has an integer ``dimension``, as ``smc.BaseDensity`` does."""
+    if not hasattr(base, "dimension"):
+        raise TypeError(
+            f"the base density, a {type(base).__name__}, has no dimension; "
+            "pass an smc.BaseDensity: dimension, log_prob(theta) and sample(rng, n_samples)."
+        )
+    value = base.dimension
+    if isinstance(value, bool) or not isinstance(value, numbers.Integral):
+        raise TypeError(
+            f"the base density's dimension must be an integer, not {type(value).__name__}; "
+            "pass an smc.BaseDensity."
+        )
+
+
 def check_base_has_the_posteriors_dimension(base: Any, dimension: int) -> None:
     """Check the base density is over theta's ``D`` entries."""
-    base_dimension = getattr(base, "dimension", None)
-    if base_dimension != dimension:
+    if base.dimension != dimension:
         raise ValueError(
-            f"the base density has dimension {base_dimension!r}, but theta has D = {dimension} entries; "
+            f"the base density has dimension {base.dimension}, but theta has D = {dimension} entries; "
             "fit the base to theta in the posterior's layout."
         )

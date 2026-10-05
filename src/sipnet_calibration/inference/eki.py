@@ -17,6 +17,7 @@ Usage
 -----
 ::
 
+    import jax
     import pyeki.eki
 
     problem = eki_problem(posterior)
@@ -36,6 +37,7 @@ import jax
 
 from sipnet_calibration.inference._validation import check_posterior_is_a_posterior
 from sipnet_calibration.probability import GaussianLikelihood, Posterior, PosteriorEvaluation
+from sipnet_calibration.validation import as_bounded_integer
 
 __all__ = [
     "EKIProblem",
@@ -132,7 +134,11 @@ class EKIProblem:
 
         Raises
         ------
-        TypeError, ValueError
-            As :meth:`Posterior.sample_prior`.
+        TypeError
+            If *n* is not an integer.
+        ValueError
+            If *n* is less than 2, the smallest ensemble EKI updates; or as
+            :meth:`Posterior.sample_prior`.
         """
+        n = as_bounded_integer(n, minimum=2, message_name="n")
         return self.posterior.sample_prior(key, n)

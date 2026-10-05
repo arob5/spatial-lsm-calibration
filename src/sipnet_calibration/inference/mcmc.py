@@ -15,6 +15,7 @@ Usage
 ::
 
     import emcee
+    import jax
 
     n_walkers = 2 * posterior.dimension
     start, _ = initial_points(posterior, jax.random.key(0), n_walkers)
@@ -36,7 +37,7 @@ import jax.numpy as jnp
 import numpy as np
 from frozendict import frozendict
 
-from sipnet_calibration.inference._validation import check_posterior_is_a_posterior, check_theta_has_rank
+from sipnet_calibration.inference._validation import check_posterior_is_a_posterior, check_theta_is_shaped
 from sipnet_calibration.probability import Posterior, PosteriorEvaluation
 from sipnet_calibration.validation import as_bounded_integer, as_positive_integer
 
@@ -66,7 +67,7 @@ def batched_log_density(posterior: Posterior) -> Callable[[np.ndarray], np.ndarr
 
     def batched(theta: np.ndarray) -> np.ndarray:
         theta = np.asarray(theta, dtype=np.float64)
-        check_theta_has_rank(theta.shape, 2, posterior.dimension, message_name="batched_log_density")
+        check_theta_is_shaped(theta.shape, 2, posterior.dimension, message_name="batched_log_density")
         return np.asarray(posterior.evaluate(theta).log_density)
 
     return batched
@@ -88,7 +89,7 @@ def log_density(posterior: Posterior) -> Callable[[np.ndarray], float]:
 
     def one(theta: np.ndarray) -> float:
         theta = np.asarray(theta, dtype=np.float64)
-        check_theta_has_rank(theta.shape, 1, posterior.dimension, message_name="log_density")
+        check_theta_is_shaped(theta.shape, 1, posterior.dimension, message_name="log_density")
         return float(posterior.evaluate(theta).log_density[0])
 
     return one
@@ -101,9 +102,8 @@ def initial_points(
     finite, and their evaluation, to start walkers where SIPNET runs.
 
     The draws are ``posterior.sample_prior(key, max_draws)``, evaluated in
-    order in batches, each as large as the number still needed, so no more
-    are evaluated than it takes to find ``n``, and which are chosen does not
-    depend on the batches.
+    order in batches, each as large as the number still needed. A draw is
+    kept where its sample is valid and its log density finite.
 
     Parameters
     ----------
@@ -132,6 +132,13 @@ def initial_points(
         :meth:`Posterior.sample_prior` and :meth:`Posterior.evaluate`.
     RuntimeError
         If fewer than ``n`` of the ``max_draws`` draws are finite.
+
+    Notes
+    -----
+    Batches the size of the shortfall evaluate no draw past the ``n``-th
+    finite one, and the draws chosen do not depend on the batches. A batch's
+    record describes all its samples, kept or not, and so cannot be cut to
+    the kept rows; hence the tuple.
     """
     check_posterior_is_a_posterior(posterior)
     n = as_positive_integer(n, message_name="n")

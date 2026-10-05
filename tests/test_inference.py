@@ -10,7 +10,8 @@ posterior truncated to the half-space where the simulator runs
 - EKI from an ensemble with the prior's exact moments is the posterior to
   floating point, and from prior draws within Monte Carlo error;
 - tempered SMC from the prior, and importance sampling from a Student-t,
-  give the posterior's moments and the evidence, truncated or not;
+  give the posterior's moments and the evidence, and tempered SMC from the
+  Student-t the truncated posterior's;
 - the MCMC log density is the closed-form log posterior, ``-inf`` where the
   simulator fails, and the starting points are the first finite draws.
 
@@ -271,9 +272,12 @@ def test_the_prior_base_density_is_the_prior_in_theta():
         np.asarray(base.log_prob(theta)), stats.multivariate_normal(PRIOR_MEAN, PRIOR_COVARIANCE).logpdf(theta),
         rtol=1e-12,
     )
-    draws = np.asarray(base.sample(np.random.default_rng(0), 6))
+    rng = np.random.default_rng(0)
+    draws = np.asarray(base.sample(rng, 6))
     assert draws.shape == (6, D)
     np.testing.assert_array_equal(draws, np.asarray(base.sample(np.random.default_rng(0), 6)))
+    assert not np.array_equal(draws, np.asarray(base.sample(rng, 6)))
+    assert not np.array_equal(draws, np.asarray(base.sample(np.random.default_rng(1), 6)))
     assert simulator.batch_sizes == []
 
 
@@ -282,7 +286,7 @@ def test_smc_from_the_prior_gives_the_posterior_and_its_evidence():
     state = _run_smc(tempering_problem(posterior), smc.SMCSettings(n_samples=1000, seed=2))
     mean, covariance = _weighted_moments(state)
     # Largest errors over eight seeds: 0.096 posterior sds, 4% in an sd, 0.117 in
-    # log Z, as test_smc measures for tempering from the prior.
+    # log Z; test_smc's largest evidence error from the prior is 0.113.
     np.testing.assert_array_less(np.abs(mean - POSTERIOR_MEAN) / POSTERIOR_SD, 0.2)
     np.testing.assert_allclose(np.sqrt(np.diag(covariance)), POSTERIOR_SD, rtol=0.09)
     assert abs(float(state.log_evidence) - LOG_EVIDENCE) < 0.24
@@ -335,21 +339,27 @@ def test_a_failed_run_is_nan_and_a_traced_failure_minus_infinity():
 
 
 def test_without_a_gaussian_likelihood_smc_reads_the_log_likelihood_alone():
+    """A Normal law about ``m + sqrt(u_1)``: NaN where the run failed, ``-inf`` where the root did."""
     spec = joint(
-        FactorSpec(ArraySpec("y", units="1", indexed_by=("obs",)), law=lambda m: tfd.Independent(tfd.Normal(m, 1.0), 1)),
+        FactorSpec(
+            ArraySpec("y", units="1", indexed_by=("obs",)),
+            law=lambda m, u: tfd.Independent(tfd.Normal(m + jnp.sqrt(u[..., 1:2]), 1.0), 1),
+        ),
         Linear(FAILS_ABOVE), _prior(),
     )
     posterior = condition_on(spec.bind(coords={"obs": np.arange(N)}), {"y": Y})
-    theta = np.array([[FAILS_ABOVE - 1.0, 0.0, 0.0], [FAILS_ABOVE + 1.0, 0.0, 0.0]])
+    theta = np.array([[FAILS_ABOVE - 1.0, 0.25, 0.0], [FAILS_ABOVE + 1.0, 0.25, 0.0], [FAILS_ABOVE - 1.0, -0.25, 0.0]])
     values = np.asarray(tempering_problem(posterior).log_likelihood(theta))
-    expected = stats.norm(theta[0] @ A.T, 1.0).logpdf(Y).sum()
+    expected = stats.norm(theta[0] @ A.T + 0.5, 1.0).logpdf(Y).sum()
     np.testing.assert_allclose(values[0], expected, rtol=1e-12)
     assert np.isnan(values[1])
+    assert np.isneginf(values[2])
 
 
-def test_a_base_of_another_dimension_is_refused():
-    base = smc.MultivariateStudentT(mean=np.zeros(D + 1), covariance=np.eye(D + 1))
-    with pytest.raises(ValueError, match="dimension 4, but theta has D = 3"):
+@pytest.mark.parametrize("dimension", [D - 1, D + 1])
+def test_a_base_of_another_dimension_is_refused(dimension):
+    base = smc.MultivariateStudentT(mean=np.zeros(dimension), covariance=np.eye(dimension))
+    with pytest.raises(ValueError, match=f"dimension {dimension}, but theta has D = 3"):
         tempering_problem(_posterior()[0], base=base)
 
 
@@ -381,6 +391,7 @@ def test_the_log_density_is_one_samples():
     (batched_log_density, np.zeros(D), r"takes theta of shape \(J, D\), not \(3,\); use log_density"),
     (batched_log_density, np.zeros((2, D + 1)), "takes theta with D = 3 entries, not 4"),
     (log_density, np.zeros((2, D)), r"takes theta of shape \(D,\), not \(2, 3\); use batched_log_density"),
+    (log_density, np.zeros(D + 1), "takes theta with D = 3 entries, not 4"),
 ])
 def test_a_theta_of_the_wrong_shape_is_refused(make, theta, match):
     with pytest.raises(ValueError, match=match):
@@ -389,18 +400,28 @@ def test_a_theta_of_the_wrong_shape_is_refused(make, theta, match):
 
 def test_initial_points_are_the_first_finite_prior_draws():
     posterior, simulator = _posterior(FAILS_ABOVE)
-    key = jax.random.key(6)
-    theta, evaluation = initial_points(posterior, key, 10)
-    draws = np.asarray(posterior.sample_prior(key, 40))
+    # Key 3's tenth finite draw is the 23rd, inside a batch of ten.
+    key = jax.random.key(3)
+    theta, evaluation = initial_points(posterior, key, 10, max_draws=100)
+    draws = np.asarray(posterior.sample_prior(key, 100))
     expected = draws[draws[:, 0] <= FAILS_ABOVE][:10]
     np.testing.assert_array_equal(theta, expected)
     assert isinstance(evaluation, PosteriorEvaluation)
-    np.testing.assert_array_equal(np.asarray(evaluation.theta), expected)
-    assert np.asarray(evaluation.valid).all()
+    direct = posterior.evaluate(expected)
+    # BLAS rounds a product by its batch's size, so the stitched values are
+    # the direct evaluation's to rounding.
+    for field in ("theta", "valid", "simulator_valid"):
+        np.testing.assert_array_equal(np.asarray(getattr(evaluation, field)), np.asarray(getattr(direct, field)))
+    for field in ("log_prior", "log_likelihood", "log_density"):
+        np.testing.assert_allclose(np.asarray(getattr(evaluation, field)), np.asarray(getattr(direct, field)), rtol=1e-12)
+    np.testing.assert_allclose(np.asarray(evaluation.values["m"]), np.asarray(direct.values["m"]), rtol=1e-12)
     np.testing.assert_allclose(np.asarray(evaluation.log_density), _log_posterior(expected), rtol=1e-12)
-    np.testing.assert_allclose(np.asarray(evaluation.values["m"]), expected @ A.T, rtol=1e-12)
-    # Each batch is the number still needed, so no more is evaluated than it takes.
-    assert sum(simulator.batch_sizes) == int(np.flatnonzero(draws[:, 0] <= FAILS_ABOVE)[9]) + 1
+    simulator.batch_sizes.clear()
+    theta, evaluation = initial_points(posterior, key, 10, max_draws=100)
+    # Each batch is the number still needed, so no draw past the tenth finite one,
+    # well inside the hundred, is evaluated.
+    tenth = int(np.flatnonzero(draws[:, 0] <= FAILS_ABOVE)[9])
+    assert tenth < 50 and sum(simulator.batch_sizes) == tenth + 1
     assert simulator.batch_sizes[0] == 10 and len(simulator.batch_sizes) > 1
     assert evaluation.simulator_records["linear"] == tuple(("linear", size) for size in simulator.batch_sizes)
 
@@ -411,6 +432,41 @@ def test_too_few_finite_draws_is_an_error():
         initial_points(posterior, jax.random.key(0), 2)
 
 
+def test_one_finite_draw_short_is_an_error():
+    posterior, _ = _posterior(FAILS_ABOVE)
+    key = jax.random.key(6)
+    found = int((np.asarray(posterior.sample_prior(key, 12))[:, 0] <= FAILS_ABOVE).sum())
+    assert 0 < found < 12
+    with pytest.raises(RuntimeError, match=f"only {found} of 12 prior draws"):
+        initial_points(posterior, key, found + 1, max_draws=12)
+
+
 def test_max_draws_fewer_than_n_is_refused():
     with pytest.raises(ValueError, match="max_draws"):
         initial_points(_posterior()[0], jax.random.key(0), 5, max_draws=4)
+
+
+class _NoDimension:
+    def log_prob(self, theta):
+        return theta
+
+    def sample(self, rng, n_samples):
+        return None
+
+
+class _BooleanDimension(_NoDimension):
+    dimension = True
+
+
+@pytest.mark.parametrize(("base", "match"), [
+    (_NoDimension(), "a _NoDimension, has no dimension; pass an smc.BaseDensity"),
+    (_BooleanDimension(), "dimension must be an integer, not bool"),
+])
+def test_a_base_without_an_integer_dimension_is_refused(base, match):
+    with pytest.raises(TypeError, match=match):
+        tempering_problem(_posterior()[0], base=base)
+
+
+def test_an_initial_ensemble_of_one_member_is_refused():
+    with pytest.raises(ValueError, match="n"):
+        eki_problem(_posterior()[0]).initial_ensemble(jax.random.key(0), 1)

@@ -2516,13 +2516,16 @@ def initial_points(posterior: Posterior, key: Array, n: int, *,
   <code>inference.tempering</code> and <code>inference.mcmc</code>, re-exported
   by <code>inference/__init__</code>. It imports <code>probability</code>,
   <code>smc</code> and <code>validation</code> only, which
-  <code>tests/test_package.py</code> checks, and imports no algorithm package:
-  pyEKI's driver is the experiment's import.</li>
+  <code>tests/test_package.py</code> checks. It imports no algorithm package,
+  where the introduction above has it the one place that does: each adapter
+  returns plain functions, arrays and operators, and pyEKI's driver, like
+  emcee, is the experiment's import.</li>
   <li><code>EKIProblem.initial_ensemble(key, n)</code> returns theta
   <code>(n, D)</code>, the array today's <code>EKIState</code> takes, until
   EnsKit's <code>Ensemble</code> (E3). <code>EKIProblem</code> also holds
   <code>posterior</code> and <code>likelihood</code>, the
-  <code>GaussianLikelihood</code> it reads.</li>
+  <code>GaussianLikelihood</code> it reads; <code>forward</code> is a method,
+  and <code>initial_ensemble</code> refuses fewer than two members.</li>
   <li>The tempering log likelihood carries the predictions as auxiliary values
   only when the likelihood is Gaussian, the one case with a defined
   <i>G</i>(θ); otherwise it returns the log likelihood alone.</li>
@@ -2532,8 +2535,9 @@ def initial_points(posterior: Posterior, key: Array, n: int, *,
   <code>log_density</code> a batch, each naming the other.</li>
   <li><code>initial_points</code> evaluates the draws in order, in batches the
   size of the shortfall, so it runs no more samples than it needs and its
-  choice does not depend on the batches. The evaluation it returns holds, per
-  simulator, a tuple of every batch's record.</li>
+  choice does not depend on the batches. A draw is kept where it is valid and
+  its log density finite. The evaluation it returns holds, per simulator, a
+  tuple of every batch's record.</li>
 </ul>
 
 <h3>9.4 Gradients</h3>

@@ -471,6 +471,10 @@ coercion lives in `validation.py`.
   `conventions.SAMPLE`), and the project's reserved names, the site table
   and SIPNET are the adapter layer's (`site_dims.py`,
   `sipnet_parameter_map.py`, `forward.py`).
+- **`inference/`**, the inference adapters, imports `probability`, `smc` and
+  `validation` only, and no algorithm package (tested): it reads a
+  `Posterior` and nothing of SIPNET, so the experiment imports pyEKI or
+  emcee and hands it what an adapter returns.
 - **`tests/conftest.py`** holds every fixture or builder more than one test
   file uses (some Niwot stacks and observation builders are still per file,
   until the module cleanups, PR 5).
@@ -953,8 +957,8 @@ reorg has landed, so the paths below are the real ones; `sites.py`,
 `constraints.py`, `initial_conditions/`, `drivers.py`, `projection.py`, the
 `parameters/` package, the first modules of the `probability/` package,
 `site_dims.py`, `sipnet_parameter_map.py`,
-`calibration.py`, `site_labels.py`, `forward.py`, `compute.py`, `smc.py`, the
-`inference/` package and the `observation/` package are implemented, `fields.py` has the model-output
+`calibration.py`, `site_labels.py`, `forward.py`, `compute.py`, `smc.py`,
+the `inference/` package and the `observation/` package are implemented, `fields.py` has the model-output
 adapters, the plotting package has series, maps and grids, and the other
 modules carry the contract each is to satisfy.
 `initial_conditions` is a package rather than a module: it spans several

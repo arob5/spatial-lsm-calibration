@@ -18,8 +18,9 @@ It imports the probability layer, :mod:`~sipnet_calibration.smc` and
 adapter returns the plain functions, arrays and operators its algorithm
 takes, and the experiment imports the algorithm.
 
-Every adapter evaluates theta through :meth:`Posterior.evaluate`, one
-simulator call per batch, so what counts as a failed sample is the
+Every adapter that needs the likelihood evaluates theta through
+:meth:`Posterior.evaluate`, one simulator call per batch; the prior's
+density and draws run no simulator. What counts as a failed sample is the
 posterior's: an invalid sample (``valid`` false) is a ``NaN`` row of
 predictions for EKI, a ``NaN`` (a failed run) or ``-inf`` log likelihood for
 SMC, and ``-inf`` for MCMC.

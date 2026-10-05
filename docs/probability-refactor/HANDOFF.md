@@ -25,8 +25,8 @@ and proofs are the design's §12; the column below is a summary.
 | P3 | `refactor/probability-p3-prior-model` | merged #79 | P1, P2 | Laws, families, builders; `FactorSpec`, `DeterministicSpec`, decorators; `joint`, `bind`, `FactoredDistribution`; `condition_on` and `Posterior` without simulators |
 | P4 | `refactor/probability-p4-adapter-prep` | merged #80 | P2 | F8; the SIPNET map on dicts and `ArraySpec`s; `ObservationSource.standard_deviation`; the observation dims and constants; `observation.model` |
 | P5 | `refactor/probability-p5-simulator` | merged #81 | P3, P4 | The `Simulator` seam; `SIPNETRuns`, with today's `ForwardModel` delegating to it; `SIPNETSimulator`; F6, F7 |
-| P6 | `refactor/probability-p6-gaussian` | open #83 | P5 | Covariance specs, `GaussianSpec`, `noise_factor`, `gaussian_likelihood`, through the `probability/_linalg.py` shim over today's pyEKI |
-| P7 | `refactor/probability-p7-inference` | waiting | P6 | The `inference` package on today's pyEKI |
+| P6 | `refactor/probability-p6-gaussian` | merged #83 | P5 | Covariance specs, `GaussianSpec`, `noise_factor`, `gaussian_likelihood`, through the `probability/_linalg.py` shim over today's pyEKI |
+| P7 | `refactor/probability-p7-inference` | open #PRNUM | P6 | The `inference` package on today's pyEKI |
 | #69 | `feat/single-site-mcmc-vs-eki` | not this refactor's | P7 | PR #69 migrates in its own session |
 | P8 | `refactor/probability-p8-conjugacy` | waiting | P6 | `marginalize`, `full_conditional`, `theta_with` |
 | P9 | `refactor/probability-p9-foreign-laws` | waiting | P3 | numpyro and EnsKit `Gaussian` adapters; GPJax as an optional test group |
@@ -101,6 +101,21 @@ recommendations included, and reports any recommendation it finds doubtful.
   asymmetric matrix is used as `(A + A^T)/2` without an error. The docstring
   says so. Recommended: add a symmetry check on concrete matrices (bind and
   held covariances) if it bites; it cannot run under the per-draw trace.
+- **`initial_points`' batches (P7, found in review).** It evaluates the
+  prior draws in order, in batches the size of the shortfall, so it runs no
+  draw past the `n`-th finite one. At a 50% failure rate, `n = 5` takes five
+  simulator calls of 5, 2, 2, 2 and 1 samples; for SIPNET each is a PyEns
+  dispatch, so start-up grows like `log2(n)` calls with a serial tail.
+  Asking for more, the shortfall divided by the valid fraction seen so far,
+  chooses the same points in fewer calls at the cost of runs past the
+  `n`-th. Recommended: keep it until a SIPNET start-up is measured.
+- **`initial_points`' records (P7, found in review).** The evaluation it
+  returns stitches its batches' rows, and holds per simulator a tuple of
+  every batch's record, where `PosteriorEvaluation` documents one record.
+  A record describes a whole batch and cannot be cut to the kept rows.
+  Recommended: keep the tuple, documented on `initial_points`; the
+  alternative is to drop the records, or to say on `PosteriorEvaluation`
+  that a stitched one holds tuples.
 
 ## Notes for implementers
 
@@ -762,3 +777,107 @@ in P6"):
 - `_with_held_covariance` replaces target and likelihood bounds; the
   model's own `_factors` keep per-draw covariances, so `sample`,
   `replicate` and `predict` build them per draw.
+
+### 2026-10-05: P7, the inference adapters
+
+**Done.** A new package, `sipnet_calibration.inference`, reading a
+`Posterior` and nothing of SIPNET:
+
+- `eki`: `EKIProblem` and `eki_problem(posterior)`. The problem holds the
+  posterior and its `GaussianLikelihood`, `y`, `noise_covariance` (pyEKI's
+  operator), `forward(theta) -> (J, N)` with `NaN` rows where invalid,
+  which replaces `last_evaluation`, and `initial_ensemble(key, n)`, theta
+  `(n, D)` from the prior.
+- `tempering`: `PriorBaseDensity` (the prior in theta as an
+  `smc.BaseDensity`) and `tempering_problem(posterior, *, base=None)`. Its
+  log likelihood is `NaN` where `simulator_valid` is false and `-inf` where
+  only the traced part failed; with a Gaussian likelihood the predictions
+  travel as `smc`'s auxiliary values.
+- `mcmc`: `batched_log_density` (`(J, D) -> (J,)`), `log_density`
+  (`(D,) -> float`), and `initial_points(posterior, key, n, *, max_draws=)`.
+
+The package imports `probability`, `smc` and `validation` only, and no
+algorithm package; `tests/test_package.py` checks it.
+Tests: 2988 passed and 95 skipped at P6's merge; 3019 and 95 after.
+`tests/test_inference.py` declares a linear-Gaussian toy in the
+probability layer (a correlated Gaussian prior on three coefficients, a
+simulator `m = A u` that can fail on a half-space, `y ~ N(m, R)` with `R`
+dense) and checks, against closed forms:
+
+- EKI from an ensemble with the prior's exact moments is the posterior to
+  1e-8 (pyEKI's affine-Gaussian claim), and from `initial_ensemble`'s
+  draws within Monte Carlo error;
+- tempered SMC from the prior and importance sampling from a Student-t
+  give the posterior's moments and the evidence; tempered SMC from the
+  Student-t gives the posterior truncated where the simulator fails, and
+  its evidence;
+- the MCMC densities are SciPy's log posterior, `-inf` where it fails;
+  `initial_points` picks the first finite draws in order.
+
+Each Monte Carlo tolerance is about twice the largest error over eight
+seeds. SMC from the prior misses the evidence by 0.05 to 0.12 on every
+seed; `test_smc` measures 0.113 for the same kind of run, so it is the
+tempered estimator's, not the adapter's.
+
+**Review.** One Standard round: code, mutation testing, docs. The code
+reviewer found no bug: the failure semantics, the evidence's
+normalization, the stitched rows and the seeding held, with and without a
+simulator, with nothing observed and with a non-Gaussian likelihood.
+Fixed:
+
+- a base density with no `dimension` raised `ValueError` naming
+  `None`, and a boolean one passed; both are now `TypeError`s;
+- `initial_ensemble` accepted fewer than two members, which pyEKI then
+  refused in its own words;
+- a check of two invariants (rank and `D`) split into two and a group;
+- docs: the evidence's relation to `log_constant`, which adapters run a
+  simulator, the dependency diagram missing `validation`, a Notes section
+  for `initial_points`' batching, Usage snippets missing `import jax`, the
+  design's §9 bullets, CLAUDE.md's "Where shared things live", and the test
+  module's description of its runs.
+
+Mutation testing made twenty mutants, of which eleven survived; tests now
+kill eight of them: the batch sizes (the old test's tenth finite draw
+ended a batch of ten either way), the stitched `log_prior`,
+`log_likelihood` and a partial shortfall, the non-Gaussian branch's
+traced failure, a base of smaller dimension, the base ignoring its
+generator, and a wrong `D` given to `log_density`. The rest are
+equivalent: every kept row is valid, so `valid`, `simulator_valid` and a
+finite log density agree there, and swapping or dropping one changes
+nothing. Two findings are questions above, not
+fixes (`initial_points`' batches and records).
+
+**Deviations from the design**, each recorded in `design.html` ("As built
+in P7"):
+
+- the package imports no algorithm package, where §9's introduction calls
+  it the one place that does: pyEKI and emcee are the experiment's imports;
+- `initial_ensemble` returns theta `(n, D)`, today's `EKIState` input,
+  until EnsKit's `Ensemble` (E3), and refuses `n < 2`; `EKIProblem` also
+  holds `posterior` and `likelihood`;
+- the tempering log likelihood carries auxiliary values only when the
+  likelihood is Gaussian.
+
+**Choices the design left open:**
+
+- `tempering_problem` finds the Gaussian likelihood by calling
+  `gaussian_likelihood()` and treating its `ValueError` as "none", which
+  today is raised for exactly the three reasons a posterior has none;
+- `PriorBaseDensity.sample` seeds its JAX key with one 63-bit integer drawn
+  from the generator;
+- `batched_log_density` and `log_density` go through `evaluate` even with
+  no simulator, unjitted, so validity is the same on both paths;
+- `initial_points` keeps a draw where it is valid and its log density
+  finite, in batches the size of the shortfall (open question above).
+
+**What the next sessions must know.**
+
+- PR #69's migration reads `eki_problem(posterior)`; its `_RecordingForward`
+  becomes `problem.forward` and `problem.last_evaluation`. A run's terminal
+  `pyeki.eki.evaluate` also goes through `problem.forward`, so
+  `last_evaluation` is then the final ensemble's.
+- Today's EKI started from `prior_gaussian`; `initial_ensemble` draws the
+  prior itself, so the same seed gives a different start (design §10.2).
+- E3 replaces `initial_ensemble`'s array with EnsKit's `Ensemble`; nothing
+  else in `eki.py` names pyEKI.
+- P8 (conjugacy) is next in table order; it needs P6 only.

@@ -103,7 +103,7 @@ Dependencies
 The dependency runs one way, from the foundations up::
 
     probability  (imports nothing of the package)  <-  parameters
-    probability, smc  <-  inference
+    probability, smc, validation  <-  inference
 
     conventions  <-  validation  <-  sites
         <-  fields, site_labels
