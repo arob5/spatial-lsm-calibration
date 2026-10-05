@@ -951,8 +951,7 @@ def as_law(distribution: Any) -&gt; Law:
       its blocks, and ``sample`` draws :math:`m + L z` itself, one draw at a
       time, since ``Gaussian.sample`` returns an ``Ensemble`` of at least two
       particles. A ``GaussianSpec``'s block over several components is read
-      and drawn as the dict of them. Until EnsKit's PR 4,
-      ``pyeki.gauss.Gaussian`` is adapted the same way;
+      and drawn as the dict of them;
     - ``numpyro.distributions.distribution.Distribution``, GPJax's
       ``GaussianDistribution`` among them: ``sample(key, sample_shape)``
       becomes ``sample(sample_shape, seed=key)``.
@@ -1026,6 +1025,28 @@ def pushforward(base: Any, *, support: Support | None = None,
   <code>Independent</code>, and refuse a law from another package with a
   <code>TypeError</code> that says to give the factor a law over the whole
   block instead.</li>
+</ul>
+<p><i>As built in E1:</i></p>
+<ul>
+  <li>The project tracks EnsKit's <code>main</code>, and the
+  <code>_linalg</code> shim imports <code>enskit.linalg</code> and
+  <code>enskit.distribution</code>, so the <code>Gaussian</code> D24's
+  <code>as_law</code> adapts is EnsKit's, no longer pyEKI's.</li>
+  <li>A <code>GaussianLaw</code> holds an EnsKit <code>Gaussian</code> of one
+  block, its covariance the block's independent term
+  (<code>.gaussian</code>), and scores by its <code>log_density</code>; it
+  still draws <code>m + L z</code> itself.</li>
+  <li>§9.1's interim pyEKI driver code no longer runs; E2 rewrites §9.1 on
+  EnsKit's driver, and until then the usage in
+  <code>inference/eki.py</code>'s docstring is EnsKit's.</li>
+  <li><code>as_law</code> adapts an EnsKit <code>Gaussian</code> of one block,
+  with a factor row or not, to a <code>GaussianLaw</code> over the block's
+  covariance (<code>Gaussian.cov</code>). It refuses one of several blocks,
+  which no factor's law is until correlated sources are built (the reading of
+  several components as the dict of them, above), and a block with no
+  independent term, whose covariance <code>F F<sup>T</sup></code> EnsKit holds
+  as the factor alone, which cannot whiten (and is singular when the factor
+  has fewer columns than the block has entries).</li>
 </ul>
 <p>The families <code>log_normal</code>, <code>log_normal_from_interval</code>,
 <code>log_normal_from_samples</code>, <code>logit_normal</code>,
@@ -1243,7 +1264,8 @@ class GaussianSpec:
   <code>pyeki.gauss.Gaussian</code> of its flattened block
   (<code>.gaussian</code>). Its draws are <code>m + L z</code>, made by the
   law itself. <code>as_law</code> turns a <code>pyeki.gauss.Gaussian</code>
-  into one.</li>
+  into one. (Since E1, the operators and the <code>Gaussian</code> are
+  EnsKit's: see "As built in E1" in §7.)</li>
   <li>A Gaussian factor is not given the probe-point checks, its support
   being <code>REAL</code>; at bind it is checked for its event shape and, when
   its covariance reads nothing that varies by draw (no parameter, no simulator
@@ -1260,9 +1282,7 @@ class GaussianSpec:
 <h3 id="core-covariance">7.7 Covariance specs</h3>
 <p>A covariance spec declares structure over labels: which entries form blocks,
 and what each block is built from. Evaluated, it is an
-<code>enskit.linalg</code> operator, and EnsKit does the algebra. Until EnsKit's
-PR 2, the operators are today's <code>pyeki.linalg</code> classes of the same
-names.</p>
+<code>enskit.linalg</code> operator, and EnsKit does the algebra.</p>
 <pre><code class="language-python">class CovarianceSpec(ABC):
     """How a covariance is built from what its factor reads.
 
@@ -1406,7 +1426,7 @@ class SubmatrixSpec(CovarianceSpec):
   takes; <code>ScaledSpec</code>'s scale may be a constant as well as a
   component, and a component's support must keep it positive.</li>
   <li>A value precondition (a positive variance, a positive-definite block) is
-  not checked when an operator is built, as pyEKI does outside its debug mode:
+  not checked when an operator is built, as EnsKit does outside its debug mode:
   one that fails gives a density that is not finite. A covariance the held
   values fix is checked once at <code>condition_on</code>, one read at a draw
   makes that sample invalid.</li>

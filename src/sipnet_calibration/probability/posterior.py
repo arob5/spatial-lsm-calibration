@@ -853,7 +853,7 @@ class GaussianLikelihood:
     y : jax.Array
         ``(N,)``, ``posterior.y``.
     noise_covariance : PSDLinOp
-        :math:`R`, one of pyEKI's positive-definite operators: block-diagonal
+        :math:`R`, one of EnsKit's positive-definite operators: block-diagonal
         over the observed factors, in ``posterior.observations``' order, each
         block its factor's covariance.
     mean_names : tuple of str

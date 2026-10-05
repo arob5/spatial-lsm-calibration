@@ -113,7 +113,7 @@ class FactorSpec:
 
         - a law (a TFP distribution, a law
           :func:`~sipnet_calibration.probability.laws.as_law` adapts, such as
-          a ``pyeki.gauss.Gaussian`` or a numpyro distribution, or an object
+          an EnsKit ``Gaussian`` or a numpyro distribution, or an object
           implementing :class:`~sipnet_calibration.probability.laws.Law`),
           when the factor reads nothing and its one component is indexed by
           nothing; it is held adapted;

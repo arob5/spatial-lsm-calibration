@@ -487,9 +487,9 @@ def test_ancestral_draws_of_a_gaussian_factor_follow_their_mean():
     np.testing.assert_allclose(residual.var(axis=0), VARIANCE, rtol=0.1)
 
 
-def test_a_pyeki_gaussian_is_a_law():
+def test_an_enskit_gaussian_is_a_law():
     covariance = _linalg.DensePSD(jnp.asarray(_by_site(_correlated)))
-    law = as_law(_linalg.Gaussian(jnp.zeros(N), covariance))
+    law = as_law(_linalg.Gaussian.independent(y=(jnp.zeros(N), covariance)))
     assert isinstance(law, GaussianLaw)
     np.testing.assert_allclose(
         np.asarray(law.log_prob(Y)), st.multivariate_normal(np.zeros(N), _by_site(_correlated)).logpdf(Y), rtol=1e-12
@@ -498,9 +498,10 @@ def test_a_pyeki_gaussian_is_a_law():
 
 def test_a_gaussian_law_over_a_matrix_block_is_over_its_entries_in_c_order():
     covariance = _by_site(_correlated)[:6, :6]
-    law = GaussianLaw(jnp.zeros((2, 3)), _linalg.DensePSD(jnp.asarray(covariance)))
+    mean = np.arange(6.0).reshape(2, 3)
+    law = GaussianLaw(jnp.asarray(mean), _linalg.DensePSD(jnp.asarray(covariance)))
     points = RNG.normal(size=(4, 2, 3))
-    expected = st.multivariate_normal(np.zeros(6), covariance).logpdf(points.reshape(4, 6))
+    expected = st.multivariate_normal(mean.reshape(6), covariance).logpdf(points.reshape(4, 6))
     np.testing.assert_allclose(np.asarray(law.log_prob(points)), expected, rtol=1e-12)
     assert jnp.shape(law.log_prob(points[0])) == ()
     assert law.sample((5,), seed=KEY).shape == (5, 2, 3)
@@ -651,8 +652,8 @@ def test_the_gaussian_likelihoods_forward_map_is_the_means_and_scores_as_the_pos
         np.testing.assert_allclose(
             np.asarray(predictions[row]), np.concatenate([mu + np.linspace(-1.0, 1.0, N), np.full(3, 2.0 * mu)])
         )
-    gaussian = _linalg.Gaussian(likelihood.y, likelihood.noise_covariance)
-    expected = np.asarray(gaussian.log_density(predictions[jnp.array([0, 2])]))
+    gaussian = _linalg.Gaussian.independent(y=(likelihood.y, likelihood.noise_covariance))
+    expected = np.asarray(gaussian.log_density(y=predictions[jnp.array([0, 2])]))
     np.testing.assert_allclose(np.asarray(evaluation.log_likelihood)[[0, 2]], expected, rtol=1e-12)
 
 

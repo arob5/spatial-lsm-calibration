@@ -7,25 +7,27 @@ EKI reads four things: a forward map from theta to predictions,
 posterior whose observed factors are Gaussian with held covariances,
 :math:`y \\sim \\mathcal N(G(\\theta), R)`, provides all four
 (:meth:`~sipnet_calibration.probability.Posterior.gaussian_likelihood`); the
-covariance is already one of pyEKI's operators, so nothing is converted, and
+covariance is already one of EnsKit's operators, so nothing is converted, and
 no Gaussian prior is needed to start.
 
-This targets today's pyEKI, whose ``EKIState`` takes the ensemble as a
-``(J, D)`` array, and is kept thin while EnsKit's driver settles.
+The initial ensemble is a ``(J, D)`` array, which EnsKit's driver
+(``enskit.algorithms.eki``) takes as an ``Ensemble`` of one block, theta.
 
 Usage
 -----
 ::
 
     import jax
-    import pyeki.eki
+    from enskit import kalman
+    from enskit.algorithms import eki
+    from enskit.distribution import Ensemble
 
     problem = eki_problem(posterior)
     ensemble_key, run_key = jax.random.split(key)
-    state = pyeki.eki.EKIState(problem.initial_ensemble(ensemble_key, 100), 0.0, 0, run_key)
-    result = pyeki.eki.run(state, problem.forward, problem.y, problem.noise_covariance,
-                           schedule=pyeki.eki.AdaptiveESSSchedule(ess_fraction=0.5),
-                           update=pyeki.eki.PathwiseUpdate(), on_failure="repair")
+    state = eki.EKIState(Ensemble({"theta": problem.initial_ensemble(ensemble_key, 100)}), key=run_key)
+    result = eki.run(state, problem.forward, problem.y, problem.noise_covariance,
+                     update_rule=kalman.Matheron(), schedule=eki.AdaptiveESSSchedule(ess_fraction=0.5),
+                     on_failure="repair")
     problem.last_evaluation.valid      # which samples of the last ensemble evaluated ran
 """
 
@@ -81,7 +83,7 @@ class EKIProblem:
     y : jax.Array
         ``(N,)``.
     noise_covariance : PSDLinOp
-        :math:`R`, one of pyEKI's positive-definite operators.
+        :math:`R`, one of EnsKit's positive-definite operators.
     last_evaluation : PosteriorEvaluation or None
         The last :meth:`forward` call's: the ensemble evaluated at that step,
         before its update; ``None`` before the first.
@@ -116,7 +118,7 @@ class EKIProblem:
 
     def forward(self, theta: Any) -> Array:
         """:math:`G(\\theta)`, ``(J, D) -> (J, N)`` in y's order, ``NaN`` in an
-        invalid sample, as pyEKI reads a failed member; one
+        invalid sample, as EnsKit's driver reads a failed sample; one
         :meth:`Posterior.evaluate`, which replaces :attr:`last_evaluation`.
 
         Raises
@@ -129,8 +131,8 @@ class EKIProblem:
         return predictions
 
     def initial_ensemble(self, key: Array, n: int) -> Array:
-        """``n`` draws of the prior, theta ``(n, D)``, as pyEKI's ``EKIState``
-        takes an ensemble; no simulator runs.
+        """``n`` draws of the prior, theta ``(n, D)``, the one block of the
+        ``Ensemble`` EnsKit's ``EKIState`` takes; no simulator runs.
 
         Raises
         ------

@@ -12,7 +12,7 @@ Where this sits
                                                      one per observation source
                                                      (observation.source)
       -> ObservationVector(observation_sources=[...]) the observations, in Flat order
-           .y                                        what pyEKI compares against
+           .y                                        what EKI compares against
            .predict(model_output, sipnet_parameter_fields=)
                                                      H applied, converted, checked
            .flat(fields) / .fields(flat_values)      Fields <-> Flat
@@ -20,7 +20,7 @@ Where this sits
                                                      the probability layer's view
       -> observation.model                           the components themselves
 
-The forward model flattens predictions with it into pyEKI's ``(J, N)``; the
+The forward model flattens predictions with it into EKI's ``(J, N)``; the
 inference layer reads ``y``, ``index`` and ``positions`` off it to build the
 error model; a predictive-check figure unstacks a ``(J, N)`` batched Flat
 with ``fields``. A model of the probability layer is bound at its ``coords``,

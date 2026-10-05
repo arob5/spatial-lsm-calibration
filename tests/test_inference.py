@@ -26,7 +26,9 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-import pyeki.eki
+from enskit import kalman
+from enskit.algorithms import eki
+from enskit.distribution import Ensemble
 from scipy import stats
 from tensorflow_probability.substrates import jax as tfp
 
@@ -77,6 +79,8 @@ LOG_EVIDENCE = stats.multivariate_normal(A @ PRIOR_MEAN, A @ PRIOR_COVARIANCE @ 
 #: The simulator fails where ``u_0`` exceeds this: the posterior mean of
 #: ``u_0``, so the truncation keeps half the posterior's mass.
 FAILS_ABOVE = float(POSTERIOR_MEAN[0])
+#: The one block of the ensemble EnsKit's EKI driver carries.
+THETA = "theta"
 
 
 def _truncated_mean_and_log_evidence():
@@ -187,14 +191,14 @@ def test_the_eki_problem_reads_the_gaussian_likelihood():
 
 
 def test_eki_from_an_ensemble_with_the_priors_moments_is_the_posterior():
-    """pyEKI's exactness claim for the affine-Gaussian case, through the adapter."""
+    """EnsKit's exactness claim for the affine-Gaussian case, through the adapter."""
     problem = eki_problem(_posterior()[0])
-    state = pyeki.eki.EKIState(jnp.asarray(_ensemble_with_the_priors_moments(50)), 0.0, 0, jax.random.key(1))
-    result = pyeki.eki.run(
+    state = eki.EKIState(Ensemble({THETA: jnp.asarray(_ensemble_with_the_priors_moments(50))}), key=jax.random.key(1))
+    result = eki.run(
         state, problem.forward, problem.y, problem.noise_covariance,
-        schedule=pyeki.eki.FixedSchedule.constant(1.0, n_steps=1),
+        update_rule=kalman.SymmetricSquareRoot(), schedule=eki.FixedSchedule.constant(1.0, n_steps=1),
     )
-    ensemble = np.asarray(result.state.ensemble)
+    ensemble = np.asarray(result.state.ensemble[THETA])
     np.testing.assert_allclose(ensemble.mean(axis=0), POSTERIOR_MEAN, rtol=1e-9, atol=1e-12)
     np.testing.assert_allclose(np.cov(ensemble.T), POSTERIOR_COVARIANCE, rtol=1e-8, atol=1e-12)
 
@@ -202,14 +206,14 @@ def test_eki_from_an_ensemble_with_the_priors_moments_is_the_posterior():
 def test_eki_from_prior_draws_is_the_posterior_within_monte_carlo_error():
     problem = eki_problem(_posterior()[0])
     ensemble_key, run_key = jax.random.split(jax.random.key(3))
-    state = pyeki.eki.EKIState(problem.initial_ensemble(ensemble_key, 2000), 0.0, 0, run_key)
-    result = pyeki.eki.run(
+    state = eki.EKIState(Ensemble({THETA: problem.initial_ensemble(ensemble_key, 2000)}), key=run_key)
+    result = eki.run(
         state, problem.forward, problem.y, problem.noise_covariance,
-        schedule=pyeki.eki.AdaptiveESSSchedule(ess_fraction=0.5),
+        update_rule=kalman.SymmetricSquareRoot(), schedule=eki.AdaptiveESSSchedule(ess_fraction=0.5),
     )
     assert float(result.state.beta) == 1.0
-    ensemble = np.asarray(result.state.ensemble)
-    # Largest errors over eight seeds: 0.028 posterior sds in the mean, 0.7% in an sd.
+    ensemble = np.asarray(result.state.ensemble[THETA])
+    # Largest errors over eight seeds, under EnsKit's driver: 0.028 posterior sds in the mean, 0.5% in an sd.
     np.testing.assert_array_less(np.abs(ensemble.mean(axis=0) - POSTERIOR_MEAN) / POSTERIOR_SD, 0.06)
     np.testing.assert_allclose(ensemble.std(axis=0, ddof=1), POSTERIOR_SD, rtol=0.015)
     assert problem.last_evaluation.theta.shape == (2000, D)
@@ -235,11 +239,12 @@ def test_a_failed_sample_is_a_nan_row_of_predictions():
 def test_eki_repairs_failed_members_and_runs_to_the_end():
     problem = eki_problem(_posterior(FAILS_ABOVE)[0])
     ensemble_key, run_key = jax.random.split(jax.random.key(4))
-    state = pyeki.eki.EKIState(problem.initial_ensemble(ensemble_key, 200), 0.0, 0, run_key)
-    with pytest.warns(UserWarning, match="evaluations failed"):
-        result = pyeki.eki.run(
+    state = eki.EKIState(Ensemble({THETA: problem.initial_ensemble(ensemble_key, 200)}), key=run_key)
+    with pytest.warns(UserWarning, match="were not finite and were repaired"):
+        result = eki.run(
             state, problem.forward, problem.y, problem.noise_covariance,
-            schedule=pyeki.eki.AdaptiveESSSchedule(ess_fraction=0.5), on_failure="repair",
+            update_rule=kalman.SymmetricSquareRoot(), schedule=eki.AdaptiveESSSchedule(ess_fraction=0.5),
+            on_failure="repair",
         )
     assert float(result.state.beta) == 1.0
     assert not bool(np.asarray(problem.last_evaluation.valid).all())
