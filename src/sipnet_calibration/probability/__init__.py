@@ -18,9 +18,11 @@ Where this sits
       -> probability.families  one value's law: log_normal, ..., normal, inverse_gamma, inverse_wishart
       -> probability.builders  a law over a block: iid_over_dim, independent_over_dim, gaussian_copula
     probability.covariance  covariance specs: DiagonalSpec, DenseSpec, ..., BlockDiagonalSpec
+      -> probability.scale_mixtures  StudentTSpec, MatrixStudentTSpec and their laws
       -> probability.parts     FactorSpec, GaussianSpec, DeterministicSpec, their decorators; Simulator
       -> probability.model     joint -> ModelSpec, bind -> FactoredDistribution
-      -> probability.posterior condition_on -> Posterior: theta's density
+      -> probability.conjugacy the conjugate rules: conjugate_rule, marginalize
+      -> probability.posterior condition_on -> Posterior: theta's density; FullConditional
     ──────── seam: labeled values, a dict of DataArrays ────────
       -> the adapter layer
 
@@ -56,6 +58,9 @@ Modules
     How a Gaussian factor's covariance is built, as structure over labels:
     diagonals, dense blocks, sums, scalings, block-diagonal groupings, a
     matrix component's submatrices.
+:mod:`~sipnet_calibration.probability.scale_mixtures`
+    The Student-t laws a Gaussian factor becomes when a variance or
+    covariance block it reads is integrated out.
 :mod:`~sipnet_calibration.probability.parts`
     Factors and deterministics: declarations of laws and computed
     components, and the keyword rule that says what they read; simulators,
@@ -63,6 +68,9 @@ Modules
 :mod:`~sipnet_calibration.probability.model`
     The declared model and the model bound to labels: sampling and the
     joint density.
+:mod:`~sipnet_calibration.probability.conjugacy`
+    The two conjugate rules: a component integrated out of a model, and a
+    parameter's closed-form law given the rest.
 :mod:`~sipnet_calibration.probability.posterior`
     Bayes' rule: the target an inference algorithm reads, and the
     likelihood as a Gaussian, when it is one.
@@ -86,6 +94,13 @@ from sipnet_calibration.probability.families import (
     logit_normal_from_samples,
     normal,
     softmax_normal,
+)
+from sipnet_calibration.probability.conjugacy import (
+    INVERSE_GAMMA_SCALE,
+    INVERSE_WISHART,
+    ConjugateRule,
+    InverseWishartGivenRows,
+    conjugate_rule,
 )
 from sipnet_calibration.probability.covariance import (
     BlockDiagonalSpec,
@@ -118,10 +133,17 @@ from sipnet_calibration.probability.parts import (
     factor,
 )
 from sipnet_calibration.probability.posterior import (
+    FullConditional,
     GaussianLikelihood,
     Posterior,
     PosteriorEvaluation,
     condition_on,
+)
+from sipnet_calibration.probability.scale_mixtures import (
+    MatrixStudentTLaw,
+    MatrixStudentTSpec,
+    StudentTLaw,
+    StudentTSpec,
 )
 from sipnet_calibration.probability.spec import ArraySpec
 from sipnet_calibration.probability.support import (
@@ -142,6 +164,8 @@ from sipnet_calibration.probability.support import (
 
 __all__ = [
     "DEFAULT_BIJECTORS",
+    "INVERSE_GAMMA_SCALE",
+    "INVERSE_WISHART",
     "NON_NEGATIVE",
     "OPEN_UNIT_INTERVAL",
     "POSITIVE",
@@ -153,6 +177,7 @@ __all__ = [
     "UNIT_INTERVAL",
     "ArraySpec",
     "BlockDiagonalSpec",
+    "ConjugateRule",
     "Builder",
     "CovarianceSpec",
     "DenseSpec",
@@ -160,14 +185,18 @@ __all__ = [
     "DiagonalSpec",
     "FactorSpec",
     "FactoredDistribution",
+    "FullConditional",
     "GaussianLaw",
     "GaussianLikelihood",
     "GaussianSpec",
     "Interval",
     "InverseWishart",
+    "InverseWishartGivenRows",
     "LabeledValues",
     "Law",
     "Layout",
+    "MatrixStudentTLaw",
+    "MatrixStudentTSpec",
     "ModelSpec",
     "PositiveDefinite",
     "Posterior",
@@ -176,6 +205,8 @@ __all__ = [
     "Simplex",
     "Simulator",
     "SimulatorOutput",
+    "StudentTLaw",
+    "StudentTSpec",
     "SubmatrixSpec",
     "SumSpec",
     "Support",
@@ -183,6 +214,7 @@ __all__ = [
     "as_law",
     "bijector_for",
     "condition_on",
+    "conjugate_rule",
     "decode_labeled_values",
     "deterministic",
     "encode_labeled_values",

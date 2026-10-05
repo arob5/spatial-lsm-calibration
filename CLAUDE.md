@@ -264,6 +264,8 @@ moves it here.
 | **bind** | give a model spec the labels of its dims and its inputs' values, making a `FactoredDistribution` | |
 | **target** / **barren** / **observed** | after `condition_on`: observed factors are conditioned on; barren ones are unobserved with no observed descendant, dropped; the rest are the target, whose components are theta's; an observed factor with no target ancestor is constant (`O_c`) | |
 | **draw** | one joint value of every component; a batch of draws has batch dim `sample` | |
+| **conjugate rule** / **marginal** | the scale rule or the block rule (`probability.conjugacy`, the design's §7.13 R1 and R2): a component whose inverse-gamma or inverse-Wishart prior is conjugate to the one Gaussian factor reading it; integrated out (`FactoredDistribution.marginalize`), that factor becomes its marginal, a Student-t or a matrix Student-t (`probability.scale_mixtures`) | |
+| **full conditional** | a parameter's closed-form law given every other component, by a conjugate rule (`Posterior.full_conditional -> FullConditional`), drawn from an evaluation's residuals with no new simulator run | |
 
 **Representations.**
 
@@ -1074,15 +1076,21 @@ src/sipnet_calibration/
                           # normal, inverse_gamma, InverseWishart/inverse_wishart
     builders.py           # Builder (.law, .reads); iid_over_dim,
                           # independent_over_dim, gaussian_copula
+    scale_mixtures.py     # StudentTSpec (a Student-t per group) and
+                          # MatrixStudentTSpec (an inverse Wishart block
+                          # integrated out), a factor's law as GaussianSpec
+                          # is; StudentTLaw, MatrixStudentTLaw;
+                          # inverse_wishart_log_prob, sample_inverse_wishart
     parts.py              # FactorSpec (a conditional law over its event),
                           # GaussianSpec (mean=, covariance=: a factor's
-                          # law), DeterministicSpec; @factor, @deterministic; given
+                          # law), CENTERED_LAW_SPECS (it and the Student-t
+                          # forms), DeterministicSpec; @factor, @deterministic; given
                           # read off the function's keywords (the keyword rule);
                           # Simulator (name, given, outputs, __call__, at,
                           # check_given) and SimulatorOutput
     model.py              # joint -> ModelSpec (the graph, topological order);
                           # bind -> FactoredDistribution: law(), select(),
-                          # sample() keyed by crc32(name), log_prob(),
+                          # marginalize(), sample() keyed by crc32(name), log_prob(),
                           # simulators, describe(); block_at_labels; a
                           # simulator runs once per batch, never at bind
     posterior.py          # condition_on -> Posterior: target, barren and
@@ -1092,11 +1100,18 @@ src/sipnet_calibration/
                           # -> PosteriorEvaluation, log_likelihood,
                           # log_density, log_density_given, predict,
                           # replicate, simulator_inputs, natural_values,
-                          # to_labeled, gaussian_likelihood ->
+                          # theta_with, to_labeled, gaussian_likelihood ->
                           # GaussianLikelihood (y, noise_covariance R,
-                          # forward), describe; a Gaussian factor's
-                          # covariance the held values fix is built and
-                          # factored once here
+                          # forward), full_conditional -> FullConditional
+                          # (law, sample from an evaluation), describe; a
+                          # Gaussian factor's covariance the held values fix
+                          # is built and factored once here
+    conjugacy.py          # the conjugate rules, the scale rule (an inverse
+                          # gamma on a covariance scale) and the block rule
+                          # (an inverse Wishart on a
+                          # covariance block): conjugate_rule ->
+                          # ConjugateRule, marginalize,
+                          # InverseWishartGivenRows
     _bound.py, _keywords.py, _probes.py, _validation.py, _linalg.py
                           # private: a part at the labels in use (its law,
                           # density, draws, the bind checks, the log-Jacobian

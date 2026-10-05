@@ -258,7 +258,7 @@ class GaussianLaw:
         TypeError
             If *seed* is not given.
         """
-        check_seed_is_given(seed)
+        check_seed_is_given(seed, what="GaussianLaw")
         sample_shape = tuple(sample_shape) if isinstance(sample_shape, (tuple, list)) else (int(sample_shape),)
         factor = self.covariance.factor()
         noise = jax.random.normal(seed, (*sample_shape, factor.shape[1]), dtype=jnp.float64)
@@ -323,7 +323,7 @@ def check_covariance_is_over_the_block(covariance: Any, shape: tuple[int, ...]) 
         )
 
 
-def check_seed_is_given(seed: Any) -> None:
+def check_seed_is_given(seed: Any, *, what: str) -> None:
     """A draw is made from a key."""
     if seed is None:
-        raise TypeError("a GaussianLaw draws from a key; give seed=jax.random.key(...).")
+        raise TypeError(f"a {what} draws from a key; give seed=jax.random.key(...).")

@@ -38,6 +38,9 @@ Classes and functions
     declared by a covariance spec (:mod:`~sipnet_calibration.probability.covariance`).
 :class:`DeterministicSpec`, :func:`deterministic`
     Components computed by a pure JAX function.
+:data:`CENTERED_LAW_SPECS`
+    The law forms centered on a mean component: ``GaussianSpec`` and the
+    Student-t forms of :mod:`~sipnet_calibration.probability.scale_mixtures`.
 :class:`Simulator`, :class:`SimulatorOutput`
     Components computed for a batch of samples by code outside JAX, such
     as a model run, which may fail at some samples; and what one call
@@ -70,10 +73,12 @@ from sipnet_calibration.probability.covariance import CovarianceSpec
 from sipnet_calibration.probability.labels import as_constants, as_label_maps
 from sipnet_calibration.probability.laws import Law, distribution_name, is_law
 from sipnet_calibration.probability.layout import LabeledValues
+from sipnet_calibration.probability.scale_mixtures import MatrixStudentTSpec, StudentTSpec
 from sipnet_calibration.probability.spec import ArraySpec
 from sipnet_calibration.probability.support import REAL
 
 __all__ = [
+    "CENTERED_LAW_SPECS",
     "DeterministicSpec",
     "FactorSpec",
     "GaussianSpec",
@@ -103,7 +108,7 @@ class FactorSpec:
     event : ArraySpec or Sequence[ArraySpec]
         Positional-only. One component, or several indexed by the same dims
         (a **joint factor**), in the order of their entries in theta.
-    law : Law, callable, Builder or GaussianSpec
+    law : Law, callable, Builder, GaussianSpec, StudentTSpec or MatrixStudentTSpec
         Keyword-only. The law, or how to build it per draw:
 
         - a law (a TFP distribution, or an object implementing
@@ -117,7 +122,11 @@ class FactorSpec:
           and the others), which the model also gives the index shape;
         - a :class:`GaussianSpec`, over one component on
           :data:`~sipnet_calibration.probability.support.REAL` indexed by one
-          dim at most, with no element axes.
+          dim at most, with no element axes; or a Student-t of
+          :mod:`~sipnet_calibration.probability.scale_mixtures` over such a
+          component, which :meth:`FactoredDistribution.marginalize
+          <sipnet_calibration.probability.model.FactoredDistribution.marginalize>`
+          makes.
     constants, label_maps : Mapping[str, xr.DataArray], optional
         Keyword-only. Fixed data the law reads
         (:mod:`~sipnet_calibration.probability.labels`). Each must be read.
@@ -152,9 +161,9 @@ class FactorSpec:
         If the event is empty; a joint factor's components are indexed
         differently; a name repeats across the event, the constants and the
         label maps; the law reads a component of its own event; a constant
-        or label map is never read; *provenance* is empty; or a Gaussian's
-        event is not one component on ``REAL`` indexed by one dim at most
-        with no element axes.
+        or label map is never read; *provenance* is empty; or a Gaussian or
+        Student-t factor's event is not one component on ``REAL`` indexed by
+        one dim at most with no element axes.
 
     Notes
     -----
@@ -211,10 +220,11 @@ class FactorSpec:
 
     @property
     def law_name(self) -> str:
-        """A short name for the law: ``"Gaussian"``, a builder's or family's
-        name, a function's ``__name__``, or the law's class."""
-        if isinstance(self.law, GaussianSpec):
-            return "Gaussian"
+        """A short name for the law: ``"Gaussian"``, ``"Student-t"`` or
+        ``"matrix Student-t"``, a builder's or family's name, a function's
+        ``__name__``, or the law's class."""
+        if isinstance(self.law, CENTERED_LAW_SPECS):
+            return _CENTERED_LAW_NAMES[type(self.law)]
         if isinstance(self.law, Builder):
             return self.law.name
         if is_law(self.law):
@@ -328,6 +338,17 @@ class GaussianSpec:
 
     def __repr__(self) -> str:
         return f"GaussianSpec(mean={self.mean[0]!r}, covariance={self.covariance!r})"
+
+
+#: The law forms centered on a mean component, over one component on
+#: ``REAL`` indexed by one dim at most: each bound to the labels in use with
+#: its factor, and evaluated to a law at each draw.
+CENTERED_LAW_SPECS = (GaussianSpec, StudentTSpec, MatrixStudentTSpec)
+
+#: Each centered law form's name in a description.
+_CENTERED_LAW_NAMES = frozendict(
+    {GaussianSpec: "Gaussian", StudentTSpec: "Student-t", MatrixStudentTSpec: "matrix Student-t"}
+)
 
 
 class DeterministicSpec:
@@ -591,11 +612,11 @@ def _as_specs(specs: Any, *, what: str) -> tuple[ArraySpec, ...]:
 
 def _law_reads(name: str, law: Any) -> tuple[str, ...]:
     """What a factor's law reads: nothing for a law, a builder's
-    :attr:`~Builder.reads`, a Gaussian's mean and covariance's, a
-    function's keywords."""
+    :attr:`~Builder.reads`, a centered law's mean and what its covariance
+    reads, a function's keywords."""
     if is_law(law):
         return ()
-    if isinstance(law, (Builder, GaussianSpec)):
+    if isinstance(law, (Builder, *CENTERED_LAW_SPECS)):
         return law.reads
     check_law_is_one_of_the_forms(name, law)
     return function_reads(law, message_name=f"the law of {name!r}")
@@ -767,14 +788,15 @@ def check_covariance_is_a_covariance_spec(covariance: Any) -> None:
 
 
 def check_gaussian_event_is_one_vector_on_the_reals(spec: FactorSpec) -> None:
-    """A Gaussian factor's event is one component on ``REAL``, indexed by one
-    dim at most and with no element axes, so its entries are its labels."""
-    if not isinstance(spec.law, GaussianSpec):
+    """A Gaussian or Student-t factor's event is one component on ``REAL``,
+    indexed by one dim at most and with no element axes, so its entries are
+    its labels."""
+    if not isinstance(spec.law, CENTERED_LAW_SPECS):
         return
     component, *rest = spec.event
     if rest or component.support != REAL or len(component.indexed_by) > 1 or component.element_axes:
         raise ValueError(
-            f"the factor {spec.name!r} is Gaussian, so its event is one component on REAL, indexed by one dim "
+            f"the factor {spec.name!r} is {spec.law_name}, so its event is one component on REAL, indexed by one dim "
             f"at most and with no element axes; it declares {[c.name for c in spec.event]}, the first on "
             f"{component.support.name!r}, indexed by {component.indexed_by}, with element axes "
             f"{list(component.element_axes)}."

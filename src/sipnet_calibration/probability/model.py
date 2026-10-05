@@ -34,7 +34,9 @@ A **Gaussian factor**, one whose law is a
 :class:`~sipnet_calibration.probability.parts.GaussianSpec`, has its
 covariance spec bound to the labels in use with the factor: which entries
 form blocks is fixed then, and at each draw only the blocks' values are
-computed (:mod:`~sipnet_calibration.probability.covariance`).
+computed (:mod:`~sipnet_calibration.probability.covariance`). A Student-t
+factor (:mod:`~sipnet_calibration.probability.scale_mixtures`) is bound
+alike.
 
 What it reads
 -------------
@@ -57,8 +59,8 @@ Functions and classes
 :class:`ModelSpec`
     The declared model: ``component_spec``, ``bind``, ``describe``.
 :class:`FactoredDistribution`
-    The model at labels: ``block_shape``, ``law``, ``select``, ``sample``,
-    ``log_prob``, ``describe``.
+    The model at labels: ``block_shape``, ``law``, ``select``,
+    ``marginalize``, ``sample``, ``log_prob``, ``describe``.
 :func:`block_at_labels`
     A labeled value or an array as a component's block at the labels in use.
 
@@ -71,7 +73,8 @@ deterministic's outputs are checked at the probe points of the random
 components it is computed from, pushed through. A Gaussian factor, on
 ``REAL``, is checked instead for its event shape and, when its covariance
 reads nothing that varies by draw, for a positive-definite covariance; one
-that does is checked per sample, which it makes invalid where it fails.
+that does is checked per sample, which it makes invalid where it fails. A
+Student-t factor is checked as a Gaussian one is.
 
 Binding runs no simulator: it binds each one to the labels in use
 (:meth:`Simulator.at <sipnet_calibration.probability.parts.Simulator.at>`)
@@ -151,6 +154,7 @@ from sipnet_calibration.probability.layout import (
 )
 from sipnet_calibration.probability.names import SAMPLE
 from sipnet_calibration.probability.parts import (
+    CENTERED_LAW_SPECS,
     DeterministicSpec,
     FactorSpec,
     GaussianSpec,
@@ -511,6 +515,29 @@ class FactoredDistribution:
         selected = self._layout.select(**selectors)
         return FactoredDistribution(self.spec, coords=selected.coords, inputs=dict(self.inputs))
 
+    def marginalize(self, component_names: Sequence[str]) -> FactoredDistribution:
+        """The model with *component_names* integrated out by a conjugate
+        rule (:mod:`~sipnet_calibration.probability.conjugacy`): each one's
+        factor, and the Gaussian factor that reads it, become one factor, a
+        Student-t or a matrix Student-t, bound at the same labels and
+        inputs. The names are
+        integrated out in order, each from the model the last one left.
+
+        Raises
+        ------
+        TypeError
+            If *component_names* is not a sequence of names.
+        KeyError
+            If a name is not a component.
+        ValueError
+            If *component_names* is empty or names a component twice, or no
+            rule applies to a name; the message names the condition that
+            failed.
+        """
+        from sipnet_calibration.probability.conjugacy import marginalize
+
+        return marginalize(self, component_names)
+
     # ── evaluation ────────────────────────────────────────────────────────────
 
     def sample(self, key: Array, n: int, *, component_names: Sequence[str] | None = None) -> ValuesByName:
@@ -636,9 +663,9 @@ class FactoredDistribution:
                 continue
             bound = self._factors[part.name]
             theta = bound.sample_theta(random_key_for(key, part.name), n, reads, held)
-            # A Gaussian draw, on REAL, is not finite only where its covariance
+            # A centered draw, on REAL, is not finite only where its covariance
             # is not positive definite: no density there, so it stays NaN.
-            if not bound.gaussian:
+            if not bound.centered:
                 check_draws_map_to_finite_theta(part.name, theta if computed is None else theta[computed])
             if computed is not None:
                 theta = jnp.where(jnp.asarray(computed)[:, None], theta, jnp.nan)
@@ -860,17 +887,17 @@ def _bound_parts(
             continue
         reads, held = split_reads(part.given, draws, fixed)
         per_draw_values = [{n: v[i] for n, v in reads.items()} for i in range(ANCESTRAL_DRAWS)] if reads else [{}]
-        gaussian = isinstance(part.law, GaussianSpec)
+        centered = isinstance(part.law, CENTERED_LAW_SPECS)
         bound = BoundFactor.build(
             part, index_shape=model._layout.index_shape(part.event[0].name), fixed_reads=frozendict(fixed_reads),
             per_draw_values=per_draw_values, fixed_values=held, downstream_of_a_simulator=part.name in downstream,
-            covariance=part.law.covariance._at(_covariance_scope(model, part, fixed_reads)) if gaussian else None,
-            covariance_is_checked=not gaussian or not any(n in varying for n in part.law.covariance.reads),
+            covariance=_law_structure_at(part.law, _covariance_scope(model, part, fixed_reads)) if centered else None,
+            covariance_is_checked=not centered or not any(n in varying for n in _structure_reads(part.law)),
         )
         factors[part.name] = bound
         if ancestral:
             theta = bound.sample_theta(random_key_for(key, part.name), ANCESTRAL_DRAWS, reads, held)
-            if part.name not in downstream and not bound.gaussian:
+            if part.name not in downstream and not bound.centered:
                 check_draws_map_to_finite_theta(part.name, theta)
             draws |= bound.natural_values(theta)
     for bound in deterministics.values():
@@ -902,6 +929,18 @@ def _covariance_scope(model: FactoredDistribution, part: FactorSpec, fixed_reads
         label_map_targets={name: str(label_map.name) for name, label_map in part.label_maps.items()},
         coords={**_own_dim_labels(part), **model.coords},
     )
+
+
+def _law_structure_at(law: Any, scope: _Scope) -> Any:
+    """A centered law's structure at its factor's labels: a Gaussian's
+    covariance spec, or a Student-t spec itself, bound over *scope*."""
+    return law.covariance._at(scope) if isinstance(law, GaussianSpec) else law._at(scope)
+
+
+def _structure_reads(law: Any) -> tuple[str, ...]:
+    """What a centered law's covariance reads, beyond its mean."""
+    covariance = getattr(law, "covariance", None)
+    return () if covariance is None else covariance.reads
 
 
 def _own_dim_labels(part: FactorSpec) -> dict[str, pd.Index]:
@@ -1103,7 +1142,7 @@ def check_model_spec_is_valid(spec: ModelSpec) -> None:
         check_constants_are_named_apart(part, set(names))
     check_element_axes_agree([*(c for p in spec.parts for c in _declared(p)), *spec.inputs])
     for part in spec.parts:
-        if isinstance(part, FactorSpec) and isinstance(part.law, GaussianSpec):
+        if isinstance(part, FactorSpec) and isinstance(part.law, CENTERED_LAW_SPECS):
             check_gaussian_mean_matches_its_event(part, spec)
 
 
@@ -1183,20 +1222,21 @@ def check_element_axes_agree(specs: Sequence[ArraySpec]) -> None:
 
 
 def check_gaussian_mean_matches_its_event(part: FactorSpec, spec: ModelSpec) -> None:
-    """A Gaussian factor's mean has its event's layout and units: indexed by
-    the same dims, with the same element axes, in the same units."""
+    """A Gaussian or Student-t factor's mean has its event's layout and
+    units: indexed by the same dims, with the same element axes, in the same
+    units."""
     (event,) = part.event
     (name,) = part.law.mean
     declared = {c.name: c for p in spec.parts for c in _declared(p)} | {i.name: i for i in spec.inputs}
     if name not in declared:
         raise ValueError(
-            f"the Gaussian factor {part.name!r} is centered on {name!r}, which is not a component or input; "
+            f"the {part.law_name} factor {part.name!r} is centered on {name!r}, which is not a component or input; "
             "center it on a component, such as a prediction."
         )
     mean = declared[name]
     if (mean.indexed_by, dict(mean.element_axes), mean.units) != (event.indexed_by, dict(event.element_axes), event.units):
         raise ValueError(
-            f"the Gaussian factor {part.name!r} is centered on {name!r}, indexed by {mean.indexed_by} in "
+            f"the {part.law_name} factor {part.name!r} is centered on {name!r}, indexed by {mean.indexed_by} in "
             f"{mean.units!r}, but its event is indexed by {event.indexed_by} in {event.units!r}; a mean has its "
             "event's layout and units, so convert it before it is one."
         )
