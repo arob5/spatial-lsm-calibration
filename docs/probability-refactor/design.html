@@ -996,10 +996,11 @@ def pushforward(base: Any, *, support: Support | None = None,
   <code>NumpyroLaw</code>, which reorders <code>sample</code>'s arguments and
   vmaps <code>log_prob</code> over the axes in front of its batch and event:
   GPJax's <code>GaussianDistribution.log_prob</code> does not broadcast over
-  them, and the core batches its values there. EnsKit's <code>Gaussian</code>
-  is not released; pyEKI's is adapted, as P6 built it, to a
-  <code>GaussianLaw</code>, found through the <code>_linalg</code> shim, so E2
-  changes the class there alone. D24's "EnsKit" is pyEKI until then.</li>
+  them, and the core batches its values there. The project still pins pyEKI
+  from before EnsKit's rename, so pyEKI's <code>Gaussian</code> is the one
+  adapted, as P6 built it, to a <code>GaussianLaw</code>, found through the
+  <code>_linalg</code> shim; E1 moves the shim and the adapter to EnsKit's
+  <code>Gaussian</code>. D24's "EnsKit" is pyEKI until then.</li>
   <li><b>Where adaptation happens.</b> <code>FactorSpec</code> holds a bare law
   adapted, and the bound factor adapts what a law function returns, so a law
   function may return any of the three kinds unwrapped.
@@ -3201,14 +3202,25 @@ follows.</p>
 <tr><td><b>P5</b> the simulator seam</td><td>The core's <code>Simulator</code>, <code>SimulatorOutput</code>, <code>PosteriorEvaluation</code>, <code>evaluate</code>, <code>predict</code>, <code>replicate</code>, <code>simulator_inputs</code>, <code>log_density_given</code>, the corner points; <code>SIPNETRuns</code> extracted, with today's <code>ForwardModel</code> delegating to it; <code>SIPNETSimulator</code> with output pruning and per-output validity; F6 and F7</td><td>P3, P4</td><td>old <code>test_forward</code> unchanged; predictions bitwise equal to P1's; a failing-run test; one F6 pass equals three calls</td></tr>
 <tr><td><b>P6</b> the Gaussian observation model</td><td>Covariance specs, <code>GaussianSpec</code>, <code>noise_factor</code>, <code>gaussian_likelihood</code>, <code>model.law</code>, through one shim <code>probability/_linalg.py</code> over today's <code>pyeki.linalg</code> and <code>pyeki.gauss</code></td><td>P5</td><td>densities against SciPy on random block structures; structured equals dense; PR #69's one-site R equal to its hand assembly</td></tr>
 <tr><td><b>P7</b> inference adapters</td><td><code>eki_problem</code>, <code>tempering_problem</code>, <code>PriorBaseDensity</code>, <code>batched_log_density</code>, <code>log_density</code>, <code>initial_points</code>, on today's pyEKI</td><td>P6</td><td>a linear-Gaussian toy against its closed form: EKI and SMC moments, the SMC evidence; failed samples</td></tr>
-<tr><td>#69 migrates</td><td>In PR #69's branch, by its own session</td><td>P7</td><td>prior draws bitwise; EKI and MCMC within Monte Carlo error</td></tr>
+<tr><td>#69 migrates</td><td>In PR #69's branch, by its own session, onto EnsKit</td><td>P7, E2</td><td>prior draws bitwise; EKI and MCMC within Monte Carlo error</td></tr>
 <tr><td><b>P8</b> conjugacy</td><td><code>marginalize</code>, <code>full_conditional</code>, <code>theta_with</code> (R1, R2)</td><td>P6</td><td>marginals against quadrature; full conditionals against a long MH chain; the submatrix marginal against Monte Carlo</td></tr>
 <tr><td><b>P9</b> foreign laws</td><td>The numpyro and EnsKit <code>Gaussian</code> adapters; GPJax as an optional test group</td><td>P3</td><td>agreement with the TFP equivalent; skipped without GPJax</td></tr>
 <tr><td><b>R1</b> removal</td><td>Delete <code>parameters</code>, today's <code>ForwardModel</code>, the observation vector's Flat API and the three-argument <code>describe_calibration</code>; migrate the tests; move the design's vocabulary into CLAUDE.md's glossary</td><td>#69 migrated</td><td>suite green; no retired name left</td></tr>
-<tr><td><b>E1–E3</b> EnsKit</td><td>E1: the <code>pyeki</code> → <code>enskit</code> rename, when EnsKit's PR 1 lands, in the shim. E2: <code>enskit.linalg</code> and <code>enskit.distribution</code>, after EnsKit's PRs 2 and 4. E3: EnsKit's EKI driver, after its PR 7.</td><td>EnsKit</td><td>P6's and P7's tests unchanged</td></tr>
+<tr><td><b>E1</b> re-pin to EnsKit</td><td>The project tracks EnsKit's <code>main</code> (<code>TARPS-group/EnsKit</code>, package <code>enskit</code>) in place of pyEKI, re-locked at its current commit, which moves JAX from 0.8 to 0.10 and TFP's nightly with it. The <code>_linalg</code> shim on <code>enskit.linalg</code> and <code>enskit.distribution</code>; <code>GaussianLaw</code> and <code>as_law</code> on EnsKit's block <code>Gaussian</code>; <code>test_inference</code> and <code>test_smc</code> off the deleted <code>pyeki.eki</code>; P1's references rewritten if the JAX or TFP move changes their bytes; CLAUDE.md's companion table, upgrade command and pyEKI facts</td><td>P9</td><td>P6's and P7's tests unchanged in substance; P1's byte test and P3's parity test pass</td></tr>
+<tr><td><b>E2</b> EnsKit's EKI driver</td><td><code>eki_problem</code> in the terms of <code>enskit.algorithms.eki</code>; <code>initial_ensemble</code> an EnsKit <code>Ensemble</code></td><td>E1</td><td>P7's EKI toy against its closed form through EnsKit's driver</td></tr>
 </tbody></table></div>
 <p>P2 and P4 can run in parallel, and P8 and P9 can run in any order once their
 dependencies are merged.</p>
+<p><i>Revised 2026-10-05, after P9:</i> EnsKit's rewrite is complete (its PRs
+1–12, release 0.1.0), so the three EnsKit PRs planned to follow it piece by
+piece become two, run next. EnsKit's <code>main</code> no longer has
+<code>pyeki.gauss</code> or <code>pyeki.eki</code>, so re-pinning to it cannot be
+split from the move of the shim and the two tests that import them: that is E1.
+E1 also brings JAX 0.10, which TFP's nightly, numpyro and GPJax resolve with
+(checked in a scratch environment). The EKI driver follows as E2. #69 migrates
+after E2, so it moves once, onto the probability layer and EnsKit together;
+its experiment imports <code>pyeki.gauss</code>, <code>pyeki.linalg</code> and
+<code>pyeki.eki</code>, all of which it must leave in either order.</p>
 </section>
 
 <section id="decisions">
@@ -3251,7 +3263,8 @@ have a recommendation.</p>
   <li><b>EnsKit is being rewritten.</b> PRs C and D depend on its
   <code>linalg</code>, <code>distribution</code> and EKI layers. The interims are
   today's pyEKI classes, which keep their names through EnsKit's PR 1 rename.
-  The adapter's text is kept thin until EnsKit's driver lands.</li>
+  The adapter's text is kept thin until EnsKit's driver lands.
+  <i>Resolved 2026-10-05:</i> the rewrite is complete; E1 and E2 move to it.</li>
   <li><b>Correlated sources grouped by site.</b> A <code>GaussianSpec</code> over
   two components grouped by site is not contiguous in y, and EnsKit has no
   permutation operator. The core permutes the residual itself. The EKI view
@@ -3282,7 +3295,9 @@ have a recommendation.</p>
   <code>eki</code>. The upgrade step CLAUDE.md asks of every session would then
   break every import. The refactor's sessions upgrade pySIPNET and PyEns only,
   and route pyEKI through one shim; pinning pyEKI's revision for everyone is a
-  question for Andrew (handoff document).</li>
+  question for Andrew (handoff document). <i>Decided 2026-10-05:</i> the
+  project tracks EnsKit's <code>main</code>, re-pinned by E1, after which
+  <code>enskit</code> is upgraded with the other companions.</li>
   <li><b>Labels at scale.</b> Today's coverage check is quadratic, about 2 s for
   2,000 labels against 20,000 and minutes at 80,000. <code>as_coords</code> refuses
   a MultiIndex, and pandas gives <code>datetime64[us]</code> where the design says
