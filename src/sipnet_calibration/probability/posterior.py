@@ -39,26 +39,35 @@ in declaration order, and
 a factor that pushes forward through its components' own bijectors being
 evaluated by its base density, with no Jacobian.
 
+**Simulators.** No target factor may have a simulator among its
+ancestors, so :math:`\\pi` is evaluated and sampled without one. A
+simulator computes only the outputs the likelihood depends on, once per
+batch of theta (:meth:`Posterior.evaluate`). With :math:`\\mathcal V` the
+set of :math:`z_T` at which each of them is computed, the posterior is the
+truncation :math:`p(z_T \\mid y) \\propto \\pi(z_T) L(z_T) \\mathbf 1\\{z_T
+\\in \\mathcal V\\}`: a sample is **valid** when its outputs were computed
+and every :math:`O_\\theta` factor's density is finite there, and its log
+likelihood is :math:`-\\infty` otherwise.
+
 Data model
 ----------
 Theta is Flat, ``(..., D)``, laid out by ``posterior.parameters.unconstrained``;
 y is Flat, ``(N,)``, laid out by ``posterior.observations``, the
 :math:`O_\\theta` components in declaration order. Observed values are kept
 as labeled values, a DataArray per observed component.
+:class:`PosteriorEvaluation`, what one evaluation computed, holds ``(J,)``
+arrays and values by name, ``(J, *block)``.
 
 Functions and classes
 ---------------------
 :func:`condition_on`
     Bayes' rule.
 :class:`Posterior`
-    ``sample_prior``, ``log_prior``, ``log_likelihood``, ``log_density``,
-    ``natural_values``, ``to_labeled``, ``describe``.
-
-Notes
------
-No part here runs a simulator: the simulator seam, with the batched
-evaluation it brings, arrives in the simulator PR (P5). Until then the
-likelihood is a traced function of theta.
+    ``sample_prior``, ``log_prior``, ``evaluate``, ``log_likelihood``,
+    ``log_density``, ``log_density_given``, ``predict``, ``replicate``,
+    ``simulator_inputs``, ``natural_values``, ``to_labeled``, ``describe``.
+:class:`PosteriorEvaluation`
+    One batch of theta, evaluated.
 
 Usage
 -----
@@ -66,12 +75,14 @@ Usage
 
     posterior = condition_on(model, {"y": y_observed})
     theta = posterior.sample_prior(jax.random.key(0), 100)   # (100, D)
-    posterior.log_density(theta)                              # (100,)
+    evaluation = posterior.evaluate(theta)                    # one simulator call
+    evaluation.log_density, evaluation.valid                  # (100,), (100,)
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 import jax
@@ -86,8 +97,11 @@ from sipnet_calibration.probability._bound import (
     coords_of,
     deterministics_behind,
     finite_or_minus_infinity,
+    simulator_at,
+    simulator_outputs_behind,
     split_reads,
 )
+from sipnet_calibration.probability._probes import corner_points
 from sipnet_calibration.probability._validation import as_count, truncated
 from sipnet_calibration.probability.layout import (
     LabeledValues,
@@ -97,10 +111,11 @@ from sipnet_calibration.probability.layout import (
 )
 from sipnet_calibration.probability.model import FactoredDistribution, block_at_labels
 from sipnet_calibration.probability.names import SAMPLE, THETA, THETA_ENTRY
-from sipnet_calibration.probability.parts import DeterministicSpec, FactorSpec
+from sipnet_calibration.probability.parts import DeterministicSpec, FactorSpec, Simulator, SimulatorOutput
 
 __all__ = [
     "Posterior",
+    "PosteriorEvaluation",
     "condition_on",
 ]
 
@@ -121,7 +136,9 @@ def condition_on(model: FactoredDistribution, observed: Mapping[str, Any]) -> Po
 
     Observed factors whose kernels depend on no target factor contribute
     only a constant, so observing a hyperparameter at a value holds it
-    fixed.
+    fixed. Each simulator the likelihood depends on is restricted to the
+    outputs it depends on, and its ``check_given`` is called at the corner
+    points of the target.
 
     Parameters
     ----------
@@ -140,9 +157,11 @@ def condition_on(model: FactoredDistribution, observed: Mapping[str, Any]) -> Po
         lacks a label in use.
     ValueError
         If part of a factor's event is observed; a value is not finite or
-        lies outside its support; nothing is left to infer; or a target or
-        constant observed factor has no finite density at the observed
-        values.
+        lies outside its support; nothing is left to infer; a target factor,
+        or an observed one with no target ancestor, has a simulator among
+        its ancestors; a target or constant observed factor has no finite
+        density at the observed values; or a simulator's ``check_given``
+        fails.
     """
     return Posterior(model, observed)
 
@@ -179,7 +198,7 @@ class Posterior:
     parameter_names : tuple of str
         The target's components, :math:`T`.
     barren_names : tuple of str
-        The barren factors' components, :math:`B`.
+        The barren factors' components, :math:`B`, drawn by :meth:`predict`.
     constant_names : tuple of str
         Observed components with no target ancestor, :math:`O_c`: in the
         evidence, not in the likelihood.
@@ -187,6 +206,12 @@ class Posterior:
         :math:`\\log C`, their kernels' log density at the observed values.
     dimension : int
         ``D``.
+    simulators : frozendict of str to Simulator
+        Each simulator the likelihood depends on, computing only the outputs
+        it depends on.
+    simulator_free_positions : numpy.ndarray
+        ``int64``, ascending: the entries of theta with no simulator among
+        their descendants, which :meth:`log_density_given` varies.
 
     Raises
     ------
@@ -209,6 +234,8 @@ class Posterior:
         }
         roles = _roles(model, observed_parts)
         check_something_is_left_to_infer(roles["target"])
+        check_no_factor_reads_a_simulator(model, roles["target"], role="target")
+        check_no_factor_reads_a_simulator(model, roles["constant"], role="observed factor with no target ancestor")
         factors = model._factors
         names = {role: tuple(c.name for f in parts for c in factors[f].components) for role, parts in roles.items()}
         _set(self, "model", model)
@@ -218,6 +245,7 @@ class Posterior:
         _set(self, "_target", tuple(factors[f] for f in roles["target"]))
         _set(self, "_likelihood", tuple(factors[f] for f in roles["likelihood"]))
         _set(self, "_constant", tuple(factors[f] for f in roles["constant"]))
+        _set(self, "_barren", tuple(factors[f] for f in roles["barren"]))
         _set(self, "parameters", _layout_of(model, names["target"]))
         _set(self, "observations", _layout_of(model, names["likelihood"]) if names["likelihood"] else None)
         observed_order = [c for c in spec.component_names if c in values]
@@ -231,8 +259,11 @@ class Posterior:
         ))
         _set(self, "_fixed", frozendict({**model._fixed, **values}))
         _set(self, "_slices", tuple(_slice_of(self.parameters.unconstrained, bound) for bound in self._target))
+        _set(self, "simulators", frozendict(_simulators_read(model, self._likelihood)))
+        _set(self, "simulator_free_positions", _simulator_free_positions(self))
         _set(self, "log_constant", self._log_constant())
         check_target_density_is_finite_at_the_held_values(self)
+        check_simulators_take_the_corner_points(self)
 
     def __setattr__(self, name: str, value: Any) -> None:
         raise AttributeError(f"a Posterior is frozen; condition again rather than setting {name!r}.")
@@ -260,7 +291,7 @@ class Posterior:
             part = spec._owner.get(name)
             if part is None:
                 role = "input"
-            elif isinstance(part, DeterministicSpec):
+            elif isinstance(part, (DeterministicSpec, Simulator)):
                 role = "computed"
             elif name in self.parameter_names:
                 role = "parameter"
@@ -281,7 +312,7 @@ class Posterior:
     def sample_prior(self, key: Array, n: int) -> Array:
         """``n`` draws of theta from :math:`\\pi`, ``(n, D)``: the target
         factors sampled ancestrally with every observed value held, each
-        keyed by ``jax.random.fold_in(key, crc32(name))``.
+        keyed by ``jax.random.fold_in(key, crc32(name))``. No simulator runs.
 
         Raises
         ------
@@ -322,35 +353,174 @@ class Posterior:
             total = total + finite_or_minus_infinity(bound.log_prob_theta(theta[..., positions], reads, held))
         return total
 
-    def log_likelihood(self, theta: Any) -> Array:
-        """:math:`\\log L(T(\\theta))`, ``(..., D) -> (...)``: each
-        :math:`O_\\theta` factor's density at its observed values, ``-inf``
-        where one is not finite; zero when nothing the target reaches is
-        observed. Traceable.
+    def evaluate(self, theta: Any) -> PosteriorEvaluation:
+        """Evaluate the target at a batch of theta, running each simulator
+        once.
+
+        Parameters
+        ----------
+        theta:
+            ``(J, D)``, or ``(D,)`` for one sample; finite.
+
+        Returns
+        -------
+        PosteriorEvaluation
 
         Raises
         ------
         ValueError
-            If the last axis of *theta* is not ``D`` long.
+            If *theta* is not ``(J, D)`` or ``(D,)`` with ``J >= 1``, or not
+            finite.
+        Exception
+            Whatever a simulator's machinery raises.
         """
+        theta = self._theta_batch(theta)
+        lead = (theta.shape[0],)
+        runs: dict[str, SimulatorOutput] = {}
+        natural = self._parameter_values(theta)
+        computable = self._computable_names()
+        read = [g for bound in self._likelihood for g in bound.spec.given]
+        per_draw, fixed = self.model._computed(
+            natural, self._fixed, lead, [*read, *computable], simulators=self.simulators, runs=runs
+        )
+        log_likelihood, finite = self._likelihood_at(per_draw, fixed, lead)
+        simulator_valid = jnp.asarray(_all_computed(runs, lead[0]))
+        valid = simulator_valid & finite
+        log_prior = self.log_prior(theta)
+        log_likelihood = jnp.where(valid, log_likelihood, -jnp.inf)
+        spec = self.model.spec
+        computed = [n for n in spec.component_names if isinstance(spec._owner[n], (DeterministicSpec, Simulator))]
+        values = {
+            n: per_draw[n] if n in per_draw else jnp.broadcast_to(fixed[n], (*lead, *fixed[n].shape))
+            for n in computed if n in per_draw or n in fixed
+        }
+        return PosteriorEvaluation(
+            theta=theta,
+            log_prior=log_prior,
+            log_likelihood=log_likelihood,
+            log_density=log_prior + log_likelihood,
+            valid=valid,
+            simulator_valid=simulator_valid,
+            values=frozendict(values),
+            simulator_records=frozendict({name: run.record for name, run in runs.items()}),
+        )
+
+    def log_likelihood(self, theta: Any) -> Array:
+        """:math:`\\log L(T(\\theta))`: each :math:`O_\\theta` factor's density
+        at its observed values, ``-inf`` where one is not finite or a
+        simulator output it reads was not computed; zero when nothing the
+        target reaches is observed. Without a simulator, a traced function,
+        ``(..., D) -> (...)``; with one, :meth:`evaluate`'s, ``(J, D) ->
+        (J,)`` and ``(D,) -> ()``.
+
+        Raises
+        ------
+        ValueError
+            If the last axis of *theta* is not ``D`` long; with a simulator,
+            as :meth:`evaluate`.
+        """
+        if self.simulators:
+            return self._of_one_or_a_batch(theta, lambda evaluation: evaluation.log_likelihood)
         theta, lead = self._theta(theta)
         per_draw, fixed = self._values_read(theta, lead, self._likelihood)
-        total = jnp.zeros(lead, dtype=jnp.float64)
-        for bound in self._likelihood:
-            own = {name: self._fixed[name] for name in bound.names}
-            reads, held = split_reads(bound.spec.given, per_draw, fixed)
-            total = total + finite_or_minus_infinity(bound.log_prob_natural(own, reads, held, lead))
-        return total
+        return self._likelihood_at(per_draw, fixed, lead)[0]
 
     def log_density(self, theta: Any) -> Array:
-        """``log_prior(theta) + log_likelihood(theta)``, ``(..., D) ->
-        (...)``: the unnormalized log posterior in theta. Traceable."""
+        """``log_prior(theta) + log_likelihood(theta)``: the unnormalized log
+        posterior in theta. Without a simulator, traced, ``(..., D) ->
+        (...)``; with one, :meth:`evaluate`'s, ``(J, D) -> (J,)`` and ``(D,)
+        -> ()``."""
+        if self.simulators:
+            return self._of_one_or_a_batch(theta, lambda evaluation: evaluation.log_density)
         return self.log_prior(theta) + self.log_likelihood(theta)
+
+    def log_density_given(self, evaluation: PosteriorEvaluation) -> Callable[[Array], Array]:
+        """The log posterior as a function of the entries of theta no
+        simulator depends on, every other entry and every simulator output
+        held at *evaluation*'s: ``(J, D_free) -> (J,)``, traceable, ``-inf``
+        where a held simulator output was not computed.
+
+        Its gradient is the posterior's in those entries, which sit at
+        :attr:`simulator_free_positions` of theta.
+
+        Raises
+        ------
+        TypeError
+            If *evaluation* is not a :class:`PosteriorEvaluation`.
+        ValueError
+            If its theta is not ``(J, D)``.
+        """
+        check_evaluation_is_an_evaluation(evaluation)
+        check_theta_is_a_batch(tuple(evaluation.theta.shape), self.dimension)
+        free = jnp.asarray(self.simulator_free_positions)
+        held_theta = evaluation.theta
+        lead = (held_theta.shape[0],)
+        outputs = [o.name for simulator in self.simulators.values() for o in simulator.outputs]
+        held = {name: evaluation.values[name] for name in outputs}
+        computed = evaluation.simulator_valid
+
+        def log_density(theta_free: Array) -> Array:
+            theta = held_theta.at[:, free].set(jnp.asarray(theta_free, dtype=jnp.float64))
+            per_draw, fixed = self.model._computed(
+                {**self._parameter_values(theta), **held}, self._fixed, lead,
+                [g for bound in self._likelihood for g in bound.spec.given], simulators=self.simulators,
+            )
+            log_likelihood, _ = self._likelihood_at(per_draw, fixed, lead)
+            return jnp.where(computed, self.log_prior(theta) + log_likelihood, -jnp.inf)
+
+        return log_density
+
+    def predict(self, key: Array, theta: Any) -> tuple[ValuesByName, dict[str, Array]]:
+        """Draws of the barren components at a batch of theta, each factor
+        sampled once per sample, keyed by ``jax.random.fold_in(key,
+        crc32(name))``, with the observed values held: the posterior
+        predictive of what was not observed, such as a validation source.
+        The simulator outputs only barren factors read are computed here.
+
+        Returns
+        -------
+        (ValuesByName, dict of str to jax.Array)
+            ``{name: (J, *block)}``, ``NaN`` where a simulator output it
+            depends on was not computed, and per component ``(J,)`` bool,
+            whether each was.
+
+        Raises
+        ------
+        ValueError
+            As :meth:`evaluate` for *theta*.
+        """
+        return self._drawn(key, theta, self._barren, self._fixed, outputs_from="model")
+
+    def replicate(self, key: Array, theta: Any) -> tuple[ValuesByName, dict[str, Array]]:
+        """Replicated draws of the :math:`O_\\theta` components at a batch of
+        theta, each factor sampled once per sample from its kernel given the
+        sample, keyed as :meth:`predict`'s: a posterior predictive check of
+        the observations. :math:`O_c` components are held, and not
+        replicated. Returns as :meth:`predict`."""
+        replicated = {c.name for bound in self._likelihood for c in bound.components}
+        fixed = {name: value for name, value in self._fixed.items() if name not in replicated}
+        return self._drawn(key, theta, self._likelihood, fixed, outputs_from="posterior")
+
+    def simulator_inputs(self, theta: Any, simulator_name: str) -> LabeledValues:
+        """What the simulator *simulator_name* reads at a batch of theta, as
+        it would receive it, ``sample`` labeled ``0`` to ``J - 1``: for
+        running it with other reductions, a daily output say.
+
+        Raises
+        ------
+        KeyError
+            If the model has no simulator *simulator_name*.
+        ValueError
+            As :meth:`evaluate` for *theta*.
+        """
+        check_simulator_is_the_models(simulator_name, self.model)
+        theta = self._theta_batch(theta)
+        return self._simulator_inputs_at(theta, simulator_name)
 
     def natural_values(self, theta: Any) -> ValuesByName:
         """The parameters' values at theta, and those of every deterministic
-        computable from the parameters, observed values and inputs,
-        ``{name: (..., *block)}``. Traceable.
+        computable from the parameters, observed values and inputs with no
+        simulator, ``{name: (..., *block)}``. Traceable.
 
         Raises
         ------
@@ -401,6 +571,20 @@ class Posterior:
         check_flat_ends_in_the_size(theta.shape, self.dimension)
         return theta, tuple(theta.shape[:-1])
 
+    def _theta_batch(self, theta: Any) -> Array:
+        """*theta* as a finite batch, ``(J, D)``, ``J >= 1``."""
+        theta = jnp.asarray(theta, dtype=jnp.float64)
+        theta = theta[None] if theta.ndim == 1 else theta
+        check_theta_is_a_batch(tuple(theta.shape), self.dimension)
+        check_theta_has_a_row(tuple(theta.shape))
+        check_theta_is_finite(np.asarray(theta))
+        return theta
+
+    def _of_one_or_a_batch(self, theta: Any, read: Callable[[PosteriorEvaluation], Array]) -> Array:
+        """``read(evaluate(theta))``, ``()`` for a ``(D,)`` theta."""
+        out = read(self.evaluate(theta))
+        return out[0] if jnp.ndim(theta) == 1 else out
+
     def _parameter_values(self, theta: Array) -> dict[str, Array]:
         """The parameters' natural values at theta, ``{name: (..., *block)}``."""
         unconstrained = self.parameters.unconstrained.flat_to_values(theta)
@@ -408,15 +592,64 @@ class Posterior:
 
     def _values_read(self, theta: Array, lead: tuple[int, ...], readers: Sequence[BoundFactor]) -> tuple[dict, dict]:
         """What *readers* read at theta: the parameters' values, observed
-        values, inputs, and the deterministics behind them."""
+        values, inputs, and the deterministics behind them, with no
+        simulator."""
         if not any(bound.spec.given for bound in readers):
             return {}, dict(self._fixed)
         natural = self._parameter_values(theta)
         return self.model._computed(natural, self._fixed, lead, [g for b in readers for g in b.spec.given])
 
+    def _likelihood_at(self, per_draw: Mapping[str, Array], fixed: Mapping[str, Array], lead: tuple[int, ...]) -> tuple[Array, Array]:
+        """``(log L, every factor's density finite)``, each ``lead``, from
+        what the :math:`O_\\theta` factors read; ``-inf`` where a factor's
+        density is not finite."""
+        total = jnp.zeros(lead, dtype=jnp.float64)
+        finite = jnp.ones(lead, dtype=bool)
+        for bound in self._likelihood:
+            own = {name: self._fixed[name] for name in bound.names}
+            reads, held = split_reads(bound.spec.given, per_draw, fixed)
+            density = bound.log_prob_natural(own, reads, held, lead)
+            finite = finite & jnp.isfinite(density)
+            total = total + finite_or_minus_infinity(density)
+        return total, finite
+
+    def _simulator_inputs_at(self, theta: Array, simulator_name: str) -> LabeledValues:
+        """What a simulator reads at a ``(J, D)`` theta, upstream simulators
+        run as the model has them."""
+        model = self.model
+        simulator = model.simulators[simulator_name]
+        lead = (theta.shape[0],)
+        per_draw, fixed = model._computed(self._parameter_values(theta), self._fixed, lead, simulator.given)
+        return model._labeled_given(simulator, per_draw, fixed, lead)
+
+    def _drawn(
+        self, key: Array, theta: Any, bounds: Sequence[BoundFactor], fixed: Mapping[str, Array], *, outputs_from: str
+    ) -> tuple[ValuesByName, dict[str, Array]]:
+        """Draws of *bounds*' components at a batch of theta, *fixed* held,
+        each with the draws at which the simulator outputs behind it were
+        computed. Simulators are the posterior's, or the model's restricted
+        to what *bounds* read (``outputs_from="model"``)."""
+        theta = self._theta_batch(theta)
+        if not bounds:
+            return {}, {}
+        spec, n = self.model.spec, theta.shape[0]
+        read = [g for bound in bounds for g in bound.spec.given]
+        simulators = self.simulators if outputs_from == "posterior" else _simulators_restricted(self.model, read)
+        needed = {bound.name for bound in bounds} | deterministics_behind(spec, read)
+        runs: dict[str, SimulatorOutput] = {}
+        values, _ = self.model._ancestral(
+            key, n, fixed, needed=needed, per_draw=self._parameter_values(theta), simulators=simulators, runs=runs,
+        )
+        drawn = {c.name: values[c.name] for bound in bounds for c in bound.components}
+        computed = {}
+        for name in drawn:
+            behind = self.model._draws_computed([name], runs)
+            computed[name] = jnp.ones((n,), dtype=bool) if behind is None else jnp.asarray(behind)
+        return drawn, computed
+
     def _computable_names(self) -> tuple[str, ...]:
         """The deterministic components computable from the parameters,
-        observed values and inputs, in declaration order."""
+        observed values and inputs with no simulator, in declaration order."""
         spec = self.model.spec
         available = set(self.parameter_names) | set(self._fixed)
         out = []
@@ -439,6 +672,43 @@ class Posterior:
             check_density_is_finite_at_the_observed_values(bound.name, value)
             total += value
         return total
+
+
+@dataclass(frozen=True, eq=False, kw_only=True)
+class PosteriorEvaluation:
+    """What one :meth:`Posterior.evaluate` computed. Compared and hashed by
+    identity.
+
+    Attributes
+    ----------
+    theta : jax.Array
+        ``(J, D)``.
+    log_prior : jax.Array
+        ``(J,)``, :math:`\\log \\pi` everywhere, as :meth:`Posterior.log_prior`.
+    log_likelihood, log_density : jax.Array
+        ``(J,)``; ``-inf`` where ``valid`` is false.
+    valid : jax.Array
+        ``(J,)`` bool: every simulator output the likelihood depends on was
+        computed, and every :math:`O_\\theta` factor's log density is finite.
+    simulator_valid : jax.Array
+        ``(J,)`` bool: those simulator outputs were computed. Where it holds
+        and ``valid`` does not, the traced part failed numerically.
+    values : frozendict of str to jax.Array
+        Every deterministic component computed, ``(J, *block)``: those the
+        likelihood reads, simulator outputs among them, and those
+        computable without a simulator; ``NaN`` where not computed.
+    simulator_records : frozendict of str to Any
+        Each simulator's ``SimulatorOutput.record``, by its name.
+    """
+
+    theta: Array
+    log_prior: Array
+    log_likelihood: Array
+    log_density: Array
+    valid: Array
+    simulator_valid: Array
+    values: Mapping[str, Array]
+    simulator_records: Mapping[str, Any]
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -478,6 +748,55 @@ def _layout_of(model: FactoredDistribution, names: Sequence[str]) -> Layout:
 def _slice_of(unconstrained: Layout, bound: BoundFactor) -> np.ndarray:
     """A target factor's entries of theta, its components' in event order."""
     return np.concatenate([np.arange(unconstrained.slice_of(n).start, unconstrained.slice_of(n).stop) for n in bound.names])
+
+
+def _simulators_restricted(model: FactoredDistribution, names: Sequence[str]) -> dict[str, Simulator]:
+    """The model's simulators *names* are computed from, each at the
+    model's labels computing only the outputs behind *names*, in
+    declaration order."""
+    behind = simulator_outputs_behind(model.spec, names)
+    out = {}
+    for name, simulator in model.simulators.items():
+        kept = [o.name for o in simulator.outputs if o.name in behind]
+        if kept:
+            out[name] = simulator_at(simulator, model.coords, kept)
+    return out
+
+
+def _simulators_read(model: FactoredDistribution, likelihood: Sequence[BoundFactor]) -> dict[str, Simulator]:
+    """The simulators the :math:`O_\\theta` factors depend on, each
+    restricted to the outputs they depend on."""
+    return _simulators_restricted(model, [g for bound in likelihood for g in bound.spec.given])
+
+
+def _simulator_free_positions(posterior: Posterior) -> np.ndarray:
+    """The entries of theta whose factor has no simulator among its
+    descendants."""
+    spec = posterior.model.spec
+    simulator_names = set(posterior.model.simulators)
+    free = [
+        positions for bound, positions in zip(posterior._target, posterior._slices)
+        if not spec._descendants(bound.name) & simulator_names
+    ]
+    return np.sort(np.concatenate(free)).astype(np.int64) if free else np.zeros((0,), dtype=np.int64)
+
+
+def _all_computed(runs: Mapping[str, SimulatorOutput], n: int) -> np.ndarray:
+    """``(n,)``: every output of every run was computed."""
+    masks = [valid for run in runs.values() for valid in run.valid.values()]
+    return np.logical_and.reduce(masks) if masks else np.ones(n, dtype=bool)
+
+
+def _corner_theta(posterior: Posterior) -> np.ndarray:
+    """The corner points of the target, ``(n, D)``
+    (:func:`~sipnet_calibration.probability._probes.corner_points`)."""
+    unconstrained = posterior.parameters.unconstrained
+    places = []
+    for component in unconstrained.components:
+        block = unconstrained.slice_of(component.name)
+        size = int(np.prod(component.shape, dtype=int))
+        places.append(np.arange(block.start, block.stop).reshape((-1, size)))
+    return corner_points(places, unconstrained.size)
 
 
 # ── checks ────────────────────────────────────────────────────────────────────
@@ -525,6 +844,20 @@ def check_something_is_left_to_infer(target: Sequence[str]) -> None:
         raise ValueError("every factor is observed or barren, so nothing is left to infer; observe less.")
 
 
+def check_no_factor_reads_a_simulator(model: FactoredDistribution, factor_names: Sequence[str], *, role: str) -> None:
+    """No factor of *role* has a simulator among its ancestors: the prior
+    and the evidence's constant are evaluated without a simulator run."""
+    spec = model.spec
+    for name in factor_names:
+        simulators = sorted(spec._ancestors([name]) & set(model.simulators))
+        if simulators:
+            raise ValueError(
+                f"the {role} {name!r} has the simulator(s) {simulators} among its ancestors, but the prior and "
+                "the evidence's constant are evaluated without running a simulator; observe it, or have it "
+                "read no simulator output."
+            )
+
+
 def check_density_is_finite_at_the_observed_values(name: str, value: float) -> None:
     """An observed factor's density is finite at the observed values."""
     if not np.isfinite(value):
@@ -547,7 +880,44 @@ def check_target_density_is_finite_at_the_held_values(posterior: Posterior) -> N
         check_density_is_finite_at_the_observed_values(bound.name, value)
 
 
+def check_simulators_take_the_corner_points(posterior: Posterior) -> None:
+    """Each simulator the likelihood depends on accepts what the prior can
+    produce: its ``check_given`` at the corner points of the target."""
+    if not posterior.simulators:
+        return
+    spec = posterior.model.spec
+    theta = jnp.asarray(_corner_theta(posterior))
+    for name, simulator in posterior.simulators.items():
+        given_specs = {g: spec.component_spec(g) for g in simulator.given}
+        simulator.check_given(given_specs, posterior._simulator_inputs_at(theta, name))
+
+
 def check_theta_is_a_batch(shape: tuple[int, ...], dimension: int) -> None:
     """Theta is a batch, ``(J, D)``."""
     if len(shape) != 2 or shape[1] != dimension:
         raise ValueError(f"theta has shape {shape}; give a batch (J, {dimension}).")
+
+
+def check_theta_has_a_row(shape: tuple[int, ...]) -> None:
+    """A batch of theta has at least one row, since evaluating none runs nothing."""
+    if shape[0] == 0:
+        raise ValueError(f"theta has shape {shape}; give at least one row.")
+
+
+def check_theta_is_finite(theta: np.ndarray) -> None:
+    """Every entry of theta is finite, since a simulator cannot run at a NaN."""
+    rows = np.flatnonzero(~np.isfinite(theta).all(axis=1)).tolist()
+    if rows:
+        raise ValueError(f"theta holds a non-finite value in row(s) {truncated(rows)}; give finite values.")
+
+
+def check_evaluation_is_an_evaluation(evaluation: Any) -> None:
+    """What is held is a posterior's evaluation."""
+    if not isinstance(evaluation, PosteriorEvaluation):
+        raise TypeError(f"give a PosteriorEvaluation, from Posterior.evaluate, got {type(evaluation).__name__}.")
+
+
+def check_simulator_is_the_models(name: Any, model: FactoredDistribution) -> None:
+    """A simulator named is one of the model's."""
+    if not isinstance(name, str) or name not in model.simulators:
+        raise KeyError(f"the model has no simulator {name!r}; name one of {list(model.simulators)}.")

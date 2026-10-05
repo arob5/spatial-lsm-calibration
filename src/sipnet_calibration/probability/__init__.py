@@ -17,7 +17,7 @@ Where this sits
     probability.laws        Law, as_law, pushforward
       -> probability.families  one value's law: log_normal, ..., normal, inverse_gamma, inverse_wishart
       -> probability.builders  a law over a block: iid_over_dim, independent_over_dim, gaussian_copula
-      -> probability.parts     FactorSpec, DeterministicSpec, and their decorators
+      -> probability.parts     FactorSpec, DeterministicSpec, their decorators; Simulator
       -> probability.model     joint -> ModelSpec, bind -> FactoredDistribution
       -> probability.posterior condition_on -> Posterior: theta's density
     ──────── seam: labeled values, a dict of DataArrays ────────
@@ -50,7 +50,8 @@ Modules
     A factor's law over a block, built for the labels in use.
 :mod:`~sipnet_calibration.probability.parts`
     Factors and deterministics: declarations of laws and computed
-    components, and the keyword rule that says what they read.
+    components, and the keyword rule that says what they read; simulators,
+    computed outside JAX for a batch of samples.
 :mod:`~sipnet_calibration.probability.model`
     The declared model and the model bound to labels: sampling and the
     joint density.
@@ -92,10 +93,12 @@ from sipnet_calibration.probability.names import RESERVED_NAMES, SAMPLE
 from sipnet_calibration.probability.parts import (
     DeterministicSpec,
     FactorSpec,
+    Simulator,
+    SimulatorOutput,
     deterministic,
     factor,
 )
-from sipnet_calibration.probability.posterior import Posterior, condition_on
+from sipnet_calibration.probability.posterior import Posterior, PosteriorEvaluation, condition_on
 from sipnet_calibration.probability.spec import ArraySpec
 from sipnet_calibration.probability.support import (
     DEFAULT_BIJECTORS,
@@ -137,7 +140,10 @@ __all__ = [
     "ModelSpec",
     "PositiveDefinite",
     "Posterior",
+    "PosteriorEvaluation",
     "Simplex",
+    "Simulator",
+    "SimulatorOutput",
     "Support",
     "ValuesByName",
     "as_law",

@@ -33,7 +33,7 @@ from tensorflow_probability.substrates import jax as tfp
 from sipnet_calibration.probability._probes import bijectors_agree, joint_probe_points
 from sipnet_calibration.probability.builders import Builder
 from sipnet_calibration.probability.laws import CARRIES_ITS_BIJECTOR, is_law
-from sipnet_calibration.probability.parts import DeterministicSpec, FactorSpec
+from sipnet_calibration.probability.parts import DeterministicSpec, FactorSpec, Simulator
 from sipnet_calibration.probability.spec import ArraySpec
 from sipnet_calibration.probability.support import (
     REAL,
@@ -57,6 +57,8 @@ __all__ = [
     "finite_or_minus_infinity",
     "log_jacobian",
     "random_key_for",
+    "simulator_at",
+    "simulator_outputs_behind",
     "split_reads",
 ]
 
@@ -126,16 +128,44 @@ def split_reads(given: Sequence[str], per_draw: Mapping[str, Array], fixed: Mapp
 
 
 def deterministics_behind(spec: Any, names: Sequence[str]) -> set[str]:
-    """The deterministics (by name) computing *names*, directly or through
-    other deterministics."""
+    """The deterministics and simulators (by name) computing *names*,
+    directly or through other deterministics and simulators."""
     seen: set[str] = set()
     pending = list(names)
     while pending:
         part = spec._owner.get(pending.pop())
-        if isinstance(part, DeterministicSpec) and part.name not in seen:
+        if isinstance(part, (DeterministicSpec, Simulator)) and part.name not in seen:
             seen.add(part.name)
             pending.extend(part.given)
     return seen
+
+
+def simulator_at(simulator: Simulator, coords: Mapping[str, pd.Index], outputs: Sequence[str] | None = None) -> Simulator:
+    """*simulator* at the labels *coords*, computing *outputs* (every one by
+    default), checked to read what it read and compute exactly those."""
+    names = [o.name for o in simulator.outputs] if outputs is None else list(outputs)
+    bound = simulator.at(coords, names)
+    check_simulator_at_keeps_its_parts(simulator, bound, names)
+    return bound
+
+
+def simulator_outputs_behind(spec: Any, names: Sequence[str]) -> set[str]:
+    """The simulator outputs *names* are or descend from, through any part:
+    those whose failure leaves *names* undefined."""
+    found: set[str] = set()
+    seen: set[str] = set()
+    pending = list(names)
+    while pending:
+        name = pending.pop()
+        if name in seen:
+            continue
+        seen.add(name)
+        part = spec._owner.get(name)
+        if isinstance(part, Simulator):
+            found.add(name)
+        if part is not None:
+            pending.extend(part.given)
+    return found
 
 
 # ── a factor ──────────────────────────────────────────────────────────────────
@@ -168,9 +198,16 @@ class BoundFactor:
         fixed_reads: Mapping[str, Any],
         per_draw_values: Sequence[Mapping[str, Array]],
         fixed_values: Mapping[str, Array],
+        downstream_of_a_simulator: bool = False,
     ) -> BoundFactor:
         """Build and check a factor at each draw of *per_draw_values* (one
-        empty mapping when it reads nothing that varies by draw)."""
+        empty mapping when it reads nothing that varies by draw).
+
+        *downstream_of_a_simulator* says those values hold placeholders for
+        simulator outputs, so only the law's form is checked: its event,
+        TFP batch shape and dtype, and that it has a density a model can
+        evaluate; its support is not, since that would be checked at values
+        no simulation gave."""
         unbuilt = cls(
             spec=spec,
             index_shape=index_shape,
@@ -181,7 +218,10 @@ class BoundFactor:
         variants = [unbuilt._at(unbuilt.law_at({**values, **fixed_values}), probes) for values in per_draw_values]
         check_factor_keeps_its_structure(variants)
         for variant in variants:
-            check_factor_law_is_valid(variant)
+            if downstream_of_a_simulator:
+                check_factor_law_has_a_measured_density(variant)
+            else:
+                check_factor_law_is_valid(variant)
         return variants[0]
 
     # ── identity ──────────────────────────────────────────────────────────────
@@ -662,11 +702,17 @@ def _lies_in_the_support_or_overflows(support: Support, values: Array) -> Array:
 def check_factor_law_is_valid(bound: BoundFactor) -> None:
     """A factor's law has the supports its components declare, and a
     density a model can evaluate."""
+    check_factor_law_has_a_measured_density(bound)
+    check_declared_support_lies_in_the_laws(bound)
+    check_laws_support_lies_in_the_declared(bound)
+
+
+def check_factor_law_has_a_measured_density(bound: BoundFactor) -> None:
+    """A factor's law has a density against its supports' reference
+    measure that a model can evaluate, judged by its form alone."""
     check_law_has_a_density(bound)
     check_change_of_variables_has_a_measure(bound)
     check_simplex_density_is_a_dirichlet(bound)
-    check_declared_support_lies_in_the_laws(bound)
-    check_laws_support_lies_in_the_declared(bound)
 
 
 def check_factor_law_is_over_its_event(name: str, law: Any, expected: Any) -> None:
@@ -778,6 +824,19 @@ def check_laws_support_lies_in_the_declared(bound: BoundFactor) -> None:
             f"the law of {bound.name!r} puts mass outside its declared support ({supports}), or on its "
             "boundary, where theta is not finite; declare the support the law has, or choose a law "
             "inside it."
+        )
+
+
+def check_simulator_at_keeps_its_parts(simulator: Simulator, bound: Any, outputs: Sequence[str]) -> None:
+    """A simulator at some labels is a simulator of the same name, reading
+    what it read and computing exactly the outputs asked for."""
+    if not isinstance(bound, Simulator):
+        raise TypeError(f"the simulator {simulator.name!r}'s at() returned a {type(bound).__name__}, not a Simulator.")
+    kept = sorted(o.name for o in bound.outputs)
+    if bound.name != simulator.name or tuple(bound.given) != tuple(simulator.given) or kept != sorted(outputs):
+        raise ValueError(
+            f"the simulator {simulator.name!r}'s at() returned {bound!r}, which does not read what it read or "
+            f"compute exactly {sorted(outputs)}; at() restricts the labels and outputs only."
         )
 
 

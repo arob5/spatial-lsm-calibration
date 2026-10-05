@@ -1,26 +1,34 @@
-"""The forward model: unconstrained parameters to predictions, over a site
-set, with SIPNET run once per run of the ensemble.
+"""The forward model: values to predictions, over a site set, with SIPNET
+run once per run of the ensemble.
 
 Where this sits
 ---------------
 ::
 
-    theta (J, D)
+    theta (J, D)                                                       ForwardModel only
       --ParameterVector.to_natural, DerivedParameters.values-->  values by parameter
       --values_to_dataset, merged with external inputs-->  labeled natural values
+    labeled values, from a posterior (SIPNETSimulator) or any caller (SIPNETRuns)
       --SIPNETParameterMap.sipnet_parameter_fields, at the SiteDims' sites-->  SIPNET parameter fields
       --PyEns, one SIPNETModel run per (sample, crossed labels, site)-->  model output
       --ObservationVector.predict and .flat on the worker-->  one site's segment of Flat
       --placed at its run and at positions(site=) by the calling process-->  (R, N)
 
-:class:`ForwardModel` is the one object this module adds: the callable
-``(J, D) -> (J, N)`` that pyEKI's ``run`` takes as ``forward``, and that an
-MCMC target calls. Everything it composes exists elsewhere: the parameter
-layer's vector and derived parameters, the site dims, the SIPNET parameter
-map, pySIPNET's ``SIPNETModel``, PyEns's
-``PartialSpec``/``EnsembleRunner``/``Backend`` and its xarray bridge, the
-observation vector, and the stacking of runs
+Three objects compose the same pieces: the parameter layer's vector and
+derived parameters, the site dims, the SIPNET parameter map, pySIPNET's
+``SIPNETModel``, PyEns's ``PartialSpec``/``EnsembleRunner``/``Backend`` and
+its xarray bridge, the observation vector, and the stacking of runs
 (:func:`sipnet_calibration.fields.stack_model_outputs`).
+
+- :class:`SIPNETRuns` runs SIPNET once per sample and site for a batch of
+  labeled values and returns each requested reduction: predictions per
+  observation vector and model output, from one pass.
+- :class:`SIPNETSimulator` is the forward map as the probability layer's
+  :class:`~sipnet_calibration.probability.Simulator`: it never sees theta, a
+  posterior hands it the values it reads.
+- :class:`ForwardModel` is today's callable ``(J, D) -> (J, N)``, which
+  pyEKI's ``run`` takes as ``forward``: theta through the parameter layer,
+  then :class:`SIPNETRuns`. It stays until the parameter layer is removed.
 
 What it reads
 -------------
@@ -114,6 +122,17 @@ Functions
     ``describe()``.
 :class:`ForwardEvaluation`
     The record above.
+:class:`SIPNETRuns`, :class:`SIPNETRunsEvaluation`
+    ``evaluate(values, *, observation_vectors=, output_variable_names=,
+    freq=, external_inputs=)``, ``select(sites=)``; the record, which is
+    :class:`ForwardEvaluation`'s without ``theta``, with predictions per
+    observation vector.
+:class:`SIPNETSimulator`
+    The forward map as a simulator: one prediction per observation source,
+    each valid at a sample whose runs at the source's sites succeeded; its
+    ``at`` restricts it to fewer sources and sites, and ``check_given``
+    checks the map against the model's declarations and, under
+    ``out_of_domain="raise"``, at the corners of the target.
 :data:`MODEL_FAILURES`, :class:`ModelOutputNotFiniteError`
     The exceptions that mean a run failed at its parameters.
 
@@ -125,10 +144,19 @@ site's slice of the observation vector and returns that slice's Flat, which
 the calling process writes at ``positions(site=)``: right because the
 observation vector is site-major, which ``__init__`` checks per site.
 
-**The ``PartialSpec`` is built once**: the climate, the site ids and the
-sites' observation slices along one site axis. On every call PyEns zips the
-SIPNET parameter fields with that axis and crosses them along their other
-dims.
+**The ``PartialSpec`` is built once per plan**: the climate, the site ids
+and the sites' observation slices along one site axis. ``ForwardModel`` and
+``SIPNETSimulator`` build theirs once; ``SIPNETRuns.evaluate`` builds one
+per call. On every call PyEns zips the SIPNET parameter fields with that
+axis and crosses them along their other dims.
+
+**Validity.** ``ForwardModel`` marks a whole row invalid when any of its
+runs failed, since pyEKI updates per row. ``SIPNETSimulator`` marks each
+source's prediction invalid only where a run at one of the source's sites
+failed, so a posterior that does not read a source is not truncated by its
+sites. One pass for several reductions reads the union of their output
+variables, each checked finite, so a non-finite value in any of them fails
+the run for all.
 
 **The SIPNET parameters an operator reads** are the run's own
 ``SIPNETResult.parameters``, whichever set them.
@@ -147,11 +175,20 @@ Usage
                               output_variable_names=("nee",), freq="1D")
     evaluation = predictive.evaluate(prior.sample(key, 100))
     evaluation.model_output      # (sample, initial_condition_member, site, time)
+
+    runs = SIPNETRuns(model, sipnet_parameter_map=sipnet_map, site_dims=site_dims, climate=climate,
+                      backend=LocalBackend(8))
+    model_spec = joint(*noise_factors, SIPNETSimulator(runs, observation_vector=observation_vector),
+                       *prior_factors)
+    posterior = condition_on(model_spec.bind(coords={**site_dims.coords, **observation_vector.coords}),
+                             observation_vector.observed_values_by_component())
+    evaluation = posterior.evaluate(theta)                  # one batch of runs
+    daily = runs.evaluate(posterior.simulator_inputs(theta, "sipnet"),
+                          output_variable_names=("nee",), freq="1D").model_output
 """
 
 from __future__ import annotations
 
-import itertools
 import math
 import subprocess
 from collections.abc import Mapping, Sequence
@@ -209,6 +246,7 @@ from sipnet_calibration.observation import (
     aggregate_time,
     check_batch_dim_is_not_an_observation_source_name,
 )
+from sipnet_calibration.observation.model import prediction_components
 from sipnet_calibration.observation.time_alignment import (
     check_frequency_is_an_offset_alias,
 )
@@ -224,9 +262,14 @@ from sipnet_calibration.sipnet_parameter_map import (
     check_sipnet_parameter_map_fits,
     validate_external_inputs,
 )
+from sipnet_calibration.probability import ArraySpec, LabeledValues, Simulator, SimulatorOutput
+
+# The corner points are the probability layer's; this module's ForwardModel
+# reads them until R1 removes it.
+from sipnet_calibration.probability._probes import CORNERS, corner_points
 from sipnet_calibration.site_dims import SiteDims
 from sipnet_calibration.sites import site_locations, site_lookup
-from sipnet_calibration.validation import as_batched_flat, is_one_vector, truncated
+from sipnet_calibration.validation import as_batched_flat, as_sequence, is_one_vector, truncated
 
 __all__ = [
     "DOMAIN_CHECK_CORNERS",
@@ -234,6 +277,10 @@ __all__ = [
     "ForwardEvaluation",
     "ForwardModel",
     "ModelOutputNotFiniteError",
+    "SIPNETRuns",
+    "SIPNETRunsEvaluation",
+    "SIPNETSimulator",
+    "check_map_is_in_domain_at_the_corners",
     "check_sipnet_parameter_map_is_in_domain_at_the_corners",
 ]
 
@@ -376,24 +423,21 @@ class ForwardModel:
                 check_batch_dim_is_not_an_observation_source_name(
                     observation_vector.observation_sources, dim
                 )
-        site_table = site_dims.site_table
-        self._site_locations = site_locations(self._sites, site_table)
-        self._site_table = site_lookup(site_table)
         if observation_vector is not None:
             check_base_parameters_set_what_the_operators_read(
                 model,
                 observation_vector.sipnet_parameter_names_read,
                 sipnet_parameter_map.sipnet_parameter_names_written,
             )
-        self._site_axis = Axis(SITE, labels=list(self._sites))
-        self._site_slices, self._site_positions = _site_segments(observation_vector)
-        self._partial = self._build_partial()
-        self._run = _Run(
-            model=model,
-            output_variable_names=self._output_variable_names,
-            returns_model_output=observation_vector is None,
+        self._runs = SIPNETRuns(
+            model, sipnet_parameter_map=sipnet_parameter_map, site_dims=site_dims, climate=climate,
+            backend=backend, out_of_domain=out_of_domain,
+        )
+        self._plan = self._runs._plan(
+            observation_vectors=() if observation_vector is None else (observation_vector,),
+            read_variable_names=self._output_variable_names,
+            model_output_variable_names=self._output_variable_names if observation_vector is None else (),
             freq=freq,
-            site_table=self._site_table,
         )
 
     # ── identity ──────────────────────────────────────────────────────────────
@@ -558,44 +602,16 @@ class ForwardModel:
         check_theta_has_a_row(theta)
         check_theta_is_finite(theta)
         values = self._labeled_values(theta, self._external_inputs)
-        sipnet_parameter_fields = self._sipnet_parameter_map.sipnet_parameter_fields(values, site_dims=self._site_dims)
-        outside = self._sipnet_parameter_map.out_of_domain(sipnet_parameter_fields, values, site_dims=self._site_dims)
-        if self._out_of_domain == "raise":
-            check_sipnet_parameters_are_in_the_domain(outside)
-        run_index = self._run_index(len(theta), sipnet_parameter_fields)
-        grids = fields_from_dataset(sipnet_parameter_fields, axes={SITE: self._site_axis})
-        ensemble_result = EnsembleRunner(self._run, self.backend).run(self._partial(**grids))
-        run_outputs, succeeded, failures, machinery_failures = _sort_records(
-            ensemble_result, run_index, self.sites
-        )
-        row_in_domain = _rows_in_domain(outside, run_index)
-        collected = ForwardEvaluation(
-            theta=jnp.asarray(theta),
-            sipnet_parameter_fields=sipnet_parameter_fields,
-            run_index=run_index,
-            model_output=None,
-            predictions=None,
-            run_succeeded=_run_succeeded(succeeded, run_index, self.sites, self._site_locations),
-            failures=failures,
-            valid=jnp.zeros(len(run_index), dtype=bool),
-            out_of_domain_fraction=float(1.0 - row_in_domain.mean()),
-            observation_vector=self.observation_vector,
-        )
-        check_no_run_failed_in_the_machinery(machinery_failures, collected)
-        row_succeeded = succeeded.all(axis=1) & row_in_domain
-        if self.observation_vector is None:
-            check_some_run_succeeded(collected)
-            model_output = _stacked_model_output(
-                run_outputs, run_index, self.sites, site_table=self._site_table,
-                site_locations=self._site_locations,
+        try:
+            evaluation = self._runs._evaluate(
+                self._plan, values, n_samples=len(theta), crossed_dims=self._crossed_dims, batch_dim=self._batch_dim
             )
-            return replace(collected, model_output=model_output, valid=jnp.asarray(row_succeeded))
-        predictions = self._placed_predictions(run_outputs, len(run_index))
-        # A row with any failed run is invalid as a whole: pyEKI updates per
-        # row, so a row that is partly a prediction cannot be used.
-        predictions[~row_succeeded] = np.nan
-        valid = row_succeeded & np.isfinite(predictions).all(axis=1)
-        return replace(collected, predictions=jnp.asarray(predictions), valid=jnp.asarray(valid))
+        except RuntimeError as error:
+            collected = getattr(error, "evaluation", None)
+            if isinstance(collected, SIPNETRunsEvaluation):
+                error.evaluation = self._forward_evaluation(theta, collected, collected=True)  # type: ignore[attr-defined]
+            raise
+        return self._forward_evaluation(theta, evaluation)
 
     def __call__(self, theta: Any) -> jax.Array:
         """``evaluate(theta).predictions``, pyEKI's ``(J, D) -> (J, N)``: ``(N,)``
@@ -646,40 +662,488 @@ class ForwardModel:
             )
         return self.observation_vector
 
-    def _run_index(self, n_samples: int, sipnet_parameter_fields: xr.Dataset) -> pd.Index:
-        if not self._crossed_dims:
-            return pd.Index(np.arange(n_samples, dtype=BATCH_LABEL_DTYPE), name=self._batch_dim)
-        levels = [np.arange(n_samples, dtype=BATCH_LABEL_DTYPE)] + [
-            sipnet_parameter_fields[d].values.astype(BATCH_LABEL_DTYPE) for d in self._crossed_dims
-        ]
-        return pd.MultiIndex.from_product(levels, names=[self._batch_dim, *self._crossed_dims])
-
-    def _build_partial(self) -> PartialSpec:
-        climate = Grid({s: self.climate[s] for s in self.sites}, along=self._site_axis)
-        site_ids = Grid(list(self.sites), along=self._site_axis)
-        site_observation_vectors = Grid(
-            {s: self._site_slices.get(s) for s in self.sites}, along=self._site_axis
+    def _forward_evaluation(
+        self, theta: np.ndarray, evaluation: SIPNETRunsEvaluation, *, collected: bool = False
+    ) -> ForwardEvaluation:
+        """The runs' evaluation as this model's: with *theta*, its one
+        observation vector's predictions ``NaN`` in every row with a failed
+        run, and ``valid`` false there; *collected* is what a failed batch
+        collected, with neither predictions nor model output."""
+        base = ForwardEvaluation(
+            theta=jnp.asarray(theta),
+            sipnet_parameter_fields=evaluation.sipnet_parameter_fields,
+            run_index=evaluation.run_index,
+            model_output=None,
+            predictions=None,
+            run_succeeded=evaluation.run_succeeded,
+            failures=evaluation.failures,
+            valid=jnp.zeros(len(evaluation.run_index), dtype=bool),
+            out_of_domain_fraction=evaluation.out_of_domain_fraction,
+            observation_vector=self.observation_vector,
         )
+        if collected:
+            return base
+        row_succeeded = np.asarray(evaluation.valid)
+        if self.observation_vector is None:
+            return replace(base, model_output=evaluation.model_output, valid=jnp.asarray(row_succeeded))
+        predictions = np.array(evaluation.predictions[0])
+        # A row with any failed run is invalid as a whole: pyEKI updates per
+        # row, so a row that is partly a prediction cannot be used.
+        predictions[~row_succeeded] = np.nan
+        valid = row_succeeded & np.isfinite(predictions).all(axis=1)
+        return replace(base, predictions=jnp.asarray(predictions), valid=jnp.asarray(valid))
+
+
+class SIPNETRuns:
+    """SIPNET run once per sample and site for a batch of labeled values: the
+    SIPNET parameter map applied at the sites, the runs executed through
+    PyEns, each run reduced on the worker.
+
+    Parameters
+    ----------
+    sipnet_model:
+        Positional-only. The :class:`pysipnet.model.SIPNETModel` every run
+        goes through.
+    sipnet_parameter_map:
+        Keyword-only. How the values reach SIPNET.
+    site_dims:
+        Keyword-only. The sites run, located by their site table.
+    climate:
+        Keyword-only. ``{site id: ClimateDrivers}``, a superset of the sites
+        run; file-backed under any backend but ``SequentialBackend``.
+    backend:
+        Keyword-only. The PyEns backend the runs execute on.
+    out_of_domain:
+        Keyword-only. ``"raise"`` (the default) refuses values outside their
+        domains before anything runs; ``"fail_row"`` runs them and marks
+        their rows out of the domain.
+
+    Raises
+    ------
+    TypeError
+        If an argument has the wrong type.
+    ValueError
+        If the climate lacks a site, is held in memory under a process
+        backend, or *out_of_domain* is unknown.
+    """
+
+    def __init__(
+        self,
+        sipnet_model: SIPNETModel,
+        /,
+        *,
+        sipnet_parameter_map: SIPNETParameterMap,
+        site_dims: SiteDims,
+        climate: Mapping[int, ClimateDrivers],
+        backend: Backend,
+        out_of_domain: Literal["raise", "fail_row"] = "raise",
+    ) -> None:
+        check_sipnet_runs_arguments(sipnet_model, sipnet_parameter_map, site_dims, climate, backend, out_of_domain)
+        self._model = sipnet_model
+        self._sipnet_parameter_map = sipnet_parameter_map
+        self._site_dims = site_dims
+        self._sites: tuple[int, ...] = site_dims.sites
+        self._climate = frozendict({site: climate[site] for site in self._sites})
+        self._backend = backend
+        self._out_of_domain = out_of_domain
+        self._site_locations = site_locations(self._sites, site_dims.site_table)
+        self._site_table = site_lookup(site_dims.site_table)
+        self._site_axis = Axis(SITE, labels=list(self._sites))
+
+    # ── identity ──────────────────────────────────────────────────────────────
+
+    @property
+    def sipnet_model(self) -> SIPNETModel:
+        return self._model
+
+    @property
+    def sipnet_parameter_map(self) -> SIPNETParameterMap:
+        return self._sipnet_parameter_map
+
+    @property
+    def site_dims(self) -> SiteDims:
+        return self._site_dims
+
+    @property
+    def sites(self) -> tuple[int, ...]:
+        """The sites run: the site dims', ascending."""
+        return self._sites
+
+    @property
+    def climate(self) -> Mapping[int, ClimateDrivers]:
+        """``{site id: ClimateDrivers}`` for the sites run, read-only."""
+        return self._climate
+
+    @property
+    def backend(self) -> Backend:
+        return self._backend
+
+    @property
+    def out_of_domain(self) -> str:
+        return self._out_of_domain
+
+    def __repr__(self) -> str:
+        return f"SIPNETRuns(sites={len(self._sites)}, out_of_domain={self._out_of_domain!r})"
+
+    # ── selection ─────────────────────────────────────────────────────────────
+
+    def select(self, *, sites: Sequence[int]) -> SIPNETRuns:
+        """The runs at *sites* alone, each one of :attr:`sites`.
+
+        Raises
+        ------
+        TypeError, KeyError, ValueError
+            As :meth:`SiteDims.select <sipnet_calibration.site_dims.SiteDims.select>`.
+        """
+        return SIPNETRuns(
+            self._model, sipnet_parameter_map=self._sipnet_parameter_map, site_dims=self._site_dims.select(sites),
+            climate=self._climate, backend=self._backend, out_of_domain=self._out_of_domain,
+        )
+
+    # ── evaluation ────────────────────────────────────────────────────────────
+
+    def evaluate(
+        self,
+        values: LabeledValues | xr.Dataset,
+        *,
+        observation_vectors: Sequence[ObservationVector] = (),
+        output_variable_names: Sequence[str] = (),
+        freq: str | None = None,
+        external_inputs: ExternalInputs | None = None,
+        batch_dim: str = SAMPLE,
+    ) -> SIPNETRunsEvaluation:
+        """Run SIPNET once per sample of *values* and site, and return each
+        requested reduction: predictions per observation vector, and model
+        output for *output_variable_names*, aggregated to *freq*. One pass
+        serves a calibration vector, a validation vector and a daily figure.
+
+        Parameters
+        ----------
+        values:
+            Every value the map reads, on ``batch_dim`` labeled ``0`` to
+            ``J - 1``, and on the dims of the site dims' coords and element
+            axes: labeled values (a dict of DataArrays) or an ``xr.Dataset``.
+            Values no rule reads are ignored.
+        observation_vectors:
+            Each vector whose operators reduce every run, its sites among
+            those run; a sequence.
+        output_variable_names:
+            The pySIPNET output variables whose model output is returned.
+        freq:
+            With *output_variable_names*, aggregate that output on the worker
+            to this pandas frequency, each variable by the method that leaves
+            its kind unchanged.
+        external_inputs:
+            :data:`~sipnet_calibration.sipnet_parameter_map.ExternalInputs`
+            the map reads, paired with the samples by dim name: on
+            ``batch_dim`` they zip, on any other batch dim they cross.
+        batch_dim:
+            The values' batch dim, on every output.
+
+        Returns
+        -------
+        SIPNETRunsEvaluation
+
+        Raises
+        ------
+        TypeError
+            If an argument has the wrong type.
+        KeyError
+            If a value or an external input lacks a site run, or an output
+            variable is unknown.
+        ValueError
+            If nothing is asked for, *freq* is given without output
+            variables, the values carry no ``batch_dim`` or label it other
+            than ``0`` to ``J - 1``, or an observation vector observes a site
+            not run.
+        SIPNETParametersOutOfDomainError
+            With ``out_of_domain="raise"``, if a value lies outside its
+            domain; nothing runs.
+        RuntimeError
+            If a run failed in the machinery rather than at its parameters,
+            or model output is asked for and every run failed at its
+            parameters; the error's ``evaluation`` attribute holds what was
+            collected.
+        """
+        vectors = tuple(as_sequence(observation_vectors, message_name="observation_vectors"))
+        for vector in vectors:
+            check_observation_vector_is_an_observation_vector(vector)
+        names = tuple(resolve_output_variable_names(output_variable_names)) if len(output_variable_names) else ()
+        check_something_is_asked_for(vectors, names)
+        check_freq_is_for_model_output(freq, names)
+        if freq is not None:
+            check_frequency_is_an_offset_alias(freq)
+        check_batch_dim_name_is_not_reserved(batch_dim, message_name="batch_dim")
+        if external_inputs is not None:
+            validate_external_inputs(external_inputs, batch_dim=batch_dim)
+        read = tuple(dict.fromkeys([*names, *(n for v in vectors for n in v.output_variable_names)]))
+        plan = self._plan(
+            observation_vectors=vectors, read_variable_names=read, model_output_variable_names=names, freq=freq
+        )
+        merged, n_samples = self._values_at_the_sites(values, external_inputs, batch_dim)
+        crossed_dims = _crossed_dims(self._sipnet_parameter_map, external_inputs, batch_dim)
+        return self._evaluate(plan, merged, n_samples=n_samples, crossed_dims=crossed_dims, batch_dim=batch_dim)
+
+    # ── supporting methods ────────────────────────────────────────────────────
+
+    def _plan(
+        self,
+        *,
+        observation_vectors: Sequence[ObservationVector],
+        read_variable_names: Sequence[str],
+        model_output_variable_names: Sequence[str],
+        freq: str | None,
+    ) -> _RunPlan:
+        """What every run of an evaluation is sent and does: built once, and
+        reused by a caller that evaluates the same reductions again."""
         written = self._sipnet_parameter_map.sipnet_parameter_names_written
-        placeholders = {name: Grid([0.0] * len(self.sites), along=self._site_axis) for name in written}
+        for vector in observation_vectors:
+            check_observation_sites_are_run(vector, self._sites)
+            check_base_parameters_set_what_the_operators_read(self._model, vector.sipnet_parameter_names_read, written)
+        check_output_variables_can_be_returned(read_variable_names, self._model, None)
+        check_output_variables_can_be_returned(model_output_variable_names, self._model, freq)
+        segments = [_site_segments(vector) for vector in observation_vectors]
+        site_observation_vectors = Grid(
+            {s: tuple(slices.get(s) for slices, _ in segments) for s in self._sites}, along=self._site_axis
+        )
+        placeholders = {name: Grid([0.0] * len(self._sites), along=self._site_axis) for name in written}
         spec = EnsembleSpec(
             inputs={
-                "climate": climate,
-                "site": site_ids,
-                "site_observation_vector": site_observation_vectors,
+                "climate": Grid({s: self._climate[s] for s in self._sites}, along=self._site_axis),
+                "site": Grid(list(self._sites), along=self._site_axis),
+                "site_observation_vectors": site_observation_vectors,
                 **placeholders,
             }
         )
-        return spec.freeze(free=list(written))
+        run = _Run(
+            model=self._model,
+            read_variable_names=tuple(read_variable_names),
+            model_output_variable_names=tuple(model_output_variable_names),
+            freq=freq,
+            site_table=self._site_table,
+        )
+        return _RunPlan(
+            observation_vectors=tuple(observation_vectors),
+            model_output_variable_names=tuple(model_output_variable_names),
+            partial=spec.freeze(free=list(written)),
+            run=run,
+            site_positions=tuple(positions for _, positions in segments),
+        )
 
-    def _placed_predictions(self, run_outputs: Mapping[tuple[int, int], _RunOutput], n_rows: int) -> np.ndarray:
-        """``(R, N)``: each run's segment of Flat at its row and its site's positions."""
-        observation_vector = self._observation_vector_for("predictions")
-        predictions = np.full((n_rows, observation_vector.dimension), np.nan)
-        for (row, site), run_output in run_outputs.items():
-            if run_output.predictions is not None:
-                predictions[row, self._site_positions[site]] = run_output.predictions
-        return predictions
+    def _evaluate(
+        self, plan: _RunPlan, values: Any, *, n_samples: int, crossed_dims: Sequence[str], batch_dim: str
+    ) -> SIPNETRunsEvaluation:
+        """Run *plan* at *values*, merged and at the sites, with *n_samples*
+        rows on *batch_dim*, crossed with *crossed_dims*."""
+        sipnet_map = self._sipnet_parameter_map
+        sipnet_parameter_fields = sipnet_map.sipnet_parameter_fields(values, site_dims=self._site_dims)
+        outside = sipnet_map.out_of_domain(sipnet_parameter_fields, values, site_dims=self._site_dims)
+        if self._out_of_domain == "raise":
+            check_sipnet_parameters_are_in_the_domain(outside)
+        run_index = _run_index(n_samples, sipnet_parameter_fields, crossed_dims, batch_dim)
+        grids = fields_from_dataset(sipnet_parameter_fields, axes={SITE: self._site_axis})
+        ensemble_result = EnsembleRunner(plan.run, self._backend).run(plan.partial(**grids))
+        run_outputs, succeeded, failures, machinery_failures = _sort_records(ensemble_result, run_index, self._sites)
+        in_domain = _rows_in_domain(outside, run_index)
+        collected = SIPNETRunsEvaluation(
+            sipnet_parameter_fields=sipnet_parameter_fields,
+            run_index=run_index,
+            model_output=None,
+            predictions=(),
+            observation_vectors=plan.observation_vectors,
+            run_succeeded=_run_succeeded(succeeded, run_index, self._sites, self._site_locations),
+            failures=failures,
+            in_domain=jnp.asarray(in_domain),
+            valid=jnp.zeros(len(run_index), dtype=bool),
+            out_of_domain_fraction=float(1.0 - in_domain.mean()),
+        )
+        check_no_run_failed_in_the_machinery(machinery_failures, collected)
+        model_output = None
+        if plan.model_output_variable_names:
+            check_some_run_succeeded(collected)
+            model_output = _stacked_model_output(
+                run_outputs, run_index, self._sites, site_table=self._site_table, site_locations=self._site_locations,
+            )
+        predictions = tuple(
+            jnp.asarray(_placed_predictions(run_outputs, k, vector, positions, in_domain))
+            for k, (vector, positions) in enumerate(zip(plan.observation_vectors, plan.site_positions))
+        )
+        valid = succeeded.all(axis=1) & in_domain
+        return replace(collected, model_output=model_output, predictions=predictions, valid=jnp.asarray(valid))
+
+    def _values_at_the_sites(
+        self, values: Any, external_inputs: xr.Dataset | None, batch_dim: str
+    ) -> tuple[dict[str, xr.DataArray], int]:
+        """The values the map reads and the external inputs, as one mapping,
+        each at the sites run; and the number of samples on *batch_dim*."""
+        check_values_are_labeled(values)
+        read = self._sipnet_parameter_map.values_read
+        merged = {str(name): array for name, array in values.items() if name in read}
+        if external_inputs is not None:
+            check_external_inputs_are_not_values(list(external_inputs.data_vars), merged)
+            merged |= {str(name): external_inputs[name] for name in external_inputs.data_vars}
+        for name, array in merged.items():
+            if SITE in array.dims:
+                check_value_covers_the_sites(name, array, self._sites)
+        at_sites = {
+            name: array.sel({SITE: list(self._sites)}) if SITE in array.dims else array for name, array in merged.items()
+        }
+        n_samples = _number_of_samples(at_sites, batch_dim)
+        return at_sites, n_samples
+
+
+class SIPNETSimulator(Simulator):
+    """The forward map :math:`G` as a simulator: SIPNET runs reduced to an
+    observation vector's predictions.
+
+    It reads every value the SIPNET parameter map reads, and outputs one
+    prediction per observation source (:func:`~sipnet_calibration.observation.model.prediction_components`),
+    on the source's observation dim. It runs SIPNET only at the sites its
+    observation vector observes.
+
+    Parameters
+    ----------
+    runs:
+        Positional-only. The runs, whose sites include the vector's.
+    observation_vector:
+        Keyword-only. The observations predicted.
+    name:
+        Keyword-only. Default ``"sipnet"``.
+
+    Raises
+    ------
+    TypeError
+        If an argument has the wrong type.
+    ValueError
+        If the vector observes a site not run, or as
+        :meth:`SIPNETRuns.evaluate` for its operators.
+    """
+
+    def __init__(self, runs: SIPNETRuns, /, *, observation_vector: ObservationVector, name: str = "sipnet") -> None:
+        check_runs_are_sipnet_runs(runs)
+        check_observation_vector_is_an_observation_vector(observation_vector)
+        check_observation_sites_are_run(observation_vector, runs.sites)
+        self._all_runs = runs
+        self._runs = runs if runs.sites == observation_vector.sites else runs.select(sites=observation_vector.sites)
+        self._observation_vector = observation_vector
+        self._name = name
+        self._outputs = prediction_components(observation_vector)
+        self._plan = self._runs._plan(
+            observation_vectors=(observation_vector,),
+            read_variable_names=observation_vector.output_variable_names,
+            model_output_variable_names=(),
+            freq=None,
+        )
+        self._orders = {
+            source: _block_order(observation_vector, source) for source in observation_vector.observation_source_names
+        }
+
+    # ── identity ──────────────────────────────────────────────────────────────
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @property
+    def given(self) -> tuple[str, ...]:
+        """Every name the SIPNET parameter map reads."""
+        return tuple(self._runs.sipnet_parameter_map.values_read)
+
+    @property
+    def outputs(self) -> tuple[ArraySpec, ...]:
+        """One prediction per observation source, in the vector's order."""
+        return self._outputs
+
+    @property
+    def runs(self) -> SIPNETRuns:
+        """The runs, at the sites the vector observes."""
+        return self._runs
+
+    @property
+    def observation_vector(self) -> ObservationVector:
+        return self._observation_vector
+
+    def __repr__(self) -> str:
+        return f"SIPNETSimulator({self._name!r}, sites={len(self._runs.sites)}, outputs={[o.name for o in self._outputs]})"
+
+    # ── evaluation ────────────────────────────────────────────────────────────
+
+    def __call__(self, given_values: LabeledValues) -> SimulatorOutput:
+        """``runs.evaluate(given_values, observation_vectors=[observation_vector])``
+        as a :class:`~sipnet_calibration.probability.SimulatorOutput`: one
+        prediction per source, each valid at a sample whose values are in
+        their domains, whose every run at the source's sites succeeded, and
+        whose prediction is finite; the :class:`SIPNETRunsEvaluation` as the
+        record.
+
+        Raises
+        ------
+        SIPNETParametersOutOfDomainError, RuntimeError
+            As :meth:`SIPNETRuns.evaluate`.
+        """
+        runs = self._runs
+        merged, n_samples = runs._values_at_the_sites(given_values, None, SAMPLE)
+        evaluation = runs._evaluate(self._plan, merged, n_samples=n_samples, crossed_dims=(), batch_dim=SAMPLE)
+        vector = self._observation_vector
+        predictions = np.asarray(evaluation.predictions[0])
+        succeeded = evaluation.run_succeeded
+        values, valid = {}, {}
+        for source in vector.observation_source_names:
+            name = vector.prediction_name(source)
+            values[name] = predictions[:, vector.positions(observation_source_name=source)][:, self._orders[source]]
+            sites = np.unique(vector[source].observation_labels.get_level_values(SITE)).tolist()
+            ran = np.asarray(succeeded.sel({SITE: sites}).all(SITE).values, dtype=bool)
+            valid[name] = ran & np.asarray(evaluation.in_domain) & np.isfinite(values[name]).all(axis=1)
+        return SimulatorOutput(values=values, valid=valid, record=evaluation)
+
+    def at(self, coords: Mapping[str, pd.Index], outputs: Sequence[str]) -> SIPNETSimulator:
+        """Itself at its own sites and observations computing every output;
+        at fewer, or fewer outputs, its observation vector restricted to the
+        sources of *outputs* at the sites their labels in *coords* hold, and
+        its runs to those sites.
+
+        Raises
+        ------
+        ValueError
+            If a kept source's labels in *coords* are not its observations at
+            some sites, or a site the vector observes lacks a label in
+            ``coords["site"]``.
+        """
+        vector = self._observation_vector
+        by_output = {vector.prediction_name(s): s for s in vector.observation_source_names}
+        sources = [by_output[name] for name in outputs if name in by_output]
+        check_outputs_are_predictions(list(outputs), by_output)
+        labels = {s: coords[vector.observation_dim_name(s)] for s in sources}
+        sites = sorted({int(site) for s in sources for site in labels[s].get_level_values(SITE)})
+        if sources != list(vector.observation_source_names) or sites != list(vector.sites):
+            check_sites_are_observed(sites, vector)
+            vector = vector.select(observation_source_names=sources, sites=sites)
+        for source in sources:
+            check_labels_are_the_observations(source, labels[source], vector)
+        if SITE in coords:
+            check_sites_have_values(vector.sites, coords[SITE])
+        if vector is self._observation_vector:
+            return self
+        return SIPNETSimulator(self._all_runs, observation_vector=vector, name=self._name)
+
+    def check_given(self, given_specs: Mapping[str, ArraySpec], corner_values: LabeledValues) -> None:
+        """The map's fit to the given components' specs, so a rule's
+        ``ValueRequirement`` is checked against what the model declares;
+        under ``out_of_domain="raise"``, its domains at *corner_values*.
+
+        Raises
+        ------
+        ValueError, KeyError
+            As :func:`~sipnet_calibration.sipnet_parameter_map.check_sipnet_parameter_map_fits`,
+            or if a value lies outside its domain at a corner.
+        """
+        runs = self._runs
+        check_sipnet_parameter_map_fits(runs.sipnet_parameter_map, given_specs, None, runs.site_dims)
+        if runs.out_of_domain != "raise":
+            return
+        values, _ = runs._values_at_the_sites(corner_values, None, SAMPLE)
+        fields = runs.sipnet_parameter_map.sipnet_parameter_fields(values, site_dims=runs.site_dims)
+        check_map_is_in_domain_at_the_corners(runs.sipnet_parameter_map.out_of_domain(fields, values, site_dims=runs.site_dims))
 
 
 # ── what an evaluation returns, and the failures ──────────────────────────────
@@ -706,9 +1170,10 @@ MODEL_FAILURES: tuple[type[BaseException], ...] = (
 
 #: The values of each unconstrained number at which
 #: :func:`check_sipnet_parameter_map_is_in_domain_at_the_corners` evaluates
-#: the map: ``+-12`` spans ten orders of magnitude on a log scale and reaches
-#: ``1 - 6e-6`` on a logit scale, while staying inside float64.
-DOMAIN_CHECK_CORNERS: tuple[float, ...] = (-12.0, 0.0, 12.0)
+#: the map: the probability layer's corner points, ``+-12`` spanning ten
+#: orders of magnitude on a log scale and reaching ``1 - 6e-6`` on a logit
+#: scale, while staying inside float64.
+DOMAIN_CHECK_CORNERS: tuple[float, ...] = CORNERS
 
 
 @dataclass(frozen=True, eq=False, kw_only=True)
@@ -758,30 +1223,70 @@ class ForwardEvaluation:
         return out
 
 
+@dataclass(frozen=True, eq=False, kw_only=True)
+class SIPNETRunsEvaluation:
+    """What one evaluation of :class:`SIPNETRuns` produced.
+
+    The fields are :class:`ForwardEvaluation`'s (the module docstring's Data
+    model), but for these:
+
+    ``predictions``
+        One ``(R, N_k)`` float64 ``jax.Array`` per observation vector, in
+        ``observation_vectors``' order, ``NaN`` in the entries of a failed
+        run and in every entry of a row out of the domain; a failed run
+        leaves the rest of its row.
+    ``observation_vectors``
+        The vectors predicted.
+    ``in_domain``
+        bool ``(R,)`` ``jax.Array``: every value of the row lies in its
+        domain.
+    ``valid``
+        bool ``(R,)`` ``jax.Array``: every run of the row succeeded and it is
+        in the domain. Whether its predictions are finite is a vector's own.
+
+    There is no ``theta``. Nothing read from it changes it, as for
+    :class:`ForwardEvaluation`.
+    """
+
+    sipnet_parameter_fields: SIPNETParameterFields = ReadOnlyCopies()
+    run_index: pd.Index
+    model_output: ModelOutput | None = ReadOnlyCopies()
+    predictions: tuple[jax.Array, ...]
+    observation_vectors: tuple[ObservationVector, ...]
+    run_succeeded: Field = ReadOnlyCopies()
+    failures: pd.DataFrame = ReadOnlyCopies()
+    in_domain: jax.Array
+    valid: jax.Array
+    out_of_domain_fraction: float = 0.0
+
+
 # ── the per-run callable ──────────────────────────────────────────────────────
 
 
 @dataclass(frozen=True)
 class _RunOutput:
-    """What one run sends back: its model output, its site's predictions, or neither."""
+    """What one run sends back: its model output, if asked for, and its
+    site's predictions per observation vector, ``None`` where the vector
+    does not observe the site."""
 
     model_output: xr.Dataset | None
-    predictions: np.ndarray | None
+    predictions: tuple[np.ndarray | None, ...]
 
 
 @dataclass(frozen=True)
 class _Run:
-    """One SIPNET run, reduced on the worker; picklable, built once per model.
+    """One SIPNET run, reduced on the worker; picklable, built once per plan.
 
-    On the prior-predictive path the run sends back its output (aggregated,
-    with ``freq``); otherwise its site's predictions, or nothing at a site
-    no observation source observes. The SIPNET parameters the operators read
-    are the run's own ``SIPNETResult.parameters``.
+    It reads *read_variable_names* from the run's output, each checked
+    finite, and sends back the model output of
+    *model_output_variable_names* (aggregated, with ``freq``) and its site's
+    predictions per observation vector. The SIPNET parameters the operators
+    read are the run's own ``SIPNETResult.parameters``.
     """
 
     model: SIPNETModel
-    output_variable_names: tuple[str, ...]
-    returns_model_output: bool
+    read_variable_names: tuple[str, ...]
+    model_output_variable_names: tuple[str, ...]
     freq: str | None
     site_table: pd.DataFrame
 
@@ -790,39 +1295,57 @@ class _Run:
         *,
         climate: ClimateDrivers,
         site: int,
-        site_observation_vector: ObservationVector | None = None,
+        site_observation_vectors: tuple[ObservationVector | None, ...] = (),
         **sipnet_overrides: Any,
     ) -> _RunOutput:
         site = int(site)
         sipnet_result = self.model(climate=climate, **sipnet_overrides)
-        dataset = sipnet_result.outputs.select(list(self.output_variable_names))
+        dataset = sipnet_result.outputs.select(list(self.read_variable_names))
         check_output_is_finite(dataset, site)
-        if not self.returns_model_output and site_observation_vector is None:
-            return _RunOutput(model_output=None, predictions=None)
+        nothing = tuple(None for _ in site_observation_vectors)
+        if not self.model_output_variable_names and all(v is None for v in site_observation_vectors):
+            return _RunOutput(model_output=None, predictions=nothing)
         model_output = to_model_output(dataset, site=site, site_table=self.site_table)
-        if self.returns_model_output:
+        returned = None
+        if self.model_output_variable_names:
+            returned = (
+                model_output
+                if self.model_output_variable_names == self.read_variable_names
+                else model_output[list(self.model_output_variable_names)]
+            )
             if self.freq is not None:
-                model_output = _aggregated(model_output, self.freq)
-            return _RunOutput(model_output=model_output, predictions=None)
-        sipnet_parameter_fields = _run_sipnet_parameter_fields(
-            getattr(sipnet_result, "parameters", None),
-            site_observation_vector.sipnet_parameter_names_read,
-            model_output,
-        )
-        predicted = site_observation_vector.predict(model_output, sipnet_parameter_fields=sipnet_parameter_fields)
-        predictions = np.asarray(site_observation_vector.flat(predicted), dtype=np.float64)
-        return _RunOutput(model_output=None, predictions=predictions)
+                returned = _aggregated(returned, self.freq)
+        predictions = []
+        for vector in site_observation_vectors:
+            if vector is None:
+                predictions.append(None)
+                continue
+            sipnet_parameter_fields = _run_sipnet_parameter_fields(
+                getattr(sipnet_result, "parameters", None), vector.sipnet_parameter_names_read, model_output
+            )
+            predicted = vector.predict(model_output, sipnet_parameter_fields=sipnet_parameter_fields)
+            predictions.append(np.asarray(vector.flat(predicted), dtype=np.float64))
+        return _RunOutput(model_output=returned, predictions=tuple(predictions))
+
+
+@dataclass(frozen=True, eq=False)
+class _RunPlan:
+    """What every run of an evaluation is sent and does: the observation
+    vectors whose predictions come back, the model output asked for, the
+    PyEns partial spec, the per-run callable, and each vector's site
+    segments of its Flat."""
+
+    observation_vectors: tuple[ObservationVector, ...]
+    model_output_variable_names: tuple[str, ...]
+    partial: PartialSpec
+    run: _Run
+    site_positions: tuple[dict[int, np.ndarray], ...]
 
 
 # ── private helpers ───────────────────────────────────────────────────────────
 
 #: The temporary name of the run index's rows while predictions are unstacked.
 _ROW = "__row__"
-
-#: The most unconstrained numbers per value whose every corner is checked:
-#: ``3^6 = 729`` rows per parameter; a value with more is checked along its
-#: axes instead.
-_MOST_CORNER_NUMBERS = 6
 
 
 def _descriptions(
@@ -851,28 +1374,70 @@ def _crossed_dims(
 
 
 def _corner_theta(parameter_vector: ParameterVector) -> np.ndarray:
-    """Rows of theta: each parameter at every corner of
-    :data:`DOMAIN_CHECK_CORNERS` over the ``e`` unconstrained numbers of one
-    value, the same at each of its blocks, the others at 0; for ``e`` above
-    :data:`_MOST_CORNER_NUMBERS`, at the ``2e + 3`` points 0, ``+-c * 1`` and
-    ``+-c`` along each number, ``c`` the outer corner."""
+    """The corner points of theta (the probability layer's): each parameter
+    at every corner of :data:`DOMAIN_CHECK_CORNERS` over the ``e``
+    unconstrained numbers of one value, the same at each of its blocks, the
+    others at 0; for more than six numbers, at the ``2e + 3`` points 0,
+    ``+-c * 1`` and ``+-c`` along each number, ``c`` the outer corner."""
     unconstrained = parameter_vector.unconstrained
     positions = unconstrained.flat_to_values(jnp.arange(unconstrained.size, dtype=jnp.float64))
-    rows = []
-    for parameter in unconstrained.parameters:
-        place = np.asarray(positions[parameter.name]).astype(np.int64).reshape(-1, math.prod(parameter.shape))
-        size = place.shape[1]
-        if size <= _MOST_CORNER_NUMBERS:
-            corners = itertools.product(DOMAIN_CHECK_CORNERS, repeat=size)
-        else:
-            outer = max(abs(c) for c in DOMAIN_CHECK_CORNERS)
-            corners = [np.zeros(size), np.full(size, outer), np.full(size, -outer)]
-            corners += [sign * outer * np.eye(size)[i] for i in range(size) for sign in (1.0, -1.0)]
-        for corner in corners:
-            row = np.zeros(unconstrained.size)
-            row[place] = np.asarray(corner, dtype=np.float64)
-            rows.append(row)
-    return np.asarray(rows)
+    places = [
+        np.asarray(positions[p.name]).astype(np.int64).reshape(-1, math.prod(p.shape)) for p in unconstrained.parameters
+    ]
+    return corner_points(places, unconstrained.size)
+
+
+def _run_index(n_samples: int, sipnet_parameter_fields: xr.Dataset, crossed_dims: Sequence[str], batch_dim: str) -> pd.Index:
+    """The rows of an evaluation: the samples, crossed with *crossed_dims*'
+    labels in C order."""
+    if not crossed_dims:
+        return pd.Index(np.arange(n_samples, dtype=BATCH_LABEL_DTYPE), name=batch_dim)
+    levels = [np.arange(n_samples, dtype=BATCH_LABEL_DTYPE)] + [
+        sipnet_parameter_fields[d].values.astype(BATCH_LABEL_DTYPE) for d in crossed_dims
+    ]
+    return pd.MultiIndex.from_product(levels, names=[batch_dim, *crossed_dims])
+
+
+def _placed_predictions(
+    run_outputs: Mapping[tuple[int, int], _RunOutput],
+    k: int,
+    observation_vector: ObservationVector,
+    site_positions: Mapping[int, np.ndarray],
+    in_domain: np.ndarray,
+) -> np.ndarray:
+    """``(R, N)``: each run's segment of the *k*-th vector's Flat at its row
+    and its site's positions; ``NaN`` where the run failed, and in a row out
+    of the domain."""
+    predictions = np.full((len(in_domain), observation_vector.dimension), np.nan)
+    for (row, site), run_output in run_outputs.items():
+        if run_output.predictions[k] is not None:
+            predictions[row, site_positions[site]] = run_output.predictions[k]
+    predictions[~in_domain] = np.nan
+    return predictions
+
+
+def _number_of_samples(values: Mapping[str, xr.DataArray], batch_dim: str) -> int:
+    """The number of samples on *batch_dim*, which the values agree on and
+    label ``0`` to ``J - 1``."""
+    on_batch = {name: array for name, array in values.items() if batch_dim in array.dims}
+    check_values_carry_the_batch_dim(on_batch, batch_dim)
+    for name, array in on_batch.items():
+        check_batch_labels_count_from_zero(name, array, batch_dim)
+    sizes = {array.sizes[batch_dim] for array in on_batch.values()}
+    check_values_agree_on_the_samples(sizes, batch_dim)
+    return sizes.pop()
+
+
+def _block_order(observation_vector: ObservationVector, observation_source_name: str) -> np.ndarray:
+    """Where each label of a source's observation dim sits among the
+    source's entries of the vector's Flat: the order that turns the one into
+    the prediction's block, by label."""
+    labels = observation_vector.coords[observation_vector.observation_dim_name(observation_source_name)]
+    entries = observation_vector.index[observation_vector.positions(observation_source_name=observation_source_name)]
+    keys = pd.MultiIndex.from_arrays([entries.get_level_values(name) for name in labels.names], names=labels.names)
+    order = keys.get_indexer(labels)
+    check_every_observation_has_an_entry(observation_source_name, order)
+    return order
 
 
 def _run_labels(run_index: pd.Index) -> list[np.ndarray]:
@@ -1130,7 +1695,14 @@ def check_sipnet_parameter_map_is_in_domain_at_the_corners(forward_model: Forwar
     values = forward_model._labeled_values(_corner_theta(forward_model.parameter_vector), inputs)
     sipnet_map = forward_model.sipnet_parameter_map
     fields = sipnet_map.sipnet_parameter_fields(values, site_dims=forward_model.site_dims)
-    outside = sipnet_map.out_of_domain(fields, values, site_dims=forward_model.site_dims)
+    check_map_is_in_domain_at_the_corners(sipnet_map.out_of_domain(fields, values, site_dims=forward_model.site_dims))
+
+
+def check_map_is_in_domain_at_the_corners(outside: pd.DataFrame) -> None:
+    """No value the map read or wrote at the corners of theta lies outside
+    its domain (:meth:`SIPNETParameterMap.out_of_domain
+    <sipnet_calibration.sipnet_parameter_map.SIPNETParameterMap.out_of_domain>`'s
+    report)."""
     if not outside.empty:
         names = sorted({str(n) for n in (*outside["sipnet_parameter"].dropna(), *outside["value_name"].dropna())})
         raise ValueError(
@@ -1461,6 +2033,160 @@ def check_no_run_failed_in_the_machinery(
         ),
         evaluation,
     )
+
+
+def check_sipnet_runs_arguments(
+    model: Any, sipnet_parameter_map: Any, site_dims: Any, climate: Any, backend: Any, out_of_domain: Any
+) -> None:
+    """Every check on :class:`SIPNETRuns`' arguments."""
+    check_model_is_a_sipnet_model(model)
+    check_sipnet_parameter_map_is_a_map(sipnet_parameter_map)
+    check_site_dims_are_site_dims(site_dims)
+    check_backend_is_a_pyens_backend(backend)
+    check_out_of_domain_is_known(out_of_domain)
+    check_climate_covers_the_sites(climate, site_dims.sites)
+    check_climate_is_file_backed(climate, site_dims.sites, backend)
+
+
+def check_sipnet_parameter_map_is_a_map(sipnet_parameter_map: Any) -> None:
+    """The map is a :class:`~sipnet_calibration.sipnet_parameter_map.SIPNETParameterMap`."""
+    if not isinstance(sipnet_parameter_map, SIPNETParameterMap):
+        raise TypeError(f"sipnet_parameter_map must be a SIPNETParameterMap, got {type(sipnet_parameter_map).__name__}.")
+
+
+def check_runs_are_sipnet_runs(runs: Any) -> None:
+    """A simulator's runs are a :class:`SIPNETRuns`."""
+    if not isinstance(runs, SIPNETRuns):
+        raise TypeError(f"runs must be a SIPNETRuns, got {type(runs).__name__}.")
+
+
+def check_observation_vector_is_an_observation_vector(observation_vector: Any) -> None:
+    """An observation vector is an :class:`~sipnet_calibration.observation.ObservationVector`."""
+    if not isinstance(observation_vector, ObservationVector):
+        raise TypeError(f"an observation vector must be an ObservationVector, got {type(observation_vector).__name__}.")
+
+
+def check_something_is_asked_for(observation_vectors: Sequence[Any], output_variable_names: Sequence[str]) -> None:
+    """An evaluation returns predictions, model output or both."""
+    if not observation_vectors and not output_variable_names:
+        raise ValueError(
+            "nothing is asked for: give observation_vectors whose predictions to return, "
+            "output_variable_names whose model output to return, or both."
+        )
+
+
+def check_freq_is_for_model_output(freq: Any, output_variable_names: Sequence[str]) -> None:
+    """``freq`` aggregates model output, which output variables name."""
+    if freq is not None and not output_variable_names:
+        raise ValueError(
+            "freq= aggregates model output, but no output_variable_names are given; the operators "
+            "decide their own alignment. Name the variables, or drop freq."
+        )
+
+
+def check_values_are_labeled(values: Any) -> None:
+    """Values are labeled values (a mapping of DataArrays) or a Dataset."""
+    if isinstance(values, xr.Dataset):
+        return
+    if not isinstance(values, Mapping) or not all(isinstance(v, xr.DataArray) for v in values.values()):
+        raise TypeError(
+            f"values must be labeled values, a mapping of DataArrays by name, or an xr.Dataset; got "
+            f"{type(values).__name__}."
+        )
+
+
+def check_external_inputs_are_not_values(external_names: Sequence[Any], values: Mapping[str, Any]) -> None:
+    """No external input is named like a value given, which it would replace."""
+    shared = [str(n) for n in external_names if str(n) in values]
+    if shared:
+        raise ValueError(
+            f"the external inputs {truncated(shared)} are named like values given; a value is given once, "
+            "so rename one."
+        )
+
+
+def check_value_covers_the_sites(name: str, variable: xr.DataArray, sites: Sequence[int]) -> None:
+    """A value or external input on ``site`` holds every site run."""
+    held = set(variable.indexes[SITE].tolist())
+    missing = [site for site in sites if site not in held]
+    if missing:
+        raise KeyError(f"the value {name!r} has no value for site(s) {truncated(missing)}, which are run.")
+
+
+def check_values_carry_the_batch_dim(on_batch: Mapping[str, Any], batch_dim: str) -> None:
+    """Some value is on the batch dim, which says how many samples there are."""
+    if not on_batch:
+        raise ValueError(
+            f"no value the map reads is on the batch dim {batch_dim!r}, so the number of samples is "
+            "unknown; give the values on it, labeled 0 to J - 1."
+        )
+
+
+def check_batch_labels_count_from_zero(name: str, array: xr.DataArray, batch_dim: str) -> None:
+    """A value's batch labels are ``0`` to ``J - 1``, the rows they zip with."""
+    labels = array[batch_dim].values.tolist() if batch_dim in array.coords else list(range(array.sizes[batch_dim]))
+    if labels != list(range(array.sizes[batch_dim])):
+        raise ValueError(
+            f"the value {name!r} labels {batch_dim!r} {truncated(labels)}; label the samples 0 to J - 1."
+        )
+
+
+def check_values_agree_on_the_samples(sizes: set[int], batch_dim: str) -> None:
+    """Every value on the batch dim has the same number of samples."""
+    if len(sizes) > 1:
+        raise ValueError(f"the values hold {sorted(sizes)} samples on {batch_dim!r}; give each the same number.")
+
+
+def check_outputs_are_predictions(outputs: Sequence[str], by_output: Mapping[str, str]) -> None:
+    """A simulator is restricted to its own outputs."""
+    unknown = [name for name in outputs if name not in by_output]
+    if unknown:
+        raise ValueError(f"the simulator outputs {list(by_output)}, not {truncated(unknown)}.")
+
+
+def check_sites_are_observed(sites: Sequence[int], observation_vector: ObservationVector) -> None:
+    """The sites a restriction keeps are observed by the vector."""
+    extra = sorted(set(sites) - set(observation_vector.sites))
+    if extra:
+        raise ValueError(
+            f"the labels in use observe site(s) {truncated(extra)}, which the observation vector does not; "
+            "the simulator cannot predict them."
+        )
+
+
+def check_labels_are_the_observations(
+    observation_source_name: str, labels: pd.Index, observation_vector: ObservationVector
+) -> None:
+    """A source's labels in use are its observations at the sites kept, in
+    the vector's order: a simulator predicts what its vector observes."""
+    dim = observation_vector.observation_dim_name(observation_source_name)
+    held = observation_vector.coords.get(dim)
+    if held is None or not held.equals(labels):
+        raise ValueError(
+            f"the labels in use of {dim!r} are not the observation vector's observations of "
+            f"{observation_source_name!r} at their sites; bind at observation_vector.coords, or select by site."
+        )
+
+
+def check_sites_have_values(sites: Sequence[int], site_labels: Any) -> None:
+    """Every site predicted has values: the given values are read there."""
+    held = set(np.asarray(site_labels).tolist())
+    missing = [site for site in sites if site not in held]
+    if missing:
+        raise ValueError(
+            f"the observation vector observes site(s) {truncated(missing)}, which the labels in use of 'site' "
+            "lack, so no value would be read there; bind at every site observed."
+        )
+
+
+def check_every_observation_has_an_entry(observation_source_name: str, order: np.ndarray) -> None:
+    """Every observation of a source has an entry in the vector's Flat; this
+    is a defect in ObservationVector, not in the inputs."""
+    if (order < 0).any():
+        raise ValueError(
+            f"the observation vector's Flat lacks an observation of {observation_source_name!r}; this is a "
+            "defect in ObservationVector, not in the inputs."
+        )
 
 
 def check_some_run_succeeded(evaluation: ForwardEvaluation) -> None:

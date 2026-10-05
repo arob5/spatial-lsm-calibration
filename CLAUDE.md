@@ -251,7 +251,9 @@ moves it here.
 | **prediction** | the forward model's value of an observed quantity, on the source's observation dim and in its units: `predicted_<source>` (`ObservationVector.prediction_name`, `observation.model.prediction_components`) | "predictions", the Flat `(J, N)`, which keeps its meaning |
 | **spec** | a declaration, holding no labels and no numbers; its class ends in `Spec` (`ArraySpec`, `FactorSpec`, `DeterministicSpec`, `ModelSpec`) | the distribution it becomes once bound |
 | **law** | the concrete distribution a factor evaluates to for one draw of what it reads: a TFP distribution, or an object implementing `probability.laws.Law` | a factor, which declares one |
-| **factor** / **deterministic** / **part** | a part is a factor (a conditional law over its **event**, the components it declares) or a deterministic (components computed by a pure function); a factor replaces a prior term, a deterministic a derived parameter | |
+| **factor** / **deterministic** / **part** | a part is a factor (a conditional law over its **event**, the components it declares) or a deterministic (components computed by a pure function, or by a simulator); a factor replaces a prior term, a deterministic a derived parameter | |
+| **simulator** | a deterministic computed outside JAX for a whole batch of samples, which may fail at some of them: a `Simulator` (`probability.parts`), called once per batch with labeled values and returning a `SimulatorOutput` (its outputs, and at which samples each was computed); `SIPNETSimulator` is the forward map as one | the forward model's runs, `SIPNETRuns` |
+| **valid** (a sample) | every simulator output the likelihood reads was computed at it and every likelihood factor's density is finite there; an invalid sample's log likelihood is `-inf` (`PosteriorEvaluation.valid`) | `ForwardEvaluation.valid`, a row whose runs all succeeded |
 | **given** (probability layer) | the components and inputs a part's function reads, inferred from its keywords (the keyword rule), never stated | `given=` of the parameter layer |
 | **input** | a node with no parents and no law, declared by an `ArraySpec` in `joint(..., inputs=)` and bound by `bind(..., inputs=)` | an external input, the SIPNET adapter's word |
 | **bind** | give a model spec the labels of its dims and its inputs' values, making a `FactoredDistribution` | |
@@ -1056,20 +1058,28 @@ src/sipnet_calibration/
                           # independent_over_dim, gaussian_copula
     parts.py              # FactorSpec (a conditional law over its event),
                           # DeterministicSpec; @factor, @deterministic; given
-                          # read off the function's keywords (the keyword rule)
+                          # read off the function's keywords (the keyword rule);
+                          # Simulator (name, given, outputs, __call__, at,
+                          # check_given) and SimulatorOutput
     model.py              # joint -> ModelSpec (the graph, topological order);
                           # bind -> FactoredDistribution: law(), select(),
                           # sample() keyed by crc32(name), log_prob(),
-                          # describe(); block_at_labels
+                          # simulators, describe(); block_at_labels; a
+                          # simulator runs once per batch, never at bind
     posterior.py          # condition_on -> Posterior: target, barren and
-                          # O_c from the graph; sample_prior, log_prior,
-                          # log_likelihood, log_density, natural_values,
+                          # O_c from the graph, each simulator pruned to the
+                          # outputs the likelihood reads and checked at the
+                          # corner points; sample_prior, log_prior, evaluate
+                          # -> PosteriorEvaluation, log_likelihood,
+                          # log_density, log_density_given, predict,
+                          # replicate, simulator_inputs, natural_values,
                           # to_labeled, describe
     _bound.py, _keywords.py, _probes.py, _validation.py
                           # private: a part at the labels in use (its law,
                           # density, draws, the bind checks, the log-Jacobian
                           # against each support's reference measure); the
-                          # keyword rule; the probe points; coercion
+                          # keyword rule; the probe and corner points;
+                          # coercion
   parameters/             # the parameter layer: imports nothing of the package
                           # outside itself but probability/ (tested);
                           # __init__ re-exports it
@@ -1126,11 +1136,15 @@ src/sipnet_calibration/
   calibration.py          # describe_calibration() (two tables: per parameter,
                           # per SIPNET parameter with its role),
                           # example_calibration()
-  forward.py              # ForwardModel: theta (J, D) and external inputs ->
-                          # predictions (R, N), SIPNET once per run through
-                          # PyEns, the observation operators applied on the
-                          # worker; ForwardEvaluation with its run index; the
-                          # failure split; the composition and corner checks
+  forward.py              # SIPNETRuns: labeled values -> SIPNET once per run
+                          # through PyEns, the observation operators applied on
+                          # the worker, predictions per observation vector and
+                          # model output from one pass (SIPNETRunsEvaluation);
+                          # SIPNETSimulator, the forward map as a Simulator;
+                          # ForwardModel: theta (J, D) and external inputs ->
+                          # predictions (R, N) through SIPNETRuns, until R1;
+                          # ForwardEvaluation with its run index; the failure
+                          # split; the composition and corner checks
   compute.py              # scc_backend(): the SCC GridEngineBackend preset
   smc.py                  # tempered SMC from a base density q to the
                           # posterior, importance sampling its one-step case;

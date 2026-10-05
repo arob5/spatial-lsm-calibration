@@ -18,7 +18,7 @@ import pytest
 import xarray as xr
 from tensorflow_probability.substrates import jax as tfp
 
-from conftest import REPOSITORY
+from conftest import REPOSITORY, example_calibration_factors
 from sipnet_calibration.probability import (
     OPEN_UNIT_INTERVAL,
     POSITIVE,
@@ -77,23 +77,7 @@ def single_site_mcmc_vs_eki(reference):
 
 
 def example_calibration(reference):
-    a_max_frac, c_frac_leaf, a_max, fol_resp = 0.76, 0.466, 58.0, 0.17
-    return joint(
-        _factor("photosynthetic_capacity", log_normal(median=a_max * (a_max_frac + fol_resp) / c_frac_leaf, geometric_sd=1.75),
-                support=POSITIVE),
-        _factor("respiration_share", logit_normal_from_interval(lower=0.10 / (a_max_frac + 0.10), upper=0.39 / (a_max_frac + 0.39)),
-                support=OPEN_UNIT_INTERVAL),
-        FactorSpec(
-            ArraySpec("allocation", units="1", support=SIMPLEX, indexed_by=("pft",),
-                      element_axes={ALLOCATION_PART: ALLOCATION_PARTS}),
-            law=iid_over_dim(softmax_normal(center=(0.18, 0.40, 0.07, 0.35), logit_sd=0.5)),
-        ),
-        FactorSpec(ArraySpec("base_soil_respiration", units="yr-1", support=POSITIVE, indexed_by=("pft",)),
-                   law=iid_over_dim(log_normal_from_interval(lower=0.004, upper=0.020))),
-        _factor("leaf_fall_fraction", logit_normal(median=0.5, logit_sd=1.7), support=OPEN_UNIT_INTERVAL),
-        FactorSpec(ArraySpec("initial_soil_carbon", units="g m-2", support=POSITIVE, indexed_by=("site",)),
-                   law=iid_over_dim(log_normal(median=30_000.0, geometric_sd=2.0))),
-    ).bind(coords={"pft": list(PFT), "site": list(SITES)})
+    return joint(*example_calibration_factors()).bind(coords={"pft": list(PFT), "site": list(SITES)})
 
 
 def hierarchy(reference):

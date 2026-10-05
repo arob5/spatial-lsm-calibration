@@ -512,7 +512,10 @@ arguments of revision 3:</p>
 no target node may have a simulator among its ancestors, so that \(\pi\) is
 evaluated and sampled without a simulator run. It refuses sound models, such as
 a latent state centered on a prediction, and can be lifted when one is
-needed. A factor's event is also wholly observed or not:
+needed. <i>As built in P5:</i> nor may an observed node with no target
+ancestor (in \(O_c\)), whose density is the evidence's constant \(C\),
+computed once at <code>condition_on</code>; such a node would need a
+simulator run there. A factor's event is also wholly observed or not:
 observing part of a joint factor, or some of a component's labels, is refused.
 The way to use fewer labels is to bind fewer.</p>
 
@@ -571,7 +574,7 @@ renormalized on \(\mathcal V\), which differs by \(\pi(\mathcal V)\).</p>
 <tbody>
 <tr><td>construction of a spec</td><td>Names and types; the keyword rule; a custom bijector maps onto its support at the probe points.</td></tr>
 <tr><td><code>joint</code></td><td>Every name a part reads is declared; the links are acyclic; a <code>GaussianSpec</code>'s means match their components in layout and units.</td></tr>
-<tr><td><code>bind</code></td><td>Constants, label maps and inputs cover the labels in use. The probe-point checks below run for every random component, whatever its later role: probe points in its unconstrained coordinates, its law built at two ancestral draws of what it reads when that varies by draw (as PR #72's prior does; P3). A law that is or wraps a discrete law, a point mass or an LKJ law, which has no density against its support's reference measure, is refused by class (P3, Andrew's decision). A deterministic's outputs are checked at the probe points of the random components behind it, pushed through the deterministic nodes with no simulator ancestor. A factor downstream of a simulator has its event shape checked with <code>jax.eval_shape</code>.</td></tr>
+<tr><td><code>bind</code></td><td>Constants, label maps and inputs cover the labels in use. The probe-point checks below run for every random component, whatever its later role: probe points in its unconstrained coordinates, its law built at two ancestral draws of what it reads when that varies by draw (as PR #72's prior does; P3). A law that is or wraps a discrete law, a point mass or an LKJ law, which has no density against its support's reference measure, is refused by class (P3, Andrew's decision). A deterministic's outputs are checked at the probe points of the random components behind it, pushed through the deterministic nodes with no simulator ancestor. A factor downstream of a simulator has its event shape checked with <code>jax.eval_shape</code>. <i>As built in P5:</i> binding runs no simulator, and stands in for each of its outputs a placeholder, its bijector's image of 0. A factor downstream is built there and checked for its form alone (event shape, TFP batch shape, dtype, and a density the model can evaluate, the class-based checks), not for its support, which would be checked at values no simulation gave; a deterministic downstream is checked for its block shapes. A placeholder replaces <code>jax.eval_shape</code> because the bound factor also needs its law's form: whether it pushes forward through its components' bijectors.</td></tr>
 <tr><td><code>condition_on</code></td><td>Each simulator's <code>check_given</code>, at the corner points of the target. The once-only checks of §4.7.</td></tr>
 </tbody></table></div>
 <p>Two fixed sets of points in theta are used. A check at them is evidence, not
@@ -1749,6 +1752,9 @@ class Posterior:
     simulator_free_positions : numpy.ndarray
         ``int64``, the entries of theta with no simulator among their
         descendants.
+    simulators : frozendict of str to Simulator
+        Each simulator the likelihood depends on, at the outputs it depends
+        on (P5).
     """
 
     def sample_prior(self, key: Array, n: int) -&gt; Array:
@@ -1779,12 +1785,13 @@ class Posterior:
         """
 
     def log_likelihood(self, theta: ArrayLike) -&gt; Array:
-        """``evaluate(theta).log_likelihood``, ``(J,)``. Until P5 brings
-        simulators, a traced function, ``(..., D) -&gt; (...)`` (P3)."""
+        """``evaluate(theta).log_likelihood``, ``(J,)``, and ``()`` for one
+        sample, when a simulator is upstream of the likelihood; without one,
+        a traced function, ``(..., D) -&gt; (...)`` (P3, kept in P5)."""
 
     def log_density(self, theta: ArrayLike) -&gt; Array:
-        """``evaluate(theta).log_density``, ``(J,)``; traced until P5, as
-        :meth:`log_likelihood`."""
+        """``evaluate(theta).log_density``, ``(J,)``; traced without a
+        simulator, as :meth:`log_likelihood`."""
 
     def log_density_given(self, evaluation: PosteriorEvaluation) -&gt; Callable[[Array], Array]:
         r"""The log posterior as a function of the entries of theta that no
@@ -1811,7 +1818,9 @@ class Posterior:
         """Replicated draws of the :math:`O_\theta` components at a batch of
         theta, each from its kernel given the sample: a posterior predictive
         check of the observations. :math:`O_c` components are held, and not
-        replicated. Returns as :meth:`predict`."""
+        replicated. Returns as :meth:`predict`. (P5: the :math:`O_\theta`
+        factors are drawn ancestrally, so one that reads another reads its
+        replicate.)"""
 
     def simulator_inputs(self, theta: ArrayLike, simulator_name: str) -&gt; LabeledValues:
         """What the simulator *simulator_name* reads at a batch of theta, as it
@@ -2276,6 +2285,39 @@ class SIPNETSimulator(Simulator):
         ``ValueRequirement`` is checked against what the model declares
         (F8); under ``out_of_domain="raise"``, its domains at
         *corner_values*, as today's corner check."""</code></pre>
+<p><i>As built in P5:</i></p>
+<ul>
+  <li><code>SIPNETRuns.evaluate</code> returns a <code>SIPNETRunsEvaluation</code>:
+  <code>ForwardEvaluation</code>'s fields without <code>theta</code>, with
+  <code>predictions</code> a tuple, one <code>(R, N_k)</code> array per
+  observation vector, <code>in_domain</code> per row, and <code>valid</code>
+  meaning every run of the row succeeded in the domain. Today's
+  <code>ForwardEvaluation</code> keeps its name and fields, since
+  <code>ForwardModel</code> and PR #69 read them until R1. It also takes
+  <code>batch_dim=</code>, as <code>ForwardModel</code> does, and accepts an
+  <code>xr.Dataset</code> as well as labeled values.</li>
+  <li>A prediction's entries are <code>NaN</code> where its run failed, and in
+  every entry of a row out of the domain; <code>ForwardModel</code> keeps
+  its whole-row rule on top. <code>SIPNETSimulator</code> marks a source's
+  prediction valid at a sample in the domain whose every run at the
+  source's sites succeeded and whose prediction is finite.</li>
+  <li><code>SIPNETSimulator</code> runs SIPNET only at the sites its
+  observation vector observes, so a site no source observes costs nothing.
+  <code>at(coords, outputs)</code> takes the core's signature: it restricts
+  the vector to the sources of <em>outputs</em> at the sites their labels in
+  <em>coords</em> hold, refuses labels that are not the vector's
+  observations at those sites in its order, and refuses a site the vector
+  observes that <code>coords["site"]</code> lacks.
+  <code>SIPNETRuns.select(sites=)</code> is added for it.</li>
+  <li>A run plan (the partial spec, the per-run callable, the site segments)
+  is built once by <code>ForwardModel</code> and <code>SIPNETSimulator</code>
+  and per call by <code>SIPNETRuns.evaluate</code>. One pass reads the union
+  of every reduction's output variables, each checked finite, so a
+  non-finite value in any fails the run for all.</li>
+  <li>The corner points are the core's (<code>probability._probes.corner_points</code>
+  and <code>CORNERS</code>), which <code>ForwardModel</code>'s corner check
+  reads until R1.</li>
+</ul>
 <p>Three more seam fixes go in the same PR:</p>
 <ul>
   <li><b>F7.</b> A calibrated initial state is declared by a factor, and an

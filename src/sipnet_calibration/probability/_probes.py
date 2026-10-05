@@ -6,6 +6,7 @@ parameter layer through its re-export.
 
 from __future__ import annotations
 
+import itertools
 import math
 from collections.abc import Sequence
 from typing import Any
@@ -14,12 +15,22 @@ import jax.numpy as jnp
 import numpy as np
 from tensorflow_probability.substrates import jax as tfp
 
-__all__ = ["bijectors_agree", "joint_probe_points", "probe_points"]
+__all__ = ["CORNERS", "bijectors_agree", "corner_points", "joint_probe_points", "probe_points"]
 
 tfb = tfp.bijectors
 
+#: The values of each unconstrained number at the corner points: ``+-12``
+#: spans ten orders of magnitude on a log scale and reaches ``1 - 6e-6`` on
+#: a logit scale, while staying inside float64.
+CORNERS: tuple[float, ...] = (-12.0, 0.0, 12.0)
+
 #: The seed of the probe points' random directions.
 _PROBE_SEED = 20260926
+
+#: The most unconstrained numbers per value whose every corner is a corner
+#: point: ``3^6 = 729`` points per value; a value with more takes the axis
+#: points instead.
+_MOST_CORNER_NUMBERS = 6
 
 
 def bijectors_agree(first: tfb.Bijector, second: tfb.Bijector, probes: Any) -> bool:
@@ -66,6 +77,34 @@ def probe_points(shape: tuple[int, ...], *, value_size: int | None = None) -> np
     probes passes.
     """
     return joint_probe_points([(shape, value_size)])[0]
+
+
+def corner_points(places: Sequence[np.ndarray], size: int) -> np.ndarray:
+    """The corner points of a flat vector of *size* entries, ``(n, size)``.
+
+    Each of *places* is one parameter's entries, ``int64`` of shape
+    ``(n_values, e)``: row ``i`` the positions of the ``e`` unconstrained
+    numbers of its value at label tuple ``i``. Each parameter in turn takes
+    every combination of :data:`CORNERS` over the ``e`` numbers of one
+    value, the same at every label, the others 0; a value of more than
+    :data:`_MOST_CORNER_NUMBERS` numbers takes instead the ``2e + 3`` points
+    0, ``+-c * 1`` and ``+-c e_i``, ``c`` the outer corner.
+    """
+    rows = []
+    for place in places:
+        place = np.asarray(place, dtype=np.int64)
+        e = place.shape[1]
+        if e <= _MOST_CORNER_NUMBERS:
+            corners = itertools.product(CORNERS, repeat=e)
+        else:
+            outer = max(abs(c) for c in CORNERS)
+            corners = [np.zeros(e), np.full(e, outer), np.full(e, -outer)]
+            corners += [sign * outer * np.eye(e)[i] for i in range(e) for sign in (1.0, -1.0)]
+        for corner in corners:
+            row = np.zeros(size)
+            row[place] = np.asarray(corner, dtype=np.float64)
+            rows.append(row)
+    return np.asarray(rows, dtype=np.float64).reshape((len(rows), size))
 
 
 def joint_probe_points(parts: Sequence[tuple[tuple[int, ...], int | None]]) -> list[np.ndarray]:
