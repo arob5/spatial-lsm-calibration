@@ -2551,10 +2551,11 @@ algorithm package. A second experiment uses it unchanged, which meets issue
   <li><var>y</var>;</li>
   <li>the base noise covariance;</li>
   <li>an initial ensemble, an unweighted <code>Ensemble</code> whose blocks
-  are the parameters, the particles of an <code>EKIState</code>.</li>
+  are the parameters, which an <code>EKIState</code> starts from.</li>
 </ul>
 <p>The ensemble has one block, <code>theta</code>, so the forward map takes
-theta <code>(J, D)</code> as its one argument. The covariance is already an
+theta <code>(J, D)</code> as its one argument (a state holding other blocks
+passes <code>inputs="theta"</code> to the driver). The covariance is already an
 <code>enskit.linalg</code> operator, so nothing is converted. Starting EKI
 needs no prior Gaussian: <code>EKIState.from_prior</code> takes one, and
 <code>initial_ensemble</code> replaces it with the prior's own draws. Issue
@@ -2574,10 +2575,11 @@ rule and the schedule.</p>
     noise_covariance : enskit.linalg.PSDLinOp
         :math:`R`.
     last_evaluation : PosteriorEvaluation or None
-        The last forward call's: the ensemble evaluated at that step, before
-        its update. A run that ends on its schedule never evaluates its
-        final ensemble, so this is then the ensemble before the last update,
-        as the driver's own ``result.last_evaluation`` is.
+        The last forward call's. In a run of EnsKit's driver, its last
+        step's: theta after any inflation, before any repair and the update.
+        A run that ends on one of EnsKit's schedules does not evaluate its
+        final ensemble, whose predictions are one more forward call, which
+        then replaces this.
     """
 
     def forward(self, theta: Array) -&gt; Array:
@@ -2609,13 +2611,16 @@ state = eki.EKIState(problem.initial_ensemble(ensemble_key, 100), key=run_key)
 result = eki.run(state, problem.forward, problem.y, problem.noise_covariance,
                  update_rule=kalman.Matheron(), schedule=eki.AdaptiveESSSchedule(ess_fraction=0.5),
                  on_failure="repair")
-posterior.to_labeled(result.ensemble["theta"])       # the final particles, labeled
-problem.forward(result.ensemble["theta"])            # their predictions: one more batch of runs</code></pre>
+problem.last_evaluation.valid                        # which samples of the last step ran
+posterior.to_labeled(result.ensemble["theta"])       # the final ensemble, labeled
+problem.forward(result.ensemble["theta"])            # its predictions: one more batch of
+                                                     # runs, replacing last_evaluation</code></pre>
 <p><i>As built in E2:</i> the section above, rewritten from the interim pyEKI
 text. <code>initial_ensemble</code> returns the <code>Ensemble</code>, where
 P7 returned theta <code>(n, D)</code>; nothing else in the adapter changed.
-<code>tests/test_package.py</code> checks that, of EnsKit, the package imports
-only <code>enskit.distribution</code>, and loads none of its algorithms.</p>
+<code>tests/test_package.py</code> checks that, of EnsKit, the
+<code>inference</code> package imports only <code>enskit.distribution</code>,
+and loads none of its algorithms.</p>
 
 <h3>9.2 SMC and importance sampling</h3>
 <pre><code class="language-python">class PriorBaseDensity:

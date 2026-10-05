@@ -16,7 +16,8 @@ sites or the observation vector, so a second experiment uses it unchanged.
 It imports the probability layer, :mod:`~sipnet_calibration.smc` and
 :mod:`~sipnet_calibration.validation`, and no algorithm package: each
 adapter returns the plain functions, arrays, operators and ensembles its
-algorithm takes, and the experiment imports the algorithm.
+algorithm takes (of EnsKit, it imports only the ``Ensemble``), and the
+experiment imports the algorithm.
 
 Every adapter that needs the likelihood evaluates theta through
 :meth:`Posterior.evaluate`, one simulator call per batch; the prior's

@@ -231,7 +231,8 @@ def test_the_initial_ensemble_is_the_priors_draws():
 
 
 def test_the_forward_map_is_a_simulator_in_enskits_sense():
-    """Rows independent and deterministic, ``(J, D) -> (J, N)``, failed rows included."""
+    """Rows independent and deterministic, ``(J, D) -> (J, N)``, on a
+    posterior that can fail; a failed row's ``NaN`` is pinned below."""
     enskit_testing.check_simulator(eki_problem(_posterior(FAILS_ABOVE)[0]).forward, D, N)
 
 
@@ -272,7 +273,12 @@ def test_eki_repairs_failed_members_and_runs_to_the_end():
             on_failure="repair",
         )
     assert float(result.state.beta) == 1.0
-    assert not bool(np.asarray(problem.last_evaluation.valid).all())
+    valid = np.asarray(problem.last_evaluation.valid)
+    assert not valid.all()
+    # The adapter holds the theta it was handed; the driver's evaluation, the repaired ensemble.
+    theta, repaired = np.asarray(problem.last_evaluation.theta), np.asarray(result.last_evaluation.ensemble[THETA])
+    np.testing.assert_array_equal(theta[valid], repaired[valid])
+    assert not np.isin(theta[~valid], repaired[~valid]).any()
 
 
 def test_eki_needs_a_gaussian_likelihood():
@@ -498,5 +504,5 @@ def test_a_base_without_an_integer_dimension_is_refused(base, match):
 
 
 def test_an_initial_ensemble_of_one_member_is_refused():
-    with pytest.raises(ValueError, match="n"):
+    with pytest.raises(ValueError, match="n must be at least 2, got 1"):
         eki_problem(_posterior()[0]).initial_ensemble(jax.random.key(0), 1)

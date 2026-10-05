@@ -11,9 +11,11 @@ observed factors are Gaussian with held covariances,
 (:meth:`~sipnet_calibration.probability.Posterior.gaussian_likelihood`): the
 ensemble has one block,
 :data:`~sipnet_calibration.probability.names.THETA`, which the driver
-passes to the forward map as its one positional argument; the covariance is
-already one of EnsKit's operators, so nothing is converted; and no Gaussian
-prior is needed to start.
+passes to the forward map as its one positional argument (a state holding
+other blocks passes ``inputs="theta"`` to the driver); the predictions are
+``float64``, as the ensemble must then be; the covariance is already one of
+EnsKit's operators, so nothing is converted; and no Gaussian prior is
+needed to start.
 
 Usage
 -----
@@ -31,14 +33,6 @@ Usage
                      on_failure="repair")
     problem.last_evaluation.valid      # which samples of the last ensemble evaluated ran
     posterior.to_labeled(result.ensemble["theta"])
-
-Notes
------
-A run that ends on its schedule never evaluates its final ensemble, so
-:attr:`EKIProblem.last_evaluation` is then the ensemble before the last
-update, as the driver's own ``result.last_evaluation`` is. The final
-ensemble's predictions are one more call,
-``problem.forward(result.ensemble["theta"])``.
 """
 
 from __future__ import annotations
@@ -97,8 +91,11 @@ class EKIProblem:
     noise_covariance : PSDLinOp
         :math:`R`, one of EnsKit's positive-definite operators.
     last_evaluation : PosteriorEvaluation or None
-        The last :meth:`forward` call's: the ensemble evaluated at that step,
-        before its update; ``None`` before the first.
+        The last :meth:`forward` call's; ``None`` before the first. In a run
+        of EnsKit's driver, its last step's: theta after any inflation,
+        before any repair and the update. A run that ends on one of EnsKit's
+        schedules does not evaluate its final ensemble, whose predictions are
+        one more :meth:`forward` call, which then replaces this.
     """
 
     def __init__(self, likelihood: GaussianLikelihood, /) -> None:
@@ -145,8 +142,8 @@ class EKIProblem:
     def initial_ensemble(self, key: Array, n: int) -> Ensemble:
         """``n`` draws of the prior as an unweighted EnsKit ``Ensemble`` with
         one block, :data:`~sipnet_calibration.probability.names.THETA`
-        ``(n, D)``, the initial particles of EnsKit's ``EKIState``; no
-        simulator runs.
+        ``(n, D)`` in ``float64``, the ensemble EnsKit's ``EKIState`` starts
+        from; no simulator runs.
 
         Raises
         ------

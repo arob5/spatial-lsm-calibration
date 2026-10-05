@@ -1706,9 +1706,12 @@ plotting code. The load-bearing rules:
   block and returns `(J, N)`. `update_rule` is required: `enskit.kalman.SymmetricSquareRoot()`
   (deterministic, exact in moments for the linear-Gaussian case) or `kalman.Matheron()`
   (stochastic). `on_failure="repair"` moves a particle whose prediction is not finite to the
-  valid particles' center and warns once at the end of the run. A run that ends on its schedule
-  never evaluates its final ensemble: `result.last_evaluation.ensemble` holds the particles
-  before the last update, and so does `EKIProblem.last_evaluation`.
+  valid particles' center and warns once at the end of the run. A run that ends on one of
+  EnsKit's schedules never evaluates its final ensemble: `result.last_evaluation.ensemble`
+  holds the particles before the last update (after inflation and repair), and
+  `EKIProblem.last_evaluation` the theta its forward map was handed then (before repair). A
+  forward map returning a dtype wider than the ensemble's is refused, so a `float64` forward
+  map needs a `float64` ensemble.
 - `typing.get_type_hints` cannot resolve EnsKit's `Gaussian` (its `Array` annotation is
   imported for type checking only), so `tests/test_package.py`'s hint check skips names
   re-exported from another package.

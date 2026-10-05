@@ -1258,28 +1258,59 @@ multi-block Gaussian, as P6 refused correlated sources.
   and checks its type and block; `enskit.testing.check_simulator` checks
   `forward` against the simulator contract, row independence included, on
   the toy that fails on a half-space; a new test pins `last_evaluation`
-  after a run that ends on its schedule. `test_package` checks that the
-  package imports only `enskit.distribution` of EnsKit (in `eki.py`), and
-  loads none of its algorithms.
+  after a run that ends on its schedule, and the repair test pins it
+  before repair. `test_package` checks that the `inference` package
+  imports only `enskit.distribution` of EnsKit (in `eki.py`), and loads
+  none of its algorithms.
 
-Tests: BASELINE before; AFTER after.
+Tests: 3102 passed and 96 skipped before; 3105 and 96 after (the three
+new EKI tests).
+
+**Review.** One Standard round: code, mutation testing, docs. No bug in
+the adapter. Fixed:
+
+- the docs said `last_evaluation` matches the driver's own last
+  evaluation; under `on_failure="repair"` the driver's is the repaired
+  ensemble and the adapter's the theta it was handed, so the docs now say
+  "after any inflation, before any repair and the update", and the repair
+  test pins it;
+- a `float64` forward map is refused against a narrower ensemble, which
+  the docs now say;
+- the package test asserted the exact set of EnsKit modules loaded, which
+  an upstream import would break; it now asserts that no
+  `enskit.algorithms` module is loaded;
+- mutation testing: 23 mutants, three survived. The `n < 2` test matched any
+  message, so EnsKit's own refusal passed it; it now matches the
+  adapter's. `check_simulator` never sees a failed row (two survivors
+  turned `NaN` rows into zeros), so its test's
+  docstring no longer claims it does (another test pins the `NaN` row);
+- docs: "the `inference` package" where the claim was the whole package's,
+  "particle" for our own text, a reused key in an example, and the package
+  docstring's import rule.
+
+Not acted on (nits): a state with extra blocks and no `inputs=` gets
+Python's argument-count `TypeError` (the docs now name `inputs="theta"`);
+a schedule returning `None` from `next_increment` makes a terminal
+evaluation, which no EnsKit schedule does; `forward` raises on a
+non-finite theta rather than returning a `NaN` row, which the driver never
+passes.
 
 **Deviations from the design.** None. §9.1 had sketched this signature
 already; E2 made it so.
 
 **Found while porting.** EnsKit's `run` never evaluates the final ensemble
-of a run that ends on its schedule (`EKIResult`'s Notes), where pyEKI's
-driver made a terminal evaluation through the forward map. So
-`problem.last_evaluation` is the ensemble before the last update, and P7's
-note that it "is then the final ensemble's" no longer holds. The final
-ensemble's predictions cost one more batch of runs,
-`problem.forward(result.ensemble["theta"])`; the docstring, CLAUDE.md and
-§9.1 say so.
+of a run that ends on one of its schedules (`EKIResult`'s Notes), where
+pyEKI's driver made a terminal evaluation through the forward map. So
+`problem.last_evaluation` is the last step's: theta after any inflation,
+before any repair and the update. P7's note that it "is then the final
+ensemble's" no longer holds. The final ensemble's predictions cost one more
+batch of runs, `problem.forward(result.ensemble["theta"])`, which replaces
+`last_evaluation`; the docstring, CLAUDE.md and §9.1 say so.
 
 **What the next sessions must know.**
 
 - #69's migration is next, in its own session: `eki.EKIState(
-  problem.initial_ensemble(key, J), key=run_key)`, `kalman.Matheron()` or
+  problem.initial_ensemble(ensemble_key, J), key=run_key)`, `kalman.Matheron()` or
   `kalman.SymmetricSquareRoot()` as `update_rule=`, and the final
   predictions by one more `problem.forward`, since `last_evaluation` is no
   longer the final ensemble's. Its experiment still imports `pyeki.gauss`,

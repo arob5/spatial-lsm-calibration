@@ -215,12 +215,11 @@ def test_the_inference_adapters_read_only_a_posterior():
 def test_the_inference_adapters_import_no_algorithm_package():
     """The adapters hand each algorithm what it takes and import none: of
     EnsKit, only ``inference/eki.py`` imports anything, its ``Ensemble``, and
-    importing the package loads EnsKit's distributions and linear algebra
-    alone, none of its algorithms."""
+    importing the package loads none of EnsKit's algorithms."""
     assert _modules_importing("sipnet_calibration.inference", "enskit") == ["eki.py: enskit.distribution"]
     code = (
         "import sys; import sipnet_calibration.inference; "
-        "print(sorted({m.split('.')[1] for m in sys.modules if m.startswith('enskit.')}))"
+        "print(sorted(m for m in sys.modules if m == 'enskit.algorithms' or m.startswith('enskit.algorithms.')))"
     )
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
-    assert result.stdout.strip() == "['distribution', 'linalg']"
+    assert result.stdout.strip() == "[]"
