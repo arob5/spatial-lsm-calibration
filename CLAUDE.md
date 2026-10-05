@@ -467,7 +467,7 @@ coercion lives in `validation.py`.
   nothing but it (its supports, private coercion and probe points, which
   `parameters` re-exports); `tests/test_package.py` enforces both, and that
   pyEKI is imported by `probability/_linalg.py` alone, the shim the move to
-  EnsKit changes (E1, E2), and numpyro and GPJax by no file: the layer
+  EnsKit changes (E1), and numpyro and GPJax by no file: the layer
   adapts their distributions recognized by class name
   (`probability/_numpyro.py`), and neither is a dependency (numpyro is in
   the `dev` group, GPJax in the optional `gpjax` group). The
@@ -884,8 +884,9 @@ these steps without asking. It stops only where a step says to.
    - Set up its environment:
      `uv lock --upgrade-package pysipnet --upgrade-package pyens`, then
      `uv sync`, then `uv run pytest` for the baseline count.
-   - **Do not upgrade pyEKI.** EnsKit renames it, and it is upgraded only by
-     the PRs the plan names for that (E1–E3).
+   - **Do not upgrade pyEKI.** E1 re-pins the project to EnsKit's `main`,
+     which renames it; until E1 merges, no other PR upgrades it. E1 also
+     changes this step to upgrade `enskit` with the other companions.
    - Implement the row's scope from the design, nothing more. Write reference
      values from today's code before changing behavior that must be preserved.
    - When implementation shows the design must change, make the smallest
