@@ -2,8 +2,8 @@
 conditioned on data, independent of the rest of the package.
 
 It is being built beside :mod:`sipnet_calibration.parameters`, which it
-replaces; until then the parameter layer reads its supports, coercion and
-probe points from here.
+replaces; until then the parameter layer reads its supports, coercion,
+probe points, families and builders from here, through re-export shims.
 
 Where this sits
 ---------------
@@ -14,6 +14,12 @@ Where this sits
     probability.labels      coords (stacked dims too), constants, label maps
       -> probability.spec      ArraySpec: one component's declaration and T
       -> probability.layout    Layout: named arrays as one flat vector, and its forms
+    probability.laws        Law, as_law, pushforward
+      -> probability.families  one value's law: log_normal, ..., normal, inverse_gamma, inverse_wishart
+      -> probability.builders  a law over a block: iid_over_dim, independent_over_dim, gaussian_copula
+      -> probability.parts     FactorSpec, DeterministicSpec, and their decorators
+      -> probability.model     joint -> ModelSpec, bind -> FactoredDistribution
+      -> probability.posterior condition_on -> Posterior: theta's density
     ──────── seam: labeled values, a dict of DataArrays ────────
       -> the adapter layer
 
@@ -36,8 +42,42 @@ Modules
 :mod:`~sipnet_calibration.probability.layout`
     The layout: Flat, values by name and labeled values, the two spaces,
     selection, and labeled values as one netCDF-ready Dataset.
+:mod:`~sipnet_calibration.probability.laws`
+    What a factor evaluates to: the law protocol, and the pushforward.
+:mod:`~sipnet_calibration.probability.families`
+    One value's law from a few interpretable numbers.
+:mod:`~sipnet_calibration.probability.builders`
+    A factor's law over a block, built for the labels in use.
+:mod:`~sipnet_calibration.probability.parts`
+    Factors and deterministics: declarations of laws and computed
+    components, and the keyword rule that says what they read.
+:mod:`~sipnet_calibration.probability.model`
+    The declared model and the model bound to labels: sampling and the
+    joint density.
+:mod:`~sipnet_calibration.probability.posterior`
+    Bayes' rule: the target an inference algorithm reads.
 """
 
+from sipnet_calibration.probability.builders import (
+    Builder,
+    gaussian_copula,
+    iid_over_dim,
+    independent_over_dim,
+)
+from sipnet_calibration.probability.families import (
+    InverseWishart,
+    inverse_gamma,
+    inverse_wishart,
+    log_normal,
+    log_normal_from_interval,
+    log_normal_from_samples,
+    logit_normal,
+    logit_normal_from_interval,
+    logit_normal_from_samples,
+    normal,
+    softmax_normal,
+)
+from sipnet_calibration.probability.laws import Law, as_law, pushforward
 from sipnet_calibration.probability.layout import (
     LabeledValues,
     Layout,
@@ -47,7 +87,15 @@ from sipnet_calibration.probability.layout import (
     validate_labeled_values,
     validate_values_by_name,
 )
+from sipnet_calibration.probability.model import FactoredDistribution, ModelSpec, joint
 from sipnet_calibration.probability.names import RESERVED_NAMES, SAMPLE
+from sipnet_calibration.probability.parts import (
+    DeterministicSpec,
+    FactorSpec,
+    deterministic,
+    factor,
+)
+from sipnet_calibration.probability.posterior import Posterior, condition_on
 from sipnet_calibration.probability.spec import ArraySpec
 from sipnet_calibration.probability.support import (
     DEFAULT_BIJECTORS,
@@ -77,16 +125,43 @@ __all__ = [
     "SIMPLEX",
     "UNIT_INTERVAL",
     "ArraySpec",
+    "Builder",
+    "DeterministicSpec",
+    "FactorSpec",
+    "FactoredDistribution",
     "Interval",
+    "InverseWishart",
     "LabeledValues",
+    "Law",
     "Layout",
+    "ModelSpec",
     "PositiveDefinite",
+    "Posterior",
     "Simplex",
     "Support",
     "ValuesByName",
+    "as_law",
     "bijector_for",
+    "condition_on",
     "decode_labeled_values",
+    "deterministic",
     "encode_labeled_values",
+    "factor",
+    "gaussian_copula",
+    "iid_over_dim",
+    "independent_over_dim",
+    "inverse_gamma",
+    "inverse_wishart",
+    "joint",
+    "log_normal",
+    "log_normal_from_interval",
+    "log_normal_from_samples",
+    "logit_normal",
+    "logit_normal_from_interval",
+    "logit_normal_from_samples",
+    "normal",
+    "pushforward",
+    "softmax_normal",
     "validate_labeled_values",
     "validate_values_by_name",
 ]

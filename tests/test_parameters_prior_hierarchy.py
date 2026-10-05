@@ -466,7 +466,7 @@ def test_the_copula_refuses_bad_arguments(marginals, correlation, message):
 
 def test_a_copula_is_for_parameters_indexed_by_nothing():
     by_site = Parameter(name="rate", support=POSITIVE, units="yr-1", indexed_by=("site",))
-    with pytest.raises(TypeError, match="prior of parameters indexed by nothing"):
+    with pytest.raises(TypeError, match="law of components indexed by nothing"):
         Prior(vector_of(by_site, SOIL_CARBON), [copula(("rate", "soil_carbon"), rate=RATE_MARGINAL,
                                                        soil_carbon=RATE_MARGINAL)])
 
@@ -559,13 +559,13 @@ def test_iid_over_dim_of_a_family_given_others_traces():
 
 def test_a_fixed_prior_refuses_what_its_term_is_given_or_reads():
     offsets = Parameter(name="offsets", support=REAL, units=None, indexed_by=("site",))
-    with pytest.raises(TypeError, match="iid Normal is a fixed prior, but its term is given or reads \\['spread'\\]"):
+    with pytest.raises(TypeError, match="iid Normal is a fixed law, but it is given \\[.spread.\\]"):
         Prior(vector_of(SPREAD, offsets), [
             term("spread", log_normal(median=0.5, geometric_sd=2.0)),
             term("offsets", iid_over_dim(normal(0.0, 1.0)), given=("spread",)),
         ])
     pair = gaussian_copula({"rate": RATE_MARGINAL, "share": SHARE_MARGINAL}, correlation=CORRELATION)
-    with pytest.raises(TypeError, match="gaussian copula is a fixed prior"):
+    with pytest.raises(TypeError, match="gaussian copula is a fixed law"):
         Prior(vector_of(RATE, SHARE), [term(("rate", "share"), pair, constants={"c": xr.DataArray(1.0)})])
 
 

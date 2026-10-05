@@ -21,9 +21,9 @@ and proofs are the design's §12; the column below is a summary.
 |---|---|---|---|---|
 | P0 | `docs/probability-refactor-workflow` | merged #76 | — | The workflow in CLAUDE.md; this file; `design.html` |
 | P1 | `refactor/probability-p1-references` | merged #77 | P0 | A script writing reference values from today's code: the prior draws and densities (PR #69's prior transcribed, `example_calibration`, a hierarchy, a copula, a per-PFT simplex), and `ForwardModel` predictions on `test_forward`'s fake runners |
-| P2 | `refactor/probability-p2-foundations` | open #78 | P0 | Supports, with `PositiveDefinite`; `ArraySpec`; `labels` v2; `Layout`; encode and decode; shims left in `parameters` (split into P2a and P2b if large) |
-| P3 | `refactor/probability-p3-prior-model` | next | P1, P2 | Laws, families, builders; `FactorSpec`, `DeterministicSpec`, decorators; `joint`, `bind`, `FactoredDistribution`; `condition_on` and `Posterior` without simulators |
-| P4 | `refactor/probability-p4-adapter-prep` | waiting | P2 | F8; the SIPNET map on dicts and `ArraySpec`s; `ObservationSource.standard_deviation`; the observation dims and constants; `observation.model` |
+| P2 | `refactor/probability-p2-foundations` | merged #78 | P0 | Supports, with `PositiveDefinite`; `ArraySpec`; `labels` v2; `Layout`; encode and decode; shims left in `parameters` (split into P2a and P2b if large) |
+| P3 | `refactor/probability-p3-prior-model` | open #79 | P1, P2 | Laws, families, builders; `FactorSpec`, `DeterministicSpec`, decorators; `joint`, `bind`, `FactoredDistribution`; `condition_on` and `Posterior` without simulators |
+| P4 | `refactor/probability-p4-adapter-prep` | next | P2 | F8; the SIPNET map on dicts and `ArraySpec`s; `ObservationSource.standard_deviation`; the observation dims and constants; `observation.model` |
 | P5 | `refactor/probability-p5-simulator` | waiting | P3, P4 | The `Simulator` seam; `SIPNETRuns`, with today's `ForwardModel` delegating to it; `SIPNETSimulator`; F6, F7 |
 | P6 | `refactor/probability-p6-gaussian` | waiting | P5 | Covariance specs, `GaussianSpec`, `noise_factor`, `gaussian_likelihood`, through the `probability/_linalg.py` shim over today's pyEKI |
 | P7 | `refactor/probability-p7-inference` | waiting | P6 | The `inference` package on today's pyEKI |
@@ -243,3 +243,134 @@ no TFP bijector at hand violates while passing the other half.
 - Performance: binding 8,000 sites and 80,000 stacked labels, with a
   constant and a label map on them, takes well under a second
   (`test_eighty_thousand_labels_bind_in_under_a_second`).
+
+### 2026-10-04: P3, the prior model
+
+**Done.** Six modules added to `sipnet_calibration.probability`:
+
+- `laws`: `Law`, `as_law`, `pushforward` (TFP bases only);
+- `families`: moved from `parameters`, with `normal`, `inverse_gamma` and
+  `InverseWishart`/`inverse_wishart` added;
+- `builders`: moved from `parameters.prior_functions`, with a `Builder` base
+  exposing `.law` and `.reads`;
+- `parts`: `FactorSpec`, `DeterministicSpec`, `@factor`, `@deterministic`,
+  and the keyword rule (`_keywords`);
+- `model`: `joint`, `ModelSpec`, `FactoredDistribution` (`law`, `select`,
+  `sample`, `log_prob`, `describe`), `block_at_labels`;
+- `posterior`: `condition_on`, `Posterior` (`sample_prior`, `log_prior`,
+  `log_likelihood`, `log_density`, `natural_values`, `to_labeled`,
+  `describe`).
+
+The private `_bound` holds a part bound to the labels in use: its law,
+density and draws, the bind checks ported from today's prior, and the
+log-Jacobian, now on positive-definite matrices too.
+`parameters.families`, `parameters.prior_functions` and
+`parameters._distributions` are re-export shims, and P1's byte test still
+passes through them.
+
+`tests/test_probability_parity.py` redeclares P1's five prior cases as
+specs and shows bit-identical theta order, draws, `log_prior` and natural
+values, the hierarchy's deterministic included. The families are checked
+against SciPy, `InverseWishart` among them. Graph tests cover barren nodes,
+`O_c`, cycles and nothing observed. Tests: 2651 passed and 94 skipped at
+P2's merge; 2795 and 94 after. One test checks that observing a
+hyperparameter equals declaring it an input (Proposition 3.3): the same
+draws and densities, and a different `log_constant`.
+
+**Review.** One Deep round, with four reviewers: numerics, edge cases,
+mutation testing and docs. It found no density that is wrong; A1 checked
+them against SciPy, closed forms and grid integration. This PR fixes:
+
+- a law class (`law=tfd.Normal`) taken for a law object; it is now read
+  as a function of its arguments (`laws.is_law`, which also replaces three
+  copies of the same test);
+- booleans and strings accepted as input and observed values;
+- `FactoredDistribution.log_prob` returning NaN outside a support, where
+  the posterior gives `-inf`;
+- a model of deterministics alone accepted;
+- a float32 law refused with a message that never named the dtype;
+- an empty provenance raising TypeError rather than ValueError;
+- `select`'s message for an unknown selector advising `component=`;
+- the inverse Wishart's scale factor formed with an explicit inverse;
+- the builders' messages and check names still in the parameter layer's
+  words, with three of its tests' `match=` strings updated to match;
+- Raises sections and `__all__` lists that did not match the code.
+
+Tests now cover the `-inf` mapping, a chain of two deterministics between
+factors, the base-event-shape guard of the pushforward test, and the
+autodiff log-Jacobian on the simplex. The last normalizes a Dirichlet
+under `IteratedSigmoidCentered` by grid integration. Mutation testing's
+`[:-1]` against `[1:]` in that Jacobian is an equivalent mutant: the
+coordinate projections of the simplex share one Jacobian. The joint
+factor's guard has no test, since no TFP bijector at hand reaches it.
+
+**Deviations from the design**, each recorded in `design.html`:
+
+- `Posterior.log_likelihood` and `log_density` are traced functions of
+  theta, `(..., D) -> (...)`, until P5 routes them through `evaluate`;
+- `Posterior.observations` is `None` when nothing in the likelihood is
+  observed, since a `Layout` holds at least one component; `y` is then
+  `(0,)`;
+- a factor that reads a value varying by draw is built and checked at two
+  ancestral draws, as today's prior does. The design's "probe points pushed
+  through the deterministics" is applied to deterministics' outputs only:
+  pushing probes into a law's parameters (a spread of `e^20`) would fail
+  the draw-based support check on sound hierarchies;
+- `DeterministicSpec` takes `own_dims=` too.
+
+**Choices the design left open:**
+
+- "a factor that reads no component draws at once" is read as "reads
+  nothing that varies by draw". Inputs, held observed values, and what is
+  computed from them alone are built once, and the factor draws `n` values
+  at once.
+- A constant or label map the function never reads is refused when the
+  part is declared.
+- `FactoredDistribution.sample(component_names=)` returns only those names.
+  `log_prob` refuses deterministic components and inputs (`ValueError`) and
+  unknown names (`KeyError`).
+- `FactoredDistribution.law` is in P3 for TFP and protocol laws; P6 adds
+  the Gaussian.
+- `log_prior` maps a non-finite factor to `-inf`, factor by factor, so a
+  finite value is unchanged bit for bit.
+- The once-only check of §4.7, "a target kernel finite at the observed
+  values", is made at theta = 0, for each target factor that reads an
+  observed value.
+- `Posterior(model, observed)` and `FactoredDistribution(spec, coords=,
+  inputs=)` are also constructible directly; `condition_on` and `bind` call
+  them.
+- The moved builders keep the parameter layer's messages ("prior", "term"),
+  which today's tests match.
+- `InverseWishart`'s own default event-space bijector refuses float64 input
+  in the pinned TFP. The bind check of a law's own bijector treats such a
+  bijector as absent and relies on the draw-based check.
+
+**What P4 and later must know.**
+
+- Everything simulator-shaped is P5's: `Posterior.evaluate`,
+  `PosteriorEvaluation`, `predict`, `replicate`, `simulator_inputs`,
+  `log_density_given`, `simulator_free_positions` and the corner points.
+  Nothing yet stops a target factor from reading a simulator output. That
+  refusal belongs in `condition_on` once `Simulator` exists, as part of
+  `_roles` in `posterior.py`.
+- `FactoredDistribution` exposes its internals to `Posterior` through
+  underscore names: `_factors`, `_deterministics`, `_fixed` (inputs and
+  what is computed from them alone), `_ancestral` and `_computed`. A
+  simulator node joins `_ancestral`'s and `_computed`'s loops in
+  topological order.
+- `BoundFactor.law_at` dispatches on the law's form; a `GaussianSpec` (P6)
+  is a fourth branch there and in `parts._law_reads`.
+- `parameters.prior` still runs on its own copy of the logic; only the
+  families and builders are shared. R1 deletes it.
+
+**Decided by Andrew after the review: laws with no density on their
+support are refused.** Binding checks a law only at probe points and
+draws, so it accepted a law singular or discrete on its support and
+evaluated it as a density: `tfd.LKJ` on a positive-definite component, or
+`tfd.Poisson` on `POSITIVE`. `_bound.check_law_has_a_density` now refuses,
+by class, discrete laws, point masses and the LKJ laws. It looks inside
+`Sample`, `Independent`, a pushforward's base, mixtures' components and
+joint laws' parts, but not at a mixture's choice of component. The list is
+`_bound._LAWS_WITHOUT_A_DENSITY`, by name. A law from another package that
+is singular is not caught; when the foreign-law adapters arrive (P9),
+theirs need the same check.

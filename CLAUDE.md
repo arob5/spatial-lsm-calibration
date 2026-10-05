@@ -246,6 +246,14 @@ moves it here.
 | **values by name** / `ValuesByName` | a layout's structured, traceable form: `{name: (*batch, *block shape)}` | |
 | **labeled values** / `LabeledValues` | a layout's labeled form: a `dict` of one `xr.DataArray` per component on `(*batch dims, *indexed_by, *element axes)`, a dict because two stacked dims with a `site` level cannot share a Dataset; `encode_labeled_values` makes the Dataset netCDF holds | a `ParameterDataset` |
 | **own dim** | a dim of a constant that is neither a dim of the coords nor an element axis, passed whole, which its reader declares in `own_dims=` | |
+| **spec** | a declaration, holding no labels and no numbers; its class ends in `Spec` (`ArraySpec`, `FactorSpec`, `DeterministicSpec`, `ModelSpec`) | the distribution it becomes once bound |
+| **law** | the concrete distribution a factor evaluates to for one draw of what it reads: a TFP distribution, or an object implementing `probability.laws.Law` | a factor, which declares one |
+| **factor** / **deterministic** / **part** | a part is a factor (a conditional law over its **event**, the components it declares) or a deterministic (components computed by a pure function); a factor replaces a prior term, a deterministic a derived parameter | |
+| **given** (probability layer) | the components and inputs a part's function reads, inferred from its keywords (the keyword rule), never stated | `given=` of the parameter layer |
+| **input** | a node with no parents and no law, declared by an `ArraySpec` in `joint(..., inputs=)` and bound by `bind(..., inputs=)` | an external input, the SIPNET adapter's word |
+| **bind** | give a model spec the labels of its dims and its inputs' values, making a `FactoredDistribution` | |
+| **target** / **barren** / **observed** | after `condition_on`: observed factors are conditioned on; barren ones are unobserved with no observed descendant, dropped; the rest are the target, whose components are theta's; an observed factor with no target ancestor is constant (`O_c`) | |
+| **draw** | one joint value of every component; a batch of draws has batch dim `sample` | |
 
 **Representations.**
 
@@ -1036,8 +1044,28 @@ src/sipnet_calibration/
                           # to_natural(), to_unconstrained(), contains();
                           # ValuesByName, LabeledValues;
                           # encode_labeled_values/decode_labeled_values
-    _probes.py, _validation.py
-                          # private: the probe points, coercion
+    laws.py               # Law (the protocol), as_law, pushforward
+    families.py           # one value's law: log_normal, logit_normal
+                          # (support=), their _from_* forms, softmax_normal;
+                          # normal, inverse_gamma, InverseWishart/inverse_wishart
+    builders.py           # Builder (.law, .reads); iid_over_dim,
+                          # independent_over_dim, gaussian_copula
+    parts.py              # FactorSpec (a conditional law over its event),
+                          # DeterministicSpec; @factor, @deterministic; given
+                          # read off the function's keywords (the keyword rule)
+    model.py              # joint -> ModelSpec (the graph, topological order);
+                          # bind -> FactoredDistribution: law(), select(),
+                          # sample() keyed by crc32(name), log_prob(),
+                          # describe(); block_at_labels
+    posterior.py          # condition_on -> Posterior: target, barren and
+                          # O_c from the graph; sample_prior, log_prior,
+                          # log_likelihood, log_density, natural_values,
+                          # to_labeled, describe
+    _bound.py, _keywords.py, _probes.py, _validation.py
+                          # private: a part at the labels in use (its law,
+                          # density, draws, the bind checks, the log-Jacobian
+                          # against each support's reference measure); the
+                          # keyword rule; the probe points; coercion
   parameters/             # the parameter layer: imports nothing of the package
                           # outside itself but probability/ (tested);
                           # __init__ re-exports it
@@ -1059,12 +1087,9 @@ src/sipnet_calibration/
     labels.py             # coords, constants and memberships: what a labeled
                           # value given to a function is, and how it is read
                           # at the labels in use (the contract's one home)
-    families.py           # one value's distribution: log_normal,
-                          # logit_normal (support=) and their _from_* forms,
-                          # softmax_normal
-    prior_functions.py    # PriorFunction; iid_over_dim (a distribution or a
-                          # function of what the term reads),
-                          # independent_over_dim, gaussian_copula
+    families.py           # re-exports probability.families' first seven
+    prior_functions.py    # PriorFunction; re-exports probability.builders'
+                          # iid_over_dim, independent_over_dim, gaussian_copula
     prior.py              # Prior: what is believed beforehand, over a sequence
                           # of PriorTerms, each naming its parameters, with
                           # given= and constants=, its distribution a TFP
@@ -1075,9 +1100,9 @@ src/sipnet_calibration/
                           # describe()
     _description.py, _distributions.py, _probes.py, _validation.py
                           # private: the shared description checks and
-                          # labeled form, what the prior and its builders
-                          # share of TFP; the last two re-export
-                          # probability's probe points and coercion
+                          # labeled form; the last three re-export what the
+                          # prior shares with probability's laws and builders,
+                          # its probe points and coercion
   site_dims.py            # SiteDims: the sites and the dims they define; coords,
                           # labels() (memberships), covariate(), at_sites(),
                           # site_fields(), select()
@@ -1512,7 +1537,14 @@ plotting code. The load-bearing rules:
 - In float64, `Gamma(0.02)` draws exactly 0, whose log is `-inf`, about once in 10^4 draws,
   depending on TFP's batch shape; the prior's draw-based support check catches it.
 - Sampling takes `seed=` a `jax.random` key; `jax.random.fold_in(key, zlib.crc32(name))` is
-  how the prior keys a term by its name.
+  how the prior keys a term by its name, and the probability layer a factor.
+- `probability.families.InverseWishart` (a `TransformedDistribution` subclass over
+  `WishartTriL`) matches `scipy.stats.invwishart`, but its
+  `experimental_default_event_space_bijector()` refuses float64 input with the pinned build;
+  the bind check of a law's own bijector treats such a bijector as absent and relies on draws.
+  TFP's `Chain([CholeskyOuterProduct(), FillScaleTriL(diag_bijector=Exp(), diag_shift=None)])`
+  `forward_log_det_jacobian(theta, event_ndims=1)` equals the log-Jacobian against the lower
+  triangle that `probability._bound.log_jacobian` computes by autodiff.
 
 ### PyEns
 - `EnsembleRunner(model, LocalBackend(n_workers=N)).run(EnsembleSpec(inputs=...))` — `model` must be defined at module level (pickling)
