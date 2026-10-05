@@ -143,8 +143,8 @@ def test_pushforward_names_its_map_once(arguments, message):
         pushforward(tfd.Normal(0.0, 1.0), **arguments)
 
 
-def test_pushforward_takes_a_tfp_base():
-    with pytest.raises(TypeError, match="TFP distribution"):
+def test_pushforward_takes_a_law():
+    with pytest.raises(TypeError, match="give a law of the unconstrained values"):
         pushforward(object(), support=POSITIVE)
 
 

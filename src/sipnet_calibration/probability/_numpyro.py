@@ -25,8 +25,9 @@ _DISTRIBUTION = ("numpyro.distributions.distribution", "Distribution")
 
 #: numpyro's continuous laws with no density against the reference measure
 #: of any support a component may declare: a point mass, a log factor, and
-#: the LKJ laws, whose draws are a null set of the positive-definite
-#: matrices. Discrete laws are recognized by their support instead.
+#: the LKJ laws, whose draws (correlation matrices, or their Cholesky
+#: factors) are a null set of the positive-definite matrices, as TFP's
+#: are. Discrete laws are recognized by their support instead.
 _WITHOUT_A_DENSITY = frozenset(
     {
         ("numpyro.distributions.distribution", "Delta"),
@@ -40,8 +41,14 @@ _WITHOUT_A_DENSITY = frozenset(
 #: first ``k - 1`` coordinates, as TFP's is.
 _DIRICHLET = ("numpyro.distributions.continuous", "Dirichlet")
 
-#: numpyro's ``Independent``, which reinterprets batch axes as event axes.
-_INDEPENDENT = ("numpyro.distributions.distribution", "Independent")
+#: numpyro's wrappers that repeat one law over batch axes: ``Independent``,
+#: which reinterprets them as event axes, and ``ExpandedDistribution``.
+_REPEATING = frozenset(
+    {
+        ("numpyro.distributions.distribution", "Independent"),
+        ("numpyro.distributions.distribution", "ExpandedDistribution"),
+    }
+)
 
 
 def is_numpyro_distribution(value: Any) -> bool:
@@ -63,9 +70,11 @@ def is_dirichlet(distribution: Any) -> bool:
 
 
 def independent_base(distribution: Any) -> Any:
-    """The base of a numpyro ``Independent``, or *distribution* itself."""
-    if _qualified_name(type(distribution)) == _INDEPENDENT:
-        return distribution.base_dist
+    """The law a numpyro distribution repeats over its batch: the base under
+    any ``Independent`` and ``ExpandedDistribution``, or *distribution*
+    itself."""
+    while _qualified_name(type(distribution)) in _REPEATING:
+        distribution = distribution.base_dist
     return distribution
 
 

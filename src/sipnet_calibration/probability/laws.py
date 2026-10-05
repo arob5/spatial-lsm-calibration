@@ -173,7 +173,8 @@ def pushforward(base: Any, *, support: Support | None = None, bijector: tfb.Bije
     ------
     TypeError
         If both or neither of *support* and *bijector* are given, *base* is
-        not a law, or *bijector* is not a TFP bijector.
+        not a law, a base that is not TFP's has no ``event_shape``, or
+        *bijector* is not a TFP bijector.
     KeyError
         If *support*'s type has no default bijector.
     """
@@ -318,7 +319,8 @@ class NumpyroLaw:
     event_shape, batch_shape : tuple of int
         Its own.
     dtype
-        The dtype of its draws.
+        The dtype of its draws, or of a floating parameter that is not
+        ``float64``.
 
     Raises
     ------
@@ -355,6 +357,13 @@ class NumpyroLaw:
 
     @property
     def dtype(self) -> Any:
+        # A numpyro draw is float64 under x64 whatever its parameters, so a
+        # float32 parameter, which the density is computed in, is read off the
+        # leaves.
+        for leaf in jax.tree_util.tree_leaves(self.distribution):
+            dtype = getattr(leaf, "dtype", None)
+            if dtype is not None and jnp.issubdtype(dtype, jnp.floating) and dtype != jnp.float64:
+                return dtype
         return jax.eval_shape(self.distribution.sample, jax.random.key(0)).dtype
 
     def log_prob(self, value: Any) -> Array:
@@ -362,9 +371,9 @@ class NumpyroLaw:
         *event) -> (..., *batch)``."""
         value = jnp.asarray(value)
         ndim = len(self.batch_shape) + len(self.event_shape)
-        lead = value.shape[: value.ndim - ndim]
-        if not lead:
+        if value.ndim <= ndim:
             return self.distribution.log_prob(value)
+        lead = value.shape[: value.ndim - ndim]
         flat = value.reshape((-1, *value.shape[value.ndim - ndim :]))
         return jax.vmap(self.distribution.log_prob)(flat).reshape((*lead, *self.batch_shape))
 
@@ -389,9 +398,10 @@ class PushforwardLaw:
         \\log p_x(x) = \\log p_u\\big(T^{-1}(x)\\big)
             + \\log \\left|\\det \\frac{\\partial T^{-1}(x)}{\\partial x}\\right|,
 
-    the log-determinant TFP's ``inverse_log_det_jacobian`` over the base's
-    event. A model evaluates a factor whose law is a pushforward through its
-    components' own bijectors by the base density instead, exactly.
+    the log-determinant being TFP's ``inverse_log_det_jacobian`` summed over
+    the base's event. A model evaluates a factor whose law is a pushforward
+    through its components' own bijectors by the base density instead,
+    exactly.
 
     Parameters
     ----------
@@ -399,6 +409,11 @@ class PushforwardLaw:
         Positional-only. The law of :math:`u`, with an ``event_shape``.
     bijector : tfb.Bijector
         Positional-only. :math:`T`.
+
+    Notes
+    -----
+    The constructor checks nothing; :func:`pushforward` is the checked way
+    to make one.
 
     Attributes
     ----------
@@ -409,7 +424,7 @@ class PushforwardLaw:
     batch_shape : tuple of int
         The base's, ``()`` if it has none.
     dtype
-        The base's.
+        The base's, or that of its draws where it has none.
     """
 
     __slots__ = ("distribution", "bijector")
@@ -434,13 +449,17 @@ class PushforwardLaw:
 
     @property
     def dtype(self) -> Any:
-        return self.distribution.dtype
+        if hasattr(self.distribution, "dtype"):
+            return self.distribution.dtype
+        return jax.eval_shape(lambda key: self.distribution.sample((), seed=key), jax.random.key(0)).dtype
 
     def log_prob(self, value: Any) -> Array:
-        """The log density at *value*, by change of variables."""
+        """The log density at *value*, by change of variables, ``(...,
+        *event) -> (...)``."""
         value = jnp.asarray(value, dtype=jnp.float64)
-        event_ndims = len(self.distribution.event_shape)
-        log_jacobian = self.bijector.inverse_log_det_jacobian(value, event_ndims=event_ndims)
+        # TFP's event_ndims is the rank of the value, T's output, which
+        # differs from the base's where T reshapes (FillScaleTriL).
+        log_jacobian = self.bijector.inverse_log_det_jacobian(value, event_ndims=len(self.event_shape))
         return self.distribution.log_prob(self.bijector.inverse(value)) + log_jacobian
 
     def sample(self, sample_shape: tuple[int, ...] = (), seed: Array | None = None) -> Array:
@@ -464,11 +483,12 @@ def _as_sample_shape(sample_shape: Any) -> tuple[int, ...]:
 
 
 def check_distribution_is_a_law(distribution: Any) -> None:
-    """A law is a TFP distribution, or implements :class:`Law`."""
+    """A law is a TFP distribution, one :func:`as_law` adapts, or an object
+    implementing :class:`Law`."""
     if not is_law(distribution):
         raise TypeError(
-            f"a {type(distribution).__name__} is not a law; give a TFP distribution, or an object "
-            "with log_prob(value) and sample(sample_shape, seed=key)."
+            f"a {type(distribution).__name__} is not a law; give a TFP or numpyro distribution, a "
+            "pyeki.gauss.Gaussian, or an object with log_prob(value) and sample(sample_shape, seed=key)."
         )
 
 

@@ -49,8 +49,9 @@ Modules
     The layout: Flat, values by name and labeled values, the two spaces,
     selection, and labeled values as one netCDF-ready Dataset.
 :mod:`~sipnet_calibration.probability.laws`
-    What a factor evaluates to: the law protocol, the pushforward, and a
-    Gaussian over a block with a structured covariance.
+    What a factor evaluates to: the law protocol, the pushforward, a
+    Gaussian over a block with a structured covariance, and the adapters of
+    laws from numpyro and pyEKI.
 :mod:`~sipnet_calibration.probability.families`
     One value's law from a few interpretable numbers.
 :mod:`~sipnet_calibration.probability.builders`

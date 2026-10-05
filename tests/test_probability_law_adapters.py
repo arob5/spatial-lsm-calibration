@@ -1,12 +1,14 @@
 """Tests for laws from other packages: numpyro's distributions and pyEKI's
 Gaussian, adapted by ``as_law``, and GPJax's Gaussian through numpyro's.
 
-Each adapted law is checked against its TFP equivalent: the same density in
-theta and at natural values, evaluated by the base density where it is a
-pushforward through its component's own bijector, and draws of the same
-law. A foreign law with no density is refused as TFP's are. The GPJax
-tests run only with the optional ``gpjax`` dependency group installed
-(``uv sync --group gpjax``).
+Each adapted law is checked against its TFP equivalent or SciPy's density:
+the same density in theta and at natural values, evaluated by the base
+density where it is a pushforward through its component's own bijector,
+and draws of the same law. A numpyro law with no density, or with a batch
+shape, is refused as TFP's is; the builders, which repeat TFP laws, refuse
+numpyro's; ``as_law`` and ``pushforward`` refuse what they cannot adapt.
+The GPJax test runs only with the optional ``gpjax`` dependency group
+installed (``uv sync --group gpjax``).
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ from tensorflow_probability.substrates import jax as tfp
 
 from sipnet_calibration.probability import (
     POSITIVE,
+    POSITIVE_DEFINITE,
     SIMPLEX,
     ArraySpec,
     FactorSpec,
@@ -31,6 +34,7 @@ from sipnet_calibration.probability import (
     _linalg,
     _numpyro,
     as_law,
+    bijector_for,
     condition_on,
     iid_over_dim,
     joint,
@@ -115,6 +119,47 @@ def test_pushforward_of_a_numpyro_base_matches_tfps():
     np.testing.assert_allclose(ours.log_prob(x), theirs.log_prob(x), rtol=1e-12)
     draws = ours.sample((3,), seed=KEY)
     np.testing.assert_allclose(draws, jnp.exp(ours.distribution.sample((3,), seed=KEY)), rtol=1e-12)
+
+
+def test_a_numpyro_pushforward_onto_the_positive_definite_matrices_matches_tfps():
+    """The bijector's log-Jacobian is over the value's rank, two here, not the
+    base's, one."""
+    spec = ArraySpec("covariance", units="1", support=POSITIVE_DEFINITE, element_axes={"row": 2, "column": 2})
+    ours = _posterior(FactorSpec(spec, law=pushforward(nd.Normal(jnp.zeros(3), 1.0).to_event(1), support=POSITIVE_DEFINITE)))
+    theirs = _posterior(FactorSpec(spec, law=pushforward(tfd.Independent(tfd.Normal(jnp.zeros(3), 1.0), 1),
+                                                        support=POSITIVE_DEFINITE)))
+    theta = jax.random.normal(KEY, (4, 3))
+    np.testing.assert_allclose(ours.log_prior(theta), theirs.log_prior(theta), rtol=1e-12)
+    law = pushforward(nd.Normal(jnp.zeros(3), 1.0).to_event(1), bijector=tfb.Chain([tfb.Scale(jnp.float64(2.0)), bijector_for(POSITIVE_DEFINITE)]))
+    reference = tfd.TransformedDistribution(tfd.Independent(tfd.Normal(jnp.zeros(3), 1.0), 1), law.bijector)
+    value = reference.sample(3, seed=KEY)
+    np.testing.assert_allclose(law.log_prob(value), reference.log_prob(value), rtol=1e-12)
+
+
+def test_a_numpyro_law_takes_a_value_without_its_batch_axes():
+    law = as_law(nd.Normal(jnp.zeros((4, 3, 2)), 1.0).to_event(1))
+    value = jnp.ones((3, 2))
+    np.testing.assert_array_equal(law.log_prob(value), law.distribution.log_prob(value))
+
+
+def test_a_numpyro_law_with_float32_parameters_is_refused():
+    law = nd.Normal(np.float32(0.1), np.float32(1.3))
+    assert as_law(law).dtype == jnp.float32
+    with pytest.raises(ValueError, match="float32"):
+        joint(FactorSpec(ArraySpec("q10", units="1"), law=law)).bind(coords={})
+
+
+def test_a_pushforward_of_a_law_without_a_dtype_takes_its_draws():
+    class Draws:
+        event_shape = (3,)
+
+        def log_prob(self, value):
+            return jnp.sum(-0.5 * value**2, axis=-1)
+
+        def sample(self, sample_shape=(), seed=None):
+            return jax.random.normal(seed, (*sample_shape, 3))
+
+    assert pushforward(Draws(), support=POSITIVE).dtype == jnp.float64
 
 
 def test_pushforward_refuses_a_base_that_is_not_a_law():
@@ -222,6 +267,13 @@ def test_a_numpyro_dirichlet_matches_tfps_on_the_simplex():
     theta = jax.random.normal(KEY, (5, 2))
     np.testing.assert_allclose(ours.log_prior(theta), theirs.log_prior(theta), rtol=1e-12)
 
+    per_site = ArraySpec("share", units="1", support=SIMPLEX, indexed_by=("site",), element_axes={"part": ["a", "b", "c"]})
+    ours = _posterior(FactorSpec(per_site, law=lambda: nd.Dirichlet(concentration).expand([3]).to_event(1)),
+                      coords={"site": SITES})
+    theirs = _posterior(FactorSpec(per_site, law=iid_over_dim(tfd.Dirichlet(concentration))), coords={"site": SITES})
+    theta = jax.random.normal(KEY, (5, 6))
+    np.testing.assert_allclose(ours.log_prior(theta), theirs.log_prior(theta), rtol=1e-12)
+
 
 @pytest.mark.parametrize(
     "law",
@@ -242,6 +294,40 @@ def test_a_numpyro_law_with_no_density_is_refused(law):
         joint(FactorSpec(spec, law=law)).bind(coords={})
 
 
+def test_a_numpyro_mixture_of_listed_components_holding_a_point_mass_is_refused():
+    law = nd.MixtureGeneral(nd.Categorical(jnp.array([0.5, 0.5])), [nd.Delta(0.0), nd.Delta(1.0)])
+    with pytest.raises(ValueError, match="Delta"):
+        joint(FactorSpec(ArraySpec("amount", units="1"), law=law)).bind(coords={})
+
+
+def _switching(first, second):
+    """A law function of a location returning *first()* at its first call and
+    *second()* after, as a branch on the location would."""
+    calls = []
+
+    def law(location):
+        calls.append(location)
+        return first() if len(calls) == 1 else second()
+
+    return law
+
+
+@pytest.mark.parametrize(
+    "law",
+    [
+        _switching(lambda: nd.LogNormal(0.0, 1.0), lambda: nd.Gamma(2.0, 1.0)),
+        _switching(lambda: pushforward(nd.Normal(0.0, 1.0), bijector=tfb.Softplus()),
+                   lambda: pushforward(nd.Normal(0.0, 1.0), bijector=tfb.Chain([tfb.Exp(), tfb.Shift(jnp.float64(0.1))]))),
+    ],
+    ids=["numpyro family", "pushforward bijector"],
+)
+def test_an_adapted_law_that_changes_its_structure_with_what_it_reads_is_refused(law):
+    location = FactorSpec(ArraySpec("location", units="1"), law=tfd.Normal(jnp.float64(0.0), jnp.float64(1.0)))
+    spec = ArraySpec("value", units="1", support=POSITIVE)
+    with pytest.raises(ValueError, match="changes its structure"):
+        joint(FactorSpec(spec, law=law), location).bind(coords={})
+
+
 def test_numpyro_laws_are_told_apart_by_their_density():
     assert _numpyro.has_no_density(nd.Poisson(3.0)) and _numpyro.has_no_density(nd.LKJ(3, 2.0))
     assert not _numpyro.has_no_density(nd.Normal(0.0, 1.0)) and not _numpyro.has_no_density(nd.Dirichlet(jnp.ones(3)))
@@ -250,8 +336,6 @@ def test_numpyro_laws_are_told_apart_by_their_density():
 
 
 def test_an_lkj_law_from_numpyro_is_refused():
-    from sipnet_calibration.probability import POSITIVE_DEFINITE
-
     spec = ArraySpec("correlation", units="1", support=POSITIVE_DEFINITE, element_axes={"row": 3, "column": 3})
     with pytest.raises(ValueError, match="LKJ"):
         joint(FactorSpec(spec, law=nd.LKJ(3, 2.0))).bind(coords={})

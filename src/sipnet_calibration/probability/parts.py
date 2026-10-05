@@ -761,8 +761,8 @@ def check_bare_law_needs_nothing_bound(spec: FactorSpec) -> None:
     if spec.event[0].indexed_by:
         raise TypeError(
             f"the factor {spec.name!r} is over a component indexed by {spec.event[0].indexed_by}, so its "
-            "law is built for the labels in use; wrap the law as iid_over_dim(law) or "
-            "independent_over_dim(family, ...)."
+            "law is built for the labels in use; wrap a TFP law as iid_over_dim(law) or "
+            "independent_over_dim(family, ...), or give a function returning a law over the whole block."
         )
     if spec.constants or spec.label_maps:
         raise TypeError(
@@ -830,7 +830,7 @@ def check_law_is_one_of_the_forms(name: str, law: Any) -> None:
     """A factor's law is a law, a builder or a function returning a law."""
     if not callable(law):
         raise TypeError(
-            f"the law of {name!r} is a {type(law).__name__}; give a TFP distribution, a builder such as "
+            f"the law of {name!r} is a {type(law).__name__}; give a law (a TFP or numpyro distribution), a builder such as "
             "iid_over_dim(...), or a function of what it reads that returns a law."
         )
 
