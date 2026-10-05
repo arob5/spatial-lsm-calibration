@@ -5,7 +5,7 @@ Where this sits
 ::
 
     probability.condition_on -> Posterior
-      -> inference.eki_problem          EKI (pyEKI): G, y, R and an initial ensemble
+      -> inference.eki_problem          EKI (EnsKit): G, y, R and an initial ensemble
       -> inference.tempering_problem    tempered SMC and importance sampling (smc)
       -> inference.batched_log_density  gradient-free MCMC (emcee and the like)
       -> the algorithm

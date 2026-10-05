@@ -16,7 +16,7 @@ event's support (Lebesgue measure per number on an interval, on the first
 :math:`k - 1` coordinates on the simplex, on the lower triangle for a
 positive-definite matrix). TFP distributions are laws as they are. Two
 other kinds are adapted by :func:`as_law`, which a model applies to every
-law a factor is given or builds: pyEKI's ``Gaussian`` becomes a
+law a factor is given or builds: EnsKit's ``Gaussian`` becomes a
 :class:`GaussianLaw`, and a numpyro distribution, GPJax's
 ``GaussianDistribution`` among them, a :class:`NumpyroLaw`. A law from any
 other package is an object that implements :class:`Law` itself.
@@ -37,7 +37,8 @@ Functions and classes
 :class:`GaussianLaw`
     A Gaussian over a block, holding a structured covariance: what a
     :class:`~sipnet_calibration.probability.parts.GaussianSpec` evaluates
-    to, and what :func:`as_law` makes of a ``pyeki.gauss.Gaussian``.
+    to, and what :func:`as_law` makes of an EnsKit ``Gaussian`` of one
+    block.
 :class:`NumpyroLaw`
     A numpyro distribution as a law.
 :class:`PushforwardLaw`
@@ -50,8 +51,8 @@ Notes
 numpyro is not a dependency: a numpyro distribution is recognized by the
 names of the classes in its MRO, so the layer never imports numpyro, and a
 model holds one only when its author has numpyro installed. EnsKit's
-``Gaussian`` will replace pyEKI's through the private ``_linalg`` shim,
-which is where :func:`as_law` finds the class.
+``Gaussian`` comes through the private ``_linalg`` shim, which is where
+:func:`as_law` finds the class.
 """
 
 from __future__ import annotations
@@ -83,6 +84,9 @@ tfb = tfp.bijectors
 
 Array = jax.Array
 
+# The name of the one block of the EnsKit Gaussian a GaussianLaw holds.
+_BLOCK_NAME = "block"
+
 #: TFP's classes whose ``.distribution`` and ``.bijector`` are a base in theta
 #: and a map from it. Subclasses such as ``MultivariateNormalTriL`` and
 #: :class:`~sipnet_calibration.probability.families.InverseWishart` carry an
@@ -106,8 +110,9 @@ def as_law(distribution: Any) -> Law:
     """*distribution* as a :class:`Law`.
 
     A TFP distribution is returned unchanged. Two others are adapted, found
-    by class: a ``pyeki.gauss.Gaussian`` becomes a :class:`GaussianLaw` over
-    its ``(n,)`` vector, and a numpyro distribution (an instance of
+    by class: an ``enskit.distribution.Gaussian`` of one block becomes a
+    :class:`GaussianLaw` over its ``(n,)`` vector, with the block's
+    covariance, and a numpyro distribution (an instance of
     ``numpyro.distributions.Distribution``, GPJax's ``GaussianDistribution``
     among them) a :class:`NumpyroLaw`. Any other object that implements
     :class:`Law`, a callable ``log_prob`` and ``sample``, is returned
@@ -117,6 +122,9 @@ def as_law(distribution: Any) -> Law:
     ------
     TypeError
         If *distribution* is none of these.
+    ValueError
+        If an EnsKit ``Gaussian`` has more than one block, or its block has
+        no independent term.
 
     Notes
     -----
@@ -127,7 +135,10 @@ def as_law(distribution: Any) -> Law:
     if isinstance(distribution, tfd.Distribution):
         return distribution
     if isinstance(distribution, _linalg.Gaussian):
-        return GaussianLaw(distribution.mean, distribution.cov)
+        check_gaussian_has_one_block(distribution)
+        (name,) = distribution.names
+        check_gaussian_block_has_an_independent_term(distribution, name)
+        return GaussianLaw(distribution.mean(name), distribution.cov(name))
     if _numpyro.is_numpyro_distribution(distribution):
         return NumpyroLaw(distribution)
     check_distribution_is_a_law(distribution)
@@ -136,7 +147,7 @@ def as_law(distribution: Any) -> Law:
 
 def is_law(distribution: Any) -> bool:
     """Whether *distribution* is a law, or one :func:`as_law` adapts: a TFP
-    distribution, a ``pyeki.gauss.Gaussian``, a numpyro distribution, or an
+    distribution, an EnsKit ``Gaussian``, a numpyro distribution, or an
     instance with a callable ``log_prob`` and ``sample``. A class is not
     one, even a TFP distribution class, whose methods are callable on the
     class too."""
@@ -221,7 +232,7 @@ class GaussianLaw:
         Positional-only. :math:`m`, of the block's shape.
     covariance : PSDLinOp
         Positional-only. :math:`\\Sigma` over the block's ``n`` entries: one
-        of pyEKI's positive-definite operators (``pyeki.linalg.PSDLinOp``),
+        of EnsKit's positive-definite operators (``enskit.linalg.PSDLinOp``),
         which must support ``whiten``, ``logdet`` and ``factor``.
 
     Attributes
@@ -231,8 +242,9 @@ class GaussianLaw:
     covariance : PSDLinOp
     event_shape : tuple of int
         The block's shape.
-    gaussian : pyeki.gauss.Gaussian
-        The same law over the flattened block, as pyEKI holds one.
+    gaussian : enskit.distribution.Gaussian
+        The same law over the flattened block, as EnsKit holds one: one
+        block, whose independent term is :math:`\\Sigma`.
 
     Raises
     ------
@@ -256,7 +268,8 @@ class GaussianLaw:
         check_covariance_is_over_the_block(covariance, mean.shape)
         object.__setattr__(self, "mean", mean)
         object.__setattr__(self, "covariance", covariance)
-        object.__setattr__(self, "gaussian", _linalg.Gaussian(mean.reshape((-1,)), covariance))
+        gaussian = _linalg.Gaussian({_BLOCK_NAME: mean.reshape((-1,))}, block_covs={_BLOCK_NAME: covariance})
+        object.__setattr__(self, "gaussian", gaussian)
 
     def __setattr__(self, name: str, value: Any) -> None:
         raise AttributeError(f"a GaussianLaw is frozen; build another rather than setting {name!r}.")
@@ -283,7 +296,7 @@ class GaussianLaw:
         :math:`W` a whitener of :math:`\\Sigma` (``Gaussian.log_density``)."""
         value = jnp.asarray(value, dtype=jnp.float64)
         lead = value.shape[: value.ndim - self.mean.ndim]
-        return self.gaussian.log_density(value.reshape((*lead, -1)))
+        return self.gaussian.log_density({_BLOCK_NAME: value.reshape((*lead, -1))})
 
     def sample(self, sample_shape: tuple[int, ...] = (), seed: Array | None = None) -> Array:
         """Draws :math:`m + L z`, :math:`z \\sim \\mathcal N(0, I)` and
@@ -487,8 +500,8 @@ def check_distribution_is_a_law(distribution: Any) -> None:
     implementing :class:`Law`."""
     if not is_law(distribution):
         raise TypeError(
-            f"a {type(distribution).__name__} is not a law; give a TFP or numpyro distribution, a "
-            "pyeki.gauss.Gaussian, or an object with log_prob(value) and sample(sample_shape, seed=key)."
+            f"a {type(distribution).__name__} is not a law; give a TFP or numpyro distribution, an EnsKit "
+            "Gaussian, or an object with log_prob(value) and sample(sample_shape, seed=key)."
         )
 
 
@@ -552,6 +565,25 @@ def check_covariance_is_over_the_block(covariance: Any, shape: tuple[int, ...]) 
         raise ValueError(
             f"a GaussianLaw's covariance is {tuple(covariance.shape)}, but its mean of shape {tuple(shape)} has "
             f"{size} entries; give a ({size}, {size}) covariance."
+        )
+
+
+def check_gaussian_has_one_block(gaussian: Any) -> None:
+    """An EnsKit ``Gaussian`` adapted to a law is over one block."""
+    if len(gaussian.names) != 1:
+        raise ValueError(
+            f"an EnsKit Gaussian adapted to a law is over one block, not {len(gaussian.names)} "
+            f"({', '.join(map(repr, gaussian.names))}); give the marginal of one, gaussian.marginal(name)."
+        )
+
+
+def check_gaussian_block_has_an_independent_term(gaussian: Any, name: str) -> None:
+    """An EnsKit ``Gaussian`` adapted to a law has an independent term on its
+    block, without which its covariance is the low-rank :math:`F F^\\top`."""
+    if gaussian.block_cov(name) is None:
+        raise ValueError(
+            f"the EnsKit Gaussian's block {name!r} has no independent term, so its covariance is the low-rank "
+            "F F^T, with no density over the block; add one with gaussian.add_noise(...)."
         )
 
 

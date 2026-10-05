@@ -8,7 +8,7 @@ Where this sits
     probability.covariance              (DiagonalSpec, DenseSpec, ..., BlockDiagonalSpec)
       -> probability.parts.GaussianSpec (a Gaussian law: means and a covariance)
       -> probability.model.bind         (each spec at the labels in use)
-      -> a structured operator per draw (pyEKI's, through probability._linalg)
+      -> a structured operator per draw (EnsKit's, through probability._linalg)
 
 A covariance spec is a declaration: it holds no labels and no numbers. It
 says which entries of a factor's event form blocks and what each block is
@@ -51,7 +51,7 @@ Classes
 
 Notes
 -----
-Each spec evaluates to one of pyEKI's operators: ``PSDDiagonal``,
+Each spec evaluates to one of EnsKit's operators: ``PSDDiagonal``,
 ``DensePSD``, ``PSDScaled`` and ``PSDBlockDiag``. A value precondition, a
 positive variance or a positive-definite block, is not checked when an
 operator is built: one that fails gives a density that is not finite, which
@@ -189,7 +189,7 @@ class DenseSpec(CovarianceSpec):
     matrix : str or callable
         Positional-only. The name of an ``(n, n)`` value, or
         ``(**reads) -> (n, n)``; symmetric positive definite. Its symmetric
-        part is what is factored, as pyEKI's ``DensePSD`` does, so an
+        part is what is factored, as EnsKit's ``DensePSD`` does, so an
         asymmetric matrix is not refused.
 
     Raises

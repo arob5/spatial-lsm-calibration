@@ -1,4 +1,4 @@
-"""Tests for laws from other packages: numpyro's distributions and pyEKI's
+"""Tests for laws from other packages: numpyro's distributions and EnsKit's
 Gaussian, adapted by ``as_law``, and GPJax's Gaussian through numpyro's.
 
 Each adapted law is checked against its TFP equivalent or SciPy's density:
@@ -88,12 +88,33 @@ def test_a_numpyro_log_prob_that_does_not_broadcast_is_vmapped():
     np.testing.assert_allclose(law.log_prob(jnp.ones((2, 3))), st.norm.logpdf(np.ones((2, 3))), rtol=1e-12)
 
 
-def test_as_law_adapts_a_pyeki_gaussian():
+def test_as_law_adapts_an_enskit_gaussian():
     covariance = np.array([[2.0, 0.5], [0.5, 1.0]])
-    law = as_law(_linalg.Gaussian(jnp.array([1.0, -1.0]), _linalg.DensePSD(jnp.asarray(covariance))))
+    law = as_law(_linalg.Gaussian.independent(u=(jnp.array([1.0, -1.0]), _linalg.DensePSD(jnp.asarray(covariance)))))
     assert isinstance(law, GaussianLaw)
     x = np.array([[0.0, 0.0], [1.5, -2.0]])
     np.testing.assert_allclose(law.log_prob(x), st.multivariate_normal([1.0, -1.0], covariance).logpdf(x), rtol=1e-12)
+
+
+def test_as_law_adapts_an_enskit_gaussian_with_a_factor_row_by_its_blocks_covariance():
+    factor = np.array([[1.0, 0.0], [0.5, 1.0], [0.0, 2.0]])
+    gaussian = _linalg.Gaussian(
+        {"u": jnp.zeros(3)}, factors={"u": jnp.asarray(factor)}, block_covs={"u": _linalg.PSDDiagonal(jnp.ones(3))}
+    )
+    law = as_law(gaussian)
+    x = np.array([[0.0, 1.0, -1.0], [2.0, 0.5, 0.0]])
+    expected = st.multivariate_normal(np.zeros(3), factor @ factor.T + np.eye(3)).logpdf(x)
+    np.testing.assert_allclose(law.log_prob(x), expected, rtol=1e-12)
+    draws = np.asarray(law.sample((20_000,), seed=KEY))
+    np.testing.assert_allclose(np.cov(draws.T), factor @ factor.T + np.eye(3), atol=0.15)
+
+
+def test_as_law_refuses_an_enskit_gaussian_it_cannot_score_as_one_block():
+    covariance = _linalg.PSDDiagonal(jnp.ones(2))
+    with pytest.raises(ValueError, match=r"over one block, not 2 \('u', 'v'\).*marginal"):
+        as_law(_linalg.Gaussian.independent(u=(jnp.zeros(2), covariance), v=(jnp.zeros(2), covariance)))
+    with pytest.raises(ValueError, match="block 'u' has no independent term.*add_noise"):
+        as_law(_linalg.Gaussian({"u": jnp.zeros(3)}, factors={"u": jnp.ones((3, 2))}))
 
 
 def test_as_law_refuses_what_it_does_not_know():
@@ -234,16 +255,17 @@ def test_a_numpyro_law_reading_another_component_is_vmapped_over_draws():
     assert abs(spread.std() - 2.0) < 0.1
 
 
-def test_a_pyeki_gaussian_is_a_factors_law():
+def test_an_enskit_gaussian_is_a_factors_law():
     covariance = np.array([[1.0, 0.3, 0.0], [0.3, 2.0, -0.4], [0.0, -0.4, 0.5]])
     mean = jnp.array([1.0, 0.0, -1.0])
     spec = ArraySpec("offsets", units="1", element_axes={"pool": ["leaf", "wood", "soil"]})
-    gaussian = _linalg.Gaussian(mean, _linalg.DensePSD(jnp.asarray(covariance)))
+    gaussian = _linalg.Gaussian.independent(offsets=(mean, _linalg.DensePSD(jnp.asarray(covariance))))
     bare = FactorSpec(spec, law=gaussian)
     assert isinstance(bare.law, GaussianLaw)
 
     shifted = FactorSpec(
-        spec, law=lambda shift: _linalg.Gaussian(mean + shift, _linalg.DensePSD(jnp.asarray(covariance)))
+        spec,
+        law=lambda shift: _linalg.Gaussian.independent(offsets=(mean + shift, _linalg.DensePSD(jnp.asarray(covariance)))),
     )
     shift = FactorSpec(ArraySpec("shift", units="1"), law=tfd.Normal(jnp.float64(0.0), jnp.float64(1.0)))
 

@@ -93,7 +93,7 @@ Three packages are developed alongside this project and are dependencies of it:
 |---|---|
 | [`pySIPNET`](https://github.com/TARPS-group/pySIPNET) | the SIPNET model interface |
 | [`PyEns`](https://github.com/arob5/PyEns) | running ensembles |
-| [`pyEKI`](https://github.com/TARPS-group/pyEKI) | solving inverse problems with ensemble Kalman methods |
+| [`EnsKit`](https://github.com/TARPS-group/EnsKit) | ensemble Kalman methods: structured linear operators, Gaussians, the EKI driver (formerly pyEKI) |
 
 `[tool.uv.sources]` in `pyproject.toml` tracks the `main` branch of each, and
 `uv.lock` records the **exact commit** resolved from it. So `uv sync` installs
@@ -114,7 +114,7 @@ uv sync
 All three are under active development, so `CLAUDE.md` makes refreshing all of
 them the first step of a working session rather than an occasional errand.
 
-The distribution names are `pysipnet`, `pyens` and `pyeki`; name several in one
+The distribution names are `pysipnet`, `pyens` and `enskit`; name several in one
 command to upgrade them together. `uv lock --upgrade` upgrades everything
 including the third-party dependencies, which is usually not what you want
 here.

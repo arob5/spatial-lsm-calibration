@@ -28,7 +28,7 @@ adds the parameter layer's vector and derived parameters.
   :class:`~sipnet_calibration.probability.Simulator`: it never sees theta, a
   posterior hands it the values it reads.
 - :class:`ForwardModel` is today's callable ``(J, D) -> (J, N)``, which
-  pyEKI's ``run`` takes as ``forward``: theta through the parameter layer,
+  EnsKit's ``eki.run`` takes as ``forward``: theta through the parameter layer,
   then :class:`SIPNETRuns`. It stays until the parameter layer is removed.
 
 What it reads
@@ -97,7 +97,7 @@ A run **fails at its parameters** when pySIPNET refuses them
 (``pydantic.ValidationError``), SIPNET exits non-zero or writes nothing
 (``SIPNETRunError``), the run times out (``subprocess.TimeoutExpired``), or
 its output holds a non-finite value in a variable that was read
-(:class:`ModelOutputNotFiniteError`): its row is ``NaN``, which pyEKI repairs
+(:class:`ModelOutputNotFiniteError`): its row is ``NaN``, which EKI repairs
 and a sampler rejects. Anything else a worker returns is the **machinery**
 failing, and is raised after the batch is collected as a ``RuntimeError``
 whose ``evaluation`` attribute holds what was collected. On the
@@ -152,7 +152,7 @@ per call. On every call PyEns zips the SIPNET parameter fields with that
 axis and crosses them along their other dims.
 
 **Validity.** ``ForwardModel`` marks a whole row invalid when any of its
-runs failed, since pyEKI updates per row. ``SIPNETSimulator`` marks each
+runs failed, since EKI updates per row. ``SIPNETSimulator`` marks each
 source's prediction invalid only where a run at one of the source's sites
 failed, so a posterior that does not read a source is not truncated by its
 sites. One pass for several reductions reads the union of their output
@@ -169,7 +169,8 @@ Usage
     forward = ForwardModel(model, prior.parameter_vector, sipnet_map, site_dims=site_dims,
                            derived_parameters=prior.derived_parameters, climate=climate,
                            backend=LocalBackend(8), observation_vector=observation_vector)
-    result = pyeki.eki.run(state, forward, observation_vector.y, noise_cov, schedule=...)
+    result = enskit.algorithms.eki.run(state, forward, observation_vector.y, noise_cov,
+                                       update_rule=..., schedule=...)
 
     predictive = ForwardModel(model, vector, sipnet_map, site_dims=site_dims, climate=climate,
                               backend=LocalBackend(8), external_inputs=initial_states,
@@ -612,7 +613,7 @@ class ForwardModel:
         return self._forward_evaluation(theta, evaluation)
 
     def __call__(self, theta: Any) -> jax.Array:
-        """``evaluate(theta).predictions``, pyEKI's ``(J, D) -> (J, N)``: ``(N,)``
+        """``evaluate(theta).predictions``, EKI's ``(J, D) -> (J, N)``: ``(N,)``
         for a ``(D,)`` theta.
 
         Raises
@@ -685,7 +686,7 @@ class ForwardModel:
         if self.observation_vector is None:
             return replace(base, model_output=evaluation.model_output, valid=jnp.asarray(row_succeeded))
         predictions = np.array(evaluation.predictions[0])
-        # A row with any failed run is invalid as a whole: pyEKI updates per
+        # A row with any failed run is invalid as a whole: EKI updates per
         # row, so a row that is partly a prediction cannot be used.
         predictions[~row_succeeded] = np.nan
         valid = row_succeeded & np.isfinite(predictions).all(axis=1)

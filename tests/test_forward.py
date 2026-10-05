@@ -748,19 +748,22 @@ class TestExternalInputs:
             forward(theta[:2])
 
     def test_a_per_row_draw_runs_through_eki(self, parameter_vector, soil_map, climate, observation_vector, prior):
-        """One soil draw frozen per member, labeled by theta's rows, under pyEKI's driver."""
-        from pyeki.eki import EKIState, FixedSchedule, run
-        from pyeki.linalg import PSDDiagonal
+        """One soil draw frozen per member, labeled by theta's rows, under EnsKit's driver."""
+        from enskit.algorithms.eki import EKIState, FixedSchedule, run
+        from enskit.distribution import Ensemble
+        from enskit.kalman import SymmetricSquareRoot
+        from enskit.linalg import PSDDiagonal
 
         n_members = 4
         draws = crossed_soil(members=tuple(range(n_members)))["soil_input"].rename(initial_condition_member="sample")
         forward = build(parameter_vector, soil_map, climate, observation_vector,
                         external_inputs=draws.to_dataset())
-        state = EKIState(prior.sample(jax.random.key(1), n_members), 0.0, 0, jax.random.key(2))
+        state = EKIState(Ensemble(theta=prior.sample(jax.random.key(1), n_members)), key=jax.random.key(2))
         result = run(state, forward, observation_vector.y, PSDDiagonal(jax.numpy.ones(observation_vector.dimension)),
-                     schedule=FixedSchedule((0.5, 0.5)))
-        assert result.state.ensemble.shape == (n_members, parameter_vector.unconstrained.size)
-        assert bool(jax.numpy.isfinite(result.state.ensemble).all())
+                     update_rule=SymmetricSquareRoot(), schedule=FixedSchedule((0.5, 0.5)))
+        ensemble = result.state.ensemble["theta"]
+        assert ensemble.shape == (n_members, parameter_vector.unconstrained.size)
+        assert bool(jax.numpy.isfinite(ensemble).all())
 
     def test_an_input_named_like_a_parameter_is_refused(self, parameter_vector, sipnet_map, climate):
         inputs = crossed_soil().rename(soil_input="initial_soil_carbon")

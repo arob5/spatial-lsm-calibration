@@ -258,7 +258,7 @@ project creates carries an integer coordinate. So the rule needs neither a
 deny-list of names nor a marker attribute, which xarray drops in some
 operations.
 
-**Why Flat takes one batch dim.** pyEKI takes exactly ``(J, ·)``, and a
+**Why Flat takes one batch dim.** EKI takes exactly ``(J, ·)``, and a
 ``(J, N)`` array cannot say which of several dims its rows came from, so a
 field with several is reduced, or stacked with :func:`stack_batch_dims`,
 before it is flattened. The stacked dim takes a new name: its labels

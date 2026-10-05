@@ -16,7 +16,7 @@ The long-term vision:
 |---------|--------|------|
 | `pySIPNET` | `TARPS-group/pySIPNET` | SIPNET model interface; `SIPNETModel(**overrides)` |
 | `PyEns` | `arob5/PyEns` | Parallel ensemble execution via `ProcessPoolExecutor`, and the xarray-to-Grid bridge (`pyens.xarray`) |
-| `pyEKI` | `TARPS-group/pyEKI` | Solving inverse problems with ensemble Kalman methods |
+| `EnsKit` | `TARPS-group/EnsKit` (package `enskit`; formerly pyEKI) | Ensemble Kalman methods: structured linear operators (`enskit.linalg`), Gaussians and ensembles over named blocks (`enskit.distribution`), and the EKI driver (`enskit.algorithms.eki`) |
 | `ProbPipe` | `TARPS-group/prob-pipe` (also on PyPI) | **Not currently a dependency** — API in flux; planned migration target for inference. See below. |
 
 The first three are dependencies, installed from git rather than from sibling
@@ -28,7 +28,7 @@ here. Never modify their source from here.
 
 The boundary between them: PyEns owns the shape of an ensemble and the
 translation of labeled data into and out of it; pySIPNET owns one SIPNET run's
-inputs and outputs; pyEKI owns the ensemble Kalman update; this repository owns
+inputs and outputs; EnsKit owns the ensemble Kalman update; this repository owns
 what varies and why. A function belongs in pySIPNET only if deleting SIPNET from
 it leaves nothing.
 
@@ -36,7 +36,7 @@ it leaves nothing.
 their current `main`:**
 
 ```bash
-uv lock --upgrade-package pysipnet --upgrade-package pyens --upgrade-package pyeki
+uv lock --upgrade-package pysipnet --upgrade-package pyens --upgrade-package enskit
 uv sync
 ```
 
@@ -250,8 +250,8 @@ moves it here.
 | **observed component** | a source's observed values as a component, named for the source, on its observation dim (`observation.model.observed_components`, values `observed_values_by_component()`) | |
 | **prediction** | the forward model's value of an observed quantity, on the source's observation dim and in its units: `predicted_<source>` (`ObservationVector.prediction_name`, `observation.model.prediction_components`) | "predictions", the Flat `(J, N)`, which keeps its meaning |
 | **spec** | a declaration, holding no labels and no numbers; its class ends in `Spec` (`ArraySpec`, `FactorSpec`, `DeterministicSpec`, `ModelSpec`) | the distribution it becomes once bound |
-| **law** | the concrete distribution a factor evaluates to for one draw of what it reads: a TFP distribution, or an object implementing `probability.laws.Law`, such as a `GaussianLaw`; a pyEKI `Gaussian` or a numpyro distribution (GPJax's among them) is adapted to one by `as_law` (`GaussianLaw`, `NumpyroLaw`), and `pushforward` of a base that is not TFP's is a `PushforwardLaw` | a factor, which declares one |
-| **Gaussian factor** | a factor whose law is a `GaussianSpec` (`probability.parts`): its one component, on `REAL` and indexed by one dim at most, centered on a mean component, with a covariance declared by a **covariance spec** (`probability.covariance`); its law at a draw is a `GaussianLaw`, holding one of pyEKI's operators | a law function returning a Gaussian, which is opaque |
+| **law** | the concrete distribution a factor evaluates to for one draw of what it reads: a TFP distribution, or an object implementing `probability.laws.Law`, such as a `GaussianLaw`; an EnsKit `Gaussian` of one block or a numpyro distribution (GPJax's among them) is adapted to one by `as_law` (`GaussianLaw`, `NumpyroLaw`), and `pushforward` of a base that is not TFP's is a `PushforwardLaw` | a factor, which declares one |
+| **Gaussian factor** | a factor whose law is a `GaussianSpec` (`probability.parts`): its one component, on `REAL` and indexed by one dim at most, centered on a mean component, with a covariance declared by a **covariance spec** (`probability.covariance`); its law at a draw is a `GaussianLaw`, holding one of EnsKit's operators | a law function returning a Gaussian, which is opaque |
 | **covariance spec** / **scope** | a declaration of a covariance as structure over labels (`DiagonalSpec`, `DenseSpec`, `SumSpec`, `ScaledSpec`, `BlockDiagonalSpec`, `SubmatrixSpec`); its scope is the entries it covers, the event or one group of a `BlockDiagonalSpec`, whose groups are the entries sharing labels at a level (`by=`) | "cell" for a block |
 | **noise factor** | a source's Gaussian factor, its observed component centered on its prediction (`observation.model.noise_factor`), holding the source's constants its covariance reads | |
 | **held** (values) | what a posterior fixes whatever theta is: the observed values, the inputs, the constants, and the deterministics computed from them alone with no simulator; a Gaussian factor's covariance computable from held values is a **held covariance**, built and factored once at `condition_on` | |
@@ -466,8 +466,8 @@ coercion lives in `validation.py`.
   outside itself, and **`parameters/`**, the parameter layer it is replacing,
   nothing but it (its supports, private coercion and probe points, which
   `parameters` re-exports); `tests/test_package.py` enforces both, and that
-  pyEKI is imported by `probability/_linalg.py` alone, the shim the move to
-  EnsKit changes (E1), and numpyro and GPJax by no file: the layer
+  EnsKit is imported by `probability/_linalg.py` alone, the one shim over
+  its operators and `Gaussian`, and numpyro and GPJax by no file: the layer
   adapts their distributions recognized by class name
   (`probability/_numpyro.py`), and neither is a dependency (numpyro is in
   the `dev` group, GPJax in the optional `gpjax` group). The
@@ -478,8 +478,8 @@ coercion lives in `validation.py`.
   `sipnet_parameter_map.py`, `forward.py`).
 - **`inference/`**, the inference adapters, imports `probability`, `smc` and
   `validation` only, and no algorithm package (tested): it reads a
-  `Posterior` and nothing of SIPNET, so the experiment imports pyEKI or
-  emcee and hands it what an adapter returns.
+  `Posterior` and nothing of SIPNET, so the experiment imports EnsKit's
+  driver or emcee and hands it what an adapter returns.
 - **`tests/conftest.py`** holds every fixture or builder more than one test
   file uses (some Niwot stacks and observation builders are still per file,
   until the module cleanups, PR 5).
@@ -828,7 +828,7 @@ everything stacked on it, and they will have to rebase too.
 its own, taking the companions' current `main` as above while you are there:
 
 ```bash
-uv lock --upgrade-package pysipnet --upgrade-package pyens --upgrade-package pyeki
+uv lock --upgrade-package pysipnet --upgrade-package pyens --upgrade-package enskit
 uv sync
 uv run pytest
 ```
@@ -882,11 +882,10 @@ these steps without asking. It stops only where a step says to.
    - Create it:
      `git worktree add -b refactor/probability-<id>-<topic> .claude/worktrees/probability-<id> origin/main`.
    - Set up its environment:
-     `uv lock --upgrade-package pysipnet --upgrade-package pyens`, then
-     `uv sync`, then `uv run pytest` for the baseline count.
-   - **Do not upgrade pyEKI.** E1 re-pins the project to EnsKit's `main`,
-     which renames it; until E1 merges, no other PR upgrades it. E1 also
-     changes this step to upgrade `enskit` with the other companions.
+     `uv lock --upgrade-package pysipnet --upgrade-package pyens --upgrade-package enskit`,
+     then `uv sync`, then `uv run pytest` for the baseline count. EnsKit
+     is tracked like the other companions since E1 re-pinned the project to
+     its `main`.
    - Implement the row's scope from the design, nothing more. Write reference
      values from today's code before changing behavior that must be preserved.
    - When implementation shows the design must change, make the smallest
@@ -1067,7 +1066,7 @@ src/sipnet_calibration/
                           # to_natural(), to_unconstrained(), contains();
                           # ValuesByName, LabeledValues;
                           # encode_labeled_values/decode_labeled_values
-    laws.py               # Law (the protocol), as_law (TFP; a pyEKI
+    laws.py               # Law (the protocol), as_law (TFP; an EnsKit
                           # Gaussian, a numpyro distribution, GPJax's too),
                           # pushforward (any base); GaussianLaw (a Gaussian
                           # over a block holding a structured covariance),
@@ -1075,7 +1074,7 @@ src/sipnet_calibration/
     covariance.py         # CovarianceSpec: DiagonalSpec, DenseSpec, SumSpec,
                           # ScaledSpec, BlockDiagonalSpec (by= a level or the
                           # dim; groups contiguous), SubmatrixSpec; each bound
-                          # to its scope at bind, building a pyEKI operator
+                          # to its scope at bind, building an EnsKit operator
                           # per draw
     families.py           # one value's law: log_normal, logit_normal
                           # (support=), their _from_* forms, softmax_normal;
@@ -1123,7 +1122,7 @@ src/sipnet_calibration/
                           # density, draws, the bind checks, the log-Jacobian
                           # against each support's reference measure); the
                           # keyword rule; the probe and corner points;
-                          # coercion; the one shim over pyEKI's operators
+                          # coercion; the one shim over EnsKit's operators
                           # and Gaussian; numpyro's distributions recognized
                           # by class name, with no import
   parameters/             # the parameter layer: imports nothing of the package
@@ -1368,7 +1367,7 @@ plotting code. The load-bearing rules:
   observes, and marks a source's prediction invalid only where a run at one
   of the source's sites failed. `forward.ForwardModel(model, parameter_vector, sipnet_parameter_map,
   site_dims=, derived_parameters=, climate=, backend=, external_inputs=,
-  out_of_domain=, observation_vector=)`, until R1, is pyEKI's `(J, D) -> (J, N)`
+  out_of_domain=, observation_vector=)`, until R1, is EKI's `(J, D) -> (J, N)`
   through `SIPNETRuns`; its
   module docstring says how the pieces compose: the labeled natural values
   (the parameter layer's seam) merged with the external inputs, read at the
@@ -1679,17 +1678,34 @@ plotting code. The load-bearing rules:
   `ForwardModel` builds its site axis once and passes it to every grid).
   `tests/test_fields.py` pins both halves of the rule against PyEns.
 
-### pyEKI
-- There is deliberately no log-likelihood helper (as of pyEKI PR #31).
-  `pyeki.gauss.Gaussian(y, noise_cov)`, with `noise_cov` a `PSDLinOp`, scores a batch of
-  predictions with `log_density(predictions)`, `(..., N) -> (...)`, by the symmetry of the
-  density in point and mean. It equals
-  `-pyeki.eki.misfits(y, predictions, noise_cov) - (logdet R + N log 2 pi) / 2` and requires
-  `noise_cov` to support `whiten` and `logdet`. Build `noise_cov` with `DensePSD(R)`, which
-  factorizes the matrix; a factor already computed is passed by keyword, `DensePSD(L=L)`,
-  and must be the **lower** Cholesky factor (`from_matrix` is gone). Outside debug mode (`pyeki.linalg.set_debug_checks(True)` turns it on), a row
-  holding a NaN or an inf scores NaN, and so does every row when `noise_cov` is singular or
-  holds a NaN; the caller maps that to `-inf`.
+### EnsKit
+- EnsKit is pyEKI rewritten and renamed (package `enskit`, release 0.1.0); `pyeki.gauss` and
+  `pyeki.eki` are gone. It requires `jax>=0.10.1`, and importing it turns on 64-bit JAX, as
+  importing this package does.
+- **Distributions are over named blocks**, each a 1-D vector. `Gaussian(means, *, factors=,
+  block_covs=, latent_dim=)` holds per block a mean, an optional row of a shared factor and an
+  optional independent term; `Gaussian.independent(y=(mean, cov))` is one block with
+  covariance `cov`. `log_density(y=values)` takes `(*batch, N)` values and returns `batch`;
+  `sample(key, n)` returns an `Ensemble` and refuses `n < 2`.
+  `Ensemble({"theta": array})` holds `(n_particles, d)` per block, read as `ensemble["theta"]`.
+- There is no log-likelihood helper: `Gaussian.independent(y=(y, noise_cov)).log_density(
+  y=predictions)` scores a batch of predictions by the symmetry of the density in point and
+  mean, and equals `-eki.misfits(y, predictions, noise_cov) - (logdet R + N log 2 pi) / 2`
+  (`from enskit.algorithms import eki`). Build `noise_cov` with `enskit.linalg.DensePSD(R)`,
+  which factorizes the symmetric part `(R + R^T) / 2`; a factor already computed is passed by
+  keyword, `DensePSD(L=L)`, and must be the **lower** Cholesky factor. Outside debug mode
+  (`enskit.linalg.set_debug_checks(True)` turns it on), a row holding a NaN scores NaN, and so
+  does every row when `noise_cov` is singular; the caller maps that to `-inf`.
+- **The EKI driver** is `eki.run(eki.EKIState(ensemble, key=key), forward, y, noise_cov, *,
+  update_rule=, schedule=, on_failure="raise")`. The state's ensemble is an unweighted
+  `Ensemble` whose blocks are the parameters; `forward` receives one positional array per
+  block and returns `(J, N)`. `update_rule` is required: `enskit.kalman.SymmetricSquareRoot()`
+  (deterministic, exact in moments for the linear-Gaussian case) or `kalman.Matheron()`
+  (stochastic). `on_failure="repair"` moves a particle whose prediction is not finite to the
+  valid particles' center and warns once at the end of the run.
+- `typing.get_type_hints` cannot resolve EnsKit's `Gaussian` (its `Array` annotation is
+  imported for type checking only), so `tests/test_package.py`'s hint check skips names
+  re-exported from another package.
 
 ### ProbPipe (deferred — not a current dependency)
 

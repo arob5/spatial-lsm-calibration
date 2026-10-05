@@ -1027,6 +1027,23 @@ def pushforward(base: Any, *, support: Support | None = None,
   <code>TypeError</code> that says to give the factor a law over the whole
   block instead.</li>
 </ul>
+<p><i>As built in E1:</i></p>
+<ul>
+  <li>The project tracks EnsKit's <code>main</code>, and the
+  <code>_linalg</code> shim imports <code>enskit.linalg</code> and
+  <code>enskit.distribution</code>; D24's "EnsKit" is now EnsKit's.</li>
+  <li>A <code>GaussianLaw</code> holds an EnsKit <code>Gaussian</code> of one
+  block, its covariance the block's independent term
+  (<code>.gaussian</code>), and scores by its <code>log_density</code>; it
+  still draws <code>m + L z</code> itself.</li>
+  <li><code>as_law</code> adapts an EnsKit <code>Gaussian</code> of one block,
+  with a factor row or not, to a <code>GaussianLaw</code> over the block's
+  covariance (<code>Gaussian.cov</code>). It refuses one of several blocks,
+  which no factor's law is until correlated sources are built (the reading of
+  several components as the dict of them, above), and a block with no
+  independent term, whose covariance <code>F F<sup>T</sup></code> is low rank
+  and has no density over the block.</li>
+</ul>
 <p>The families <code>log_normal</code>, <code>log_normal_from_interval</code>,
 <code>log_normal_from_samples</code>, <code>logit_normal</code>,
 <code>logit_normal_from_interval</code>, <code>logit_normal_from_samples</code>

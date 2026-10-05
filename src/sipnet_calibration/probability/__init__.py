@@ -28,7 +28,7 @@ Where this sits
 
 No module here imports from ``sipnet_calibration`` outside ``probability``,
 which ``tests/test_package.py`` enforces, and only the private
-``probability._linalg`` imports pyEKI, whose operators and ``Gaussian`` the
+``probability._linalg`` imports EnsKit, whose operators and ``Gaussian`` the
 Gaussian laws are built on. numpyro and GPJax it never imports: it adapts
 their distributions, recognized by class name. It computes in ``float64``,
 which importing the package turns on.
@@ -51,7 +51,7 @@ Modules
 :mod:`~sipnet_calibration.probability.laws`
     What a factor evaluates to: the law protocol, the pushforward, a
     Gaussian over a block with a structured covariance, and the adapters of
-    laws from numpyro and pyEKI.
+    laws from numpyro and EnsKit.
 :mod:`~sipnet_calibration.probability.families`
     One value's law from a few interpretable numbers.
 :mod:`~sipnet_calibration.probability.builders`

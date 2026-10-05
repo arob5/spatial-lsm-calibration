@@ -221,17 +221,17 @@ def test_pr_69s_one_site_noise_covariance_equals_its_hand_assembly():
     assert kinds == ["PSDBlockDiag", "PSDBlockDiag", "PSDBlockDiag", "PSDDiagonal"]
 
 
-def test_pr_69s_likelihood_scores_as_its_pyeki_gaussian():
-    """PR #69's calibration_likelihood is pyEKI's Gaussian of y with R one
-    DensePSD per source; its log density at the predictions is the
-    posterior's log likelihood."""
+def test_pr_69s_likelihood_scores_as_its_hand_built_gaussian():
+    """PR #69's calibration_likelihood is a Gaussian of y with R one
+    DensePSD per source, built here as EnsKit's; its log density at the
+    predictions is the posterior's log likelihood."""
     vector = ObservationVector(observation_sources=_synthetic_sources())
     posterior = _posterior(vector)
-    by_hand = _linalg.Gaussian(posterior.y, _linalg.PSDBlockDiag(tuple(
-        _linalg.DensePSD(jnp.asarray(block)) for block in _hand_assembled(vector))))
+    by_hand = _linalg.Gaussian.independent(y=(posterior.y, _linalg.PSDBlockDiag(tuple(
+        _linalg.DensePSD(jnp.asarray(block)) for block in _hand_assembled(vector)))))
     theta = jnp.array([[0.0], [1.5], [-3.0]])
     predictions, _, evaluation = posterior.gaussian_likelihood().forward(theta)
-    np.testing.assert_allclose(np.asarray(evaluation.log_likelihood), np.asarray(by_hand.log_density(predictions)),
+    np.testing.assert_allclose(np.asarray(evaluation.log_likelihood), np.asarray(by_hand.log_density(y=predictions)),
                                rtol=1e-11)
 
 

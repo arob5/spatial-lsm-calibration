@@ -1,23 +1,24 @@
-"""The linear algebra the Gaussian laws are built on: one shim over pyEKI.
+"""The linear algebra the Gaussian laws are built on: one shim over EnsKit.
 Private to the probability layer.
 
 The covariance specs evaluate to structured operators, and a Gaussian law
 holds one. Every operator and the ``Gaussian`` the layer uses come from
-here, so the move from today's ``pyeki.linalg`` and ``pyeki.gauss`` to
-EnsKit's ``linalg`` and ``distribution`` changes this file alone. Nothing
-else in the package imports pyEKI for the probability layer.
+here, from EnsKit's ``linalg`` and ``distribution``. Nothing else in the
+package imports EnsKit for the probability layer.
 
-The operators are pyEKI's, whose contract is its "Linear operator contract":
-they hold their arrays as pytree leaves, so one is built and used inside a
-JAX trace; a value precondition (a positive diagonal, a positive-definite
-matrix) is not checked outside pyEKI's debug mode, and a violated one gives
-``NaN`` or ``inf`` downstream, which the layer reads as no density.
+The operators are EnsKit's, whose contract is its "Linear operator
+contract": they hold their arrays as pytree leaves, so one is built and used
+inside a JAX trace; a value precondition (a positive diagonal, a
+positive-definite matrix) is not checked outside EnsKit's debug mode, and a
+violated one gives ``NaN`` or ``inf`` downstream, which the layer reads as no
+density. The ``Gaussian`` is EnsKit's over named blocks; the layer's
+Gaussian laws hold one of one block.
 """
 
 from __future__ import annotations
 
-from pyeki.gauss import Gaussian
-from pyeki.linalg import (
+from enskit.distribution import Gaussian
+from enskit.linalg import (
     DensePSD,
     PSDBlockDiag,
     PSDDiagonal,

@@ -145,8 +145,8 @@ Notes
 -----
 **The one import-time side effect.** Importing the package, and so any of its
 modules, turns on JAX's 64-bit mode (``jax_enable_x64``), so every JAX array
-the package makes is ``float64``, as pyEKI requires and an MCMC baseline
-that never imports pyEKI still gets. The setting is per process. A worker of
+the package makes is ``float64``, as EnsKit requires and an MCMC baseline
+that never imports EnsKit still gets. The setting is per process. A worker of
 a process pool that imports the package -- as unpickling any of its objects
 does -- gets it too; only a worker that computes with JAX without importing
 the package needs ``JAX_ENABLE_X64=1`` in its environment.

@@ -28,7 +28,7 @@ from dataclasses import replace
 
 import numpy as np
 import pytest
-from pyeki.eki import effective_sample_size as pyeki_effective_sample_size
+from enskit.algorithms.eki import effective_sample_size as enskit_effective_sample_size
 from scipy import integrate, stats
 
 from sipnet_calibration import smc
@@ -254,11 +254,11 @@ def test_student_t_refuses_a_covariance_that_is_not_positive_definite():
 # ── the pieces ────────────────────────────────────────────────────────────────
 
 
-def test_cess_with_equal_weights_is_pyekis_effective_sample_size_over_n():
+def test_cess_with_equal_weights_is_enskits_effective_sample_size_over_n():
     log_ratios = np.random.default_rng(5).standard_normal(300) * 40
     log_weights = np.full(300, -math.log(300))
     for increment in (0.0, 0.01, 0.1, 1.0):
-        expected = float(pyeki_effective_sample_size(-log_ratios, increment)) / 300
+        expected = float(enskit_effective_sample_size(-log_ratios, increment)) / 300
         assert smc.conditional_effective_sample_size(log_weights, log_ratios, increment) == pytest.approx(expected)
 
 
