@@ -29,8 +29,8 @@ and proofs are the design's §12; the column below is a summary.
 | P7 | `refactor/probability-p7-inference` | merged #84 | P6 | The `inference` package on today's pyEKI |
 | P8 | `refactor/probability-p8-conjugacy` | merged #85 | P6 | `marginalize`, `full_conditional`, `theta_with` |
 | P9 | `refactor/probability-p9-foreign-laws` | merged #86 | P3 | numpyro and EnsKit `Gaussian` adapters; GPJax as an optional test group |
-| E1 | `refactor/probability-e1-enskit` | open #88 | P9 | Re-pin from pyEKI to EnsKit's `main` (`TARPS-group/EnsKit`, package `enskit`), which moves JAX 0.8 to 0.10 and TFP's nightly with it; the `_linalg` shim on `enskit.linalg` and `enskit.distribution`; `GaussianLaw` and `as_law` on EnsKit's block `Gaussian`; `test_inference` and `test_smc` off the deleted `pyeki.eki`; P1's references rewritten if their bytes move; CLAUDE.md's companion table, upgrade command and pyEKI facts |
-| E2 | `refactor/probability-e2-enskit-eki` | waiting | E1 | EnsKit's EKI driver: `eki_problem` in the terms of `enskit.algorithms.eki`; `initial_ensemble` an EnsKit `Ensemble` |
+| E1 | `refactor/probability-e1-enskit` | merged #88 | P9 | Re-pin from pyEKI to EnsKit's `main` (`TARPS-group/EnsKit`, package `enskit`), which moves JAX 0.8 to 0.10 and TFP's nightly with it; the `_linalg` shim on `enskit.linalg` and `enskit.distribution`; `GaussianLaw` and `as_law` on EnsKit's block `Gaussian`; `test_inference` and `test_smc` off the deleted `pyeki.eki`; P1's references rewritten if their bytes move; CLAUDE.md's companion table, upgrade command and pyEKI facts |
+| E2 | `refactor/probability-e2-enskit-eki` | open #89 | E1 | EnsKit's EKI driver: `eki_problem` in the terms of `enskit.algorithms.eki`; `initial_ensemble` an EnsKit `Ensemble` |
 | #69 | `feat/single-site-mcmc-vs-eki` | not this refactor's | P7, E2 | PR #69 migrates in its own session, onto the probability layer and EnsKit together |
 | R1 | `refactor/probability-r1-removal` | waiting | #69 migrated | Delete `parameters`, today's `ForwardModel`, the Flat API, the old `describe_calibration`; move the vocabulary into CLAUDE.md's glossary |
 
@@ -1239,3 +1239,80 @@ multi-block Gaussian, as P6 refused correlated sources.
   `initial_ensemble` an `Ensemble`, and §9.1 of the design rewritten. Then
   #69's migration in its own session, then R1. #69's branch breaks on
   rebasing or re-locking until it ports its `pyeki` imports.
+
+### 2026-10-05: E2, EnsKit's EKI driver
+
+**Done.** `inference.eki` in the terms of `enskit.algorithms.eki`:
+
+- `EKIProblem.initial_ensemble(key, n)` returns an unweighted EnsKit
+  `Ensemble` of one block, `theta` (`probability.names.THETA`), which
+  `eki.EKIState(ensemble, key=)` takes as it is; P7 returned theta
+  `(n, D)`. Nothing else in the adapter changed: `forward` already met
+  EnsKit's simulator contract, the one block arriving as its one positional
+  argument.
+- The module docstring, `inference/__init__`, CLAUDE.md (the layout, the
+  inference rule, the EnsKit facts) and the design's §9.1, its worked example
+  (§10.2) and its overview labels describe EnsKit's driver, with the interim
+  pyEKI text removed. §9.1 records "As built in E2".
+- Tests: `test_inference` builds the state from `initial_ensemble` directly
+  and checks its type and block; `enskit.testing.check_simulator` checks
+  `forward` against the simulator contract, row independence included, on
+  the toy that fails on a half-space; a new test pins `last_evaluation`
+  after a run that ends on its schedule, and the repair test pins it
+  before repair. `test_package` checks that the `inference` package
+  imports only `enskit.distribution` of EnsKit (in `eki.py`), and loads
+  none of its algorithms.
+
+Tests: 3102 passed and 96 skipped before; 3105 and 96 after (the three
+new EKI tests).
+
+**Review.** One Standard round: code, mutation testing, docs. No bug in
+the adapter. Fixed:
+
+- the docs said `last_evaluation` matches the driver's own last
+  evaluation; under `on_failure="repair"` the driver's is the repaired
+  ensemble and the adapter's the theta it was handed, so the docs now say
+  "after any inflation, before any repair and the update", and the repair
+  test pins it;
+- a `float64` forward map is refused against a narrower ensemble, which
+  the docs now say;
+- the package test asserted the exact set of EnsKit modules loaded, which
+  an upstream import would break; it now asserts that no
+  `enskit.algorithms` module is loaded;
+- mutation testing: 23 mutants, three survived. The `n < 2` test matched any
+  message, so EnsKit's own refusal passed it; it now matches the
+  adapter's. `check_simulator` never sees a failed row (two survivors
+  turned `NaN` rows into zeros), so its test's
+  docstring no longer claims it does (another test pins the `NaN` row);
+- docs: "the `inference` package" where the claim was the whole package's,
+  "particle" for our own text, a reused key in an example, and the package
+  docstring's import rule.
+
+Not acted on (nits): a state with extra blocks and no `inputs=` gets
+Python's argument-count `TypeError` (the docs now name `inputs="theta"`);
+a schedule returning `None` from `next_increment` makes a terminal
+evaluation, which no EnsKit schedule does; `forward` raises on a
+non-finite theta rather than returning a `NaN` row, which the driver never
+passes.
+
+**Deviations from the design.** None. §9.1 had sketched this signature
+already; E2 made it so.
+
+**Found while porting.** EnsKit's `run` never evaluates the final ensemble
+of a run that ends on one of its schedules (`EKIResult`'s Notes), where
+pyEKI's driver made a terminal evaluation through the forward map. So
+`problem.last_evaluation` is the last step's: theta after any inflation,
+before any repair and the update. P7's note that it "is then the final
+ensemble's" no longer holds. The final ensemble's predictions cost one more
+batch of runs, `problem.forward(result.ensemble["theta"])`, which replaces
+`last_evaluation`; the docstring, CLAUDE.md and §9.1 say so.
+
+**What the next sessions must know.**
+
+- #69's migration is next, in its own session: `eki.EKIState(
+  problem.initial_ensemble(ensemble_key, J), key=run_key)`, `kalman.Matheron()` or
+  `kalman.SymmetricSquareRoot()` as `update_rule=`, and the final
+  predictions by one more `problem.forward`, since `last_evaluation` is no
+  longer the final ensemble's. Its experiment still imports `pyeki.gauss`,
+  `pyeki.linalg` and `pyeki.eki`, none of which exist on `main`.
+- Then R1, which waits on #69's migration.

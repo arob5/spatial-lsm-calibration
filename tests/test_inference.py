@@ -27,6 +27,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from enskit import kalman
+from enskit import testing as enskit_testing
 from enskit.algorithms import eki
 from enskit.distribution import Ensemble
 from scipy import stats
@@ -206,7 +207,7 @@ def test_eki_from_an_ensemble_with_the_priors_moments_is_the_posterior():
 def test_eki_from_prior_draws_is_the_posterior_within_monte_carlo_error():
     problem = eki_problem(_posterior()[0])
     ensemble_key, run_key = jax.random.split(jax.random.key(3))
-    state = eki.EKIState(Ensemble({THETA: problem.initial_ensemble(ensemble_key, 2000)}), key=run_key)
+    state = eki.EKIState(problem.initial_ensemble(ensemble_key, 2000), key=run_key)
     result = eki.run(
         state, problem.forward, problem.y, problem.noise_covariance,
         update_rule=kalman.SymmetricSquareRoot(), schedule=eki.AdaptiveESSSchedule(ess_fraction=0.5),
@@ -223,8 +224,33 @@ def test_the_initial_ensemble_is_the_priors_draws():
     posterior, simulator = _posterior()
     problem = eki_problem(posterior)
     key = jax.random.key(5)
-    np.testing.assert_array_equal(np.asarray(problem.initial_ensemble(key, 7)), np.asarray(posterior.sample_prior(key, 7)))
+    ensemble = problem.initial_ensemble(key, 7)
+    assert isinstance(ensemble, Ensemble) and ensemble.names == (THETA,) and not ensemble.is_weighted
+    np.testing.assert_array_equal(np.asarray(ensemble[THETA]), np.asarray(posterior.sample_prior(key, 7)))
     assert simulator.batch_sizes == []
+
+
+def test_the_forward_map_is_a_simulator_in_enskits_sense():
+    """Rows independent and deterministic, ``(J, D) -> (J, N)``, on a
+    posterior that can fail; a failed row's ``NaN`` is pinned below."""
+    enskit_testing.check_simulator(eki_problem(_posterior(FAILS_ABOVE)[0]).forward, D, N)
+
+
+def test_the_last_evaluation_is_the_drivers_last():
+    """A run that ends on its schedule never evaluates its final ensemble:
+    the last evaluation is of the ensemble before the last update, as the
+    driver's own is."""
+    problem = eki_problem(_posterior()[0])
+    ensemble_key, run_key = jax.random.split(jax.random.key(6))
+    result = eki.run(
+        eki.EKIState(problem.initial_ensemble(ensemble_key, 20), key=run_key),
+        problem.forward, problem.y, problem.noise_covariance,
+        update_rule=kalman.SymmetricSquareRoot(), schedule=eki.FixedSchedule.constant(0.5, n_steps=2),
+    )
+    assert result.n_evaluations == 2
+    evaluated = np.asarray(result.last_evaluation.ensemble[THETA])
+    np.testing.assert_array_equal(np.asarray(problem.last_evaluation.theta), evaluated)
+    assert not np.array_equal(evaluated, np.asarray(result.ensemble[THETA]))
 
 
 def test_a_failed_sample_is_a_nan_row_of_predictions():
@@ -239,7 +265,7 @@ def test_a_failed_sample_is_a_nan_row_of_predictions():
 def test_eki_repairs_failed_members_and_runs_to_the_end():
     problem = eki_problem(_posterior(FAILS_ABOVE)[0])
     ensemble_key, run_key = jax.random.split(jax.random.key(4))
-    state = eki.EKIState(Ensemble({THETA: problem.initial_ensemble(ensemble_key, 200)}), key=run_key)
+    state = eki.EKIState(problem.initial_ensemble(ensemble_key, 200), key=run_key)
     with pytest.warns(UserWarning, match="were not finite and were repaired"):
         result = eki.run(
             state, problem.forward, problem.y, problem.noise_covariance,
@@ -247,7 +273,12 @@ def test_eki_repairs_failed_members_and_runs_to_the_end():
             on_failure="repair",
         )
     assert float(result.state.beta) == 1.0
-    assert not bool(np.asarray(problem.last_evaluation.valid).all())
+    valid = np.asarray(problem.last_evaluation.valid)
+    assert not valid.all()
+    # The adapter holds the theta it was handed; the driver's evaluation, the repaired ensemble.
+    theta, repaired = np.asarray(problem.last_evaluation.theta), np.asarray(result.last_evaluation.ensemble[THETA])
+    np.testing.assert_array_equal(theta[valid], repaired[valid])
+    assert not np.isin(theta[~valid], repaired[~valid]).any()
 
 
 def test_eki_needs_a_gaussian_likelihood():
@@ -473,5 +504,5 @@ def test_a_base_without_an_integer_dimension_is_refused(base, match):
 
 
 def test_an_initial_ensemble_of_one_member_is_refused():
-    with pytest.raises(ValueError, match="n"):
+    with pytest.raises(ValueError, match="n must be at least 2, got 1"):
         eki_problem(_posterior()[0]).initial_ensemble(jax.random.key(0), 1)

@@ -477,7 +477,8 @@ coercion lives in `validation.py`.
   and SIPNET are the adapter layer's (`site_dims.py`,
   `sipnet_parameter_map.py`, `forward.py`).
 - **`inference/`**, the inference adapters, imports `probability`, `smc` and
-  `validation` only, and no algorithm package (tested): it reads a
+  `validation` only, and no algorithm package (tested): of EnsKit, only
+  `inference/eki.py` imports anything, its `Ensemble`. It reads a
   `Posterior` and nothing of SIPNET, so the experiment imports EnsKit's
   driver or emcee and hands it what an adapter returns.
 - **`tests/conftest.py`** holds every fixture or builder more than one test
@@ -1202,7 +1203,9 @@ src/sipnet_calibration/
                           # probability, smc and validation only (tested), and
                           # no algorithm package; __init__ re-exports it
     eki.py                # EKIProblem (forward, y, noise_covariance,
-                          # last_evaluation, initial_ensemble), eki_problem()
+                          # last_evaluation, initial_ensemble -> an EnsKit
+                          # Ensemble of one block, theta), eki_problem(): what
+                          # enskit.algorithms.eki's driver reads
     tempering.py          # PriorBaseDensity, tempering_problem() -> an
                           # smc.TemperingProblem, predictions as auxiliary
     mcmc.py               # batched_log_density(), log_density(),
@@ -1703,7 +1706,12 @@ plotting code. The load-bearing rules:
   block and returns `(J, N)`. `update_rule` is required: `enskit.kalman.SymmetricSquareRoot()`
   (deterministic, exact in moments for the linear-Gaussian case) or `kalman.Matheron()`
   (stochastic). `on_failure="repair"` moves a particle whose prediction is not finite to the
-  valid particles' center and warns once at the end of the run.
+  valid particles' center and warns once at the end of the run. A run that ends on one of
+  EnsKit's schedules never evaluates its final ensemble: `result.last_evaluation.ensemble`
+  holds the particles before the last update (after inflation and repair), and
+  `EKIProblem.last_evaluation` the theta its forward map was handed then (before repair). A
+  forward map returning a dtype wider than the ensemble's is refused, so a `float64` forward
+  map needs a `float64` ensemble.
 - `typing.get_type_hints` cannot resolve EnsKit's `Gaussian` (its `Array` annotation is
   imported for type checking only), so `tests/test_package.py`'s hint check skips names
   re-exported from another package.

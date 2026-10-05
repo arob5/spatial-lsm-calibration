@@ -137,8 +137,9 @@ def _loaded_outside(package: str, allowed: tuple[str, ...], companions: tuple[st
     return result.stdout.strip()
 
 
-def _files_importing(package: str, top_level: str) -> list[str]:
-    """The files under *package* that import *top_level*, or a module of it."""
+def _modules_importing(package: str, top_level: str) -> list[str]:
+    """Each import of *top_level*, or a module of it, under *package*, as
+    ``"<file>: <module>"``; ``from x import y`` names ``x``."""
     import ast
     import importlib
     from pathlib import Path
@@ -152,10 +153,13 @@ def _files_importing(package: str, top_level: str) -> list[str]:
                 else [node.module or ""] if isinstance(node, ast.ImportFrom) and node.level == 0
                 else []
             )
-            if any(name.split(".")[0] == top_level for name in names):
-                found.append(path.name)
-                break
+            found.extend(f"{path.name}: {name}" for name in names if name.split(".")[0] == top_level)
     return found
+
+
+def _files_importing(package: str, top_level: str) -> list[str]:
+    """The files under *package* that import *top_level*, or a module of it."""
+    return sorted({entry.split(": ")[0] for entry in _modules_importing(package, top_level)})
 
 
 def test_the_parameter_layer_imports_nothing_of_the_package_outside_itself():
@@ -206,3 +210,16 @@ def test_the_inference_adapters_read_only_a_posterior():
     assert _imports_outside("sipnet_calibration.inference", allowed) == []
     loaded = (*allowed, "sipnet_calibration.io", "sipnet_calibration.conventions")
     assert _loaded_outside("sipnet_calibration.inference", loaded, ("pyens",)) == "[]"
+
+
+def test_the_inference_adapters_import_no_algorithm_package():
+    """The adapters hand each algorithm what it takes and import none: of
+    EnsKit, only ``inference/eki.py`` imports anything, its ``Ensemble``, and
+    importing the package loads none of EnsKit's algorithms."""
+    assert _modules_importing("sipnet_calibration.inference", "enskit") == ["eki.py: enskit.distribution"]
+    code = (
+        "import sys; import sipnet_calibration.inference; "
+        "print(sorted(m for m in sys.modules if m == 'enskit.algorithms' or m.startswith('enskit.algorithms.')))"
+    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
+    assert result.stdout.strip() == "[]"
