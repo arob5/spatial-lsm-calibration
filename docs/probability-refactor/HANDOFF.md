@@ -27,14 +27,17 @@ and proofs are the design's §12; the column below is a summary.
 | P5 | `refactor/probability-p5-simulator` | merged #81 | P3, P4 | The `Simulator` seam; `SIPNETRuns`, with today's `ForwardModel` delegating to it; `SIPNETSimulator`; F6, F7 |
 | P6 | `refactor/probability-p6-gaussian` | merged #83 | P5 | Covariance specs, `GaussianSpec`, `noise_factor`, `gaussian_likelihood`, through the `probability/_linalg.py` shim over today's pyEKI |
 | P7 | `refactor/probability-p7-inference` | merged #84 | P6 | The `inference` package on today's pyEKI |
-| #69 | `feat/single-site-mcmc-vs-eki` | not this refactor's | P7 | PR #69 migrates in its own session |
 | P8 | `refactor/probability-p8-conjugacy` | merged #85 | P6 | `marginalize`, `full_conditional`, `theta_with` |
 | P9 | `refactor/probability-p9-foreign-laws` | open #86 | P3 | numpyro and EnsKit `Gaussian` adapters; GPJax as an optional test group |
+| E1 | `refactor/probability-e1-enskit` | waiting | P9 | Re-pin from pyEKI to EnsKit's `main` (`TARPS-group/EnsKit`, package `enskit`), which moves JAX 0.8 to 0.10 and TFP's nightly with it; the `_linalg` shim on `enskit.linalg` and `enskit.distribution`; `GaussianLaw` and `as_law` on EnsKit's block `Gaussian`; `test_inference` and `test_smc` off the deleted `pyeki.eki`; P1's references rewritten if their bytes move; CLAUDE.md's companion table, upgrade command and pyEKI facts |
+| E2 | `refactor/probability-e2-enskit-eki` | waiting | E1 | EnsKit's EKI driver: `eki_problem` in the terms of `enskit.algorithms.eki`; `initial_ensemble` an EnsKit `Ensemble` |
+| #69 | `feat/single-site-mcmc-vs-eki` | not this refactor's | P7, E2 | PR #69 migrates in its own session, onto the probability layer and EnsKit together |
 | R1 | `refactor/probability-r1-removal` | waiting | #69 migrated | Delete `parameters`, today's `ForwardModel`, the Flat API, the old `describe_calibration`; move the vocabulary into CLAUDE.md's glossary |
-| E1–E3 | `refactor/probability-e<k>-enskit` | waiting | EnsKit PRs 1, 2 and 4, 7 | The pyEKI-to-EnsKit rename, EnsKit's `linalg` and `Gaussian`, EnsKit's EKI driver |
 
 The plan allows P2 and P4 to run in parallel with P1. The workflow takes one PR
 at a time, in table order, unless Andrew starts a parallel session himself.
+E1 and E2 replace the plan's E1–E3, which were to follow EnsKit's rewrite
+piece by piece; it is complete (`design.html` §12, "Revised 2026-10-05").
 
 ## Decisions
 
@@ -42,12 +45,32 @@ The design's §13 lists decisions D1–D24, each marked "agreed" or "recommend".
 Until Andrew overrides one, a session implements the design as written,
 recommendations included, and reports any recommendation it finds doubtful.
 
+Decided by Andrew:
+
+- **Track EnsKit's `main` (2026-10-05).** EnsKit's rewrite of pyEKI is
+  complete, and the project re-pins to its `main` in E1, after P9. Until E1
+  merges, sessions still do not upgrade pyEKI; after it, `enskit` is upgraded
+  with the other companions. This settles the earlier question of pinning
+  pyEKI.
+  - E1 comes before #69's migration so that #69 moves once. Its experiment
+    imports `pyeki.gauss`, `pyeki.linalg` and `pyeki.eki`, and EnsKit's
+    `main` has none of the first and last. Once E1 is on `main`, #69's branch
+    breaks on rebasing or re-locking until its migration ports those
+    imports; #69's session should know before it starts.
+  - E1's environment was resolved and smoke-tested in a scratch copy on
+    2026-10-05: EnsKit requires `jax>=0.10.1`, which locks JAX 0.10.2,
+    `tfp-nightly` 0.26.0.dev20261005 and NumPy 2.5. TFP's JAX substrate,
+    numpyro, GPJax and EnsKit imported and evaluated there. EnsKit's
+    `linalg` keeps every operator name the shim imports; its `Gaussian`
+    (`enskit.distribution`) is block-structured, `Gaussian(means, *,
+    factors=, block_covs=, latent_dim=)`.
+  - P1's byte test depends on the JAX and TFP builds. If E1 moves the bytes,
+    rerun the script and commit the new files, keeping the notes under P1:
+    `forward_example` is rewritten only from code before P5. Pre-P5 `src/`
+    imports no pyEKI, so it can run in E1's environment.
+
 ## Open questions for Andrew
 
-- **Pin pyEKI?** EnsKit's PR 1 renames `pyeki` to `enskit`. A session elsewhere
-  that runs CLAUDE.md's standard companion upgrade would then break every pyEKI
-  import, PR #69's included. The refactor's sessions do not upgrade pyEKI.
-  Pinning its revision in `[tool.uv.sources]` would protect everyone.
 - **The recommended decisions** (§13): D1, D2, D5, D7, D8, D9, D10, D11, D12,
   D13, D14, D18–D24.
 - **An observation's calendar year (P4).** `calendar_year` and
@@ -1087,8 +1110,9 @@ lifts; it is now `test_pushforward_takes_a_law`.
 **Deviations from the design**, each recorded in `design.html` ("As built
 in P9"):
 
-- EnsKit's `Gaussian` is not released, so pyEKI's is adapted, through the
-  `_linalg` shim; E2 swaps the class there;
+- the project still pins pyEKI from before EnsKit's rename, so pyEKI's
+  `Gaussian` is adapted, through the `_linalg` shim; E1 moves the shim and
+  the adapter to EnsKit's;
 - numpyro is recognized by class name, not imported, and is not a
   dependency of the package;
 - `pushforward` of a non-TFP base returns a `PushforwardLaw`, the design
@@ -1110,5 +1134,6 @@ fixed law over its block, not one centered on another component.
 - GPJax's `GaussianDistribution` flattens to a pytree with no leaves, so a
   structure check cannot see its parameters; the adapter's class and the
   distribution's class are what it compares.
-- #69's migration is next; it is not this refactor's session. R1 waits on
-  it, and E1–E3 on EnsKit.
+- E1 is next, once this PR merges: the re-pin to EnsKit's `main` (see
+  "Decided by Andrew"). Then E2, then #69's migration in its own session,
+  then R1.
