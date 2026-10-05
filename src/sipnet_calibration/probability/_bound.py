@@ -223,8 +223,9 @@ class BoundFactor:
         evaluate; its support is not, since that would be checked at values
         no simulation gave. A Gaussian factor, given its bound *covariance*,
         is checked for its event, and its covariance for being positive
-        definite at each draw unless *covariance_is_checked* is false, for a
-        covariance that reads a placeholder."""
+        definite unless *covariance_is_checked* is false, for a covariance
+        that reads something varying by draw, which a sample at which it is
+        not positive definite makes invalid instead."""
         unbuilt = cls(
             spec=spec,
             index_shape=index_shape,
@@ -288,13 +289,21 @@ class BoundFactor:
         law = self.spec.law
         if isinstance(law, GaussianSpec):
             reads = self._reads(given)
+            mean = reads[law.mean[0]]
+            check_gaussian_mean_has_its_events_shape(self.name, law.mean[0], jnp.shape(mean), self.natural_shapes[self.names[0]])
             covariance = self.held_covariance if self.held_covariance is not None else self.covariance.operator(reads)
-            return GaussianLaw(reads[law.mean[0]], covariance)
+            return GaussianLaw(mean, covariance)
         if isinstance(law, Builder):
             return law(self.index_shape, **self._reads(given))
         if is_law(law):
             return law
         return law(**self._reads(given))
+
+    def covariance_reads(self, given: Mapping[str, Array]) -> dict[str, Any]:
+        """What a Gaussian factor's covariance reads, from *given* and its
+        fixed reads."""
+        names = self.spec.law.covariance.reads
+        return {name: self.fixed_reads[name] if name in self.fixed_reads else given[name] for name in names}
 
     def probes(self) -> Array:
         """:func:`joint_probe_points` over the components' unconstrained
@@ -375,12 +384,6 @@ class BoundFactor:
     def _reads(self, given: Mapping[str, Array]) -> dict[str, Any]:
         """What its law reads: the given values it names, and its fixed reads."""
         return {**{name: given[name] for name in self.spec.given}, **self.fixed_reads}
-
-    def covariance_reads(self, given: Mapping[str, Array]) -> dict[str, Any]:
-        """What a Gaussian factor's covariance reads, from *given* and its
-        fixed reads."""
-        names = self.spec.law.covariance.reads
-        return {name: self.fixed_reads[name] if name in self.fixed_reads else given[name] for name in names}
 
     def _built_gaussian(
         self, per_draw_values: Sequence[Mapping[str, Array]], fixed_values: Mapping[str, Array], *, covariance_is_checked: bool
@@ -888,6 +891,16 @@ def check_simulator_at_keeps_its_parts(simulator: Simulator, bound: Any, outputs
         raise ValueError(
             f"the simulator {simulator.name!r}'s at() returned {bound!r}, which does not read what it read or "
             f"compute exactly {sorted(outputs)}; at() restricts the labels and outputs only."
+        )
+
+
+def check_gaussian_mean_has_its_events_shape(name: str, mean_name: str, shape: tuple[int, ...], expected: tuple[int, ...]) -> None:
+    """A Gaussian factor's mean has its event's block shape at the labels in
+    use."""
+    if tuple(shape) != tuple(expected):
+        raise ValueError(
+            f"the Gaussian factor {name!r} is centered on {mean_name!r} of shape {tuple(shape)}, but its event's "
+            f"block is {tuple(expected)}; compute the mean at the labels in use."
         )
 
 

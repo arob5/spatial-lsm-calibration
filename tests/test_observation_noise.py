@@ -319,8 +319,18 @@ def test_a_noise_factor_of_a_source_not_in_the_vector_is_refused(vector):
         noise_factor(vector, "gedi_aboveground_biomass", covariance=COVARIANCES[LAI])
 
 
-def test_a_static_sources_noise_factor_reading_times_is_refused_at_joint(vector):
-    factor = noise_factor(vector, SOIL, covariance=BlockDiagonalSpec(DenseSpec(nee_night_block), by="site"))
-    assert "time_since_epoch" not in factor.constants
-    with pytest.raises(ValueError, match="time_since_epoch"):
-        joint(factor, FactorSpec(ArraySpec("offset", units="1"), law=normal(mean=0.0, standard_deviation=1.0)))
+def test_a_noise_factor_reading_a_constant_its_source_lacks_is_refused(vector):
+    with pytest.raises(ValueError, match=r"reads \['time_since_epoch'\], which the source does not have"):
+        noise_factor(vector, SOIL, covariance=BlockDiagonalSpec(DenseSpec(nee_night_block), by="site"))
+    bare = ObservationVector(observation_sources=[ObservationSource(
+        observation_source_name=SOIL, observed_values=vector[SOIL].observed_values,
+        operator=ReduceOverRun("soil_carbon", how="mean"))])
+    with pytest.raises(ValueError, match="give the source a standard deviation"):
+        noise_factor(bare, SOIL, covariance=COVARIANCES[SOIL])
+
+
+def test_a_noise_factors_covariance_and_constants_are_of_their_types(vector):
+    with pytest.raises(TypeError, match="give a covariance spec"):
+        noise_factor(vector, SOIL, covariance="standard_deviation")
+    with pytest.raises(TypeError, match=r"give \{name: DataArray\}"):
+        noise_factor(vector, SOIL, covariance=COVARIANCES[SOIL], constants=[1])

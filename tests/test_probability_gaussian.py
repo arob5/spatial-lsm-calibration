@@ -22,6 +22,7 @@ import xarray as xr
 from tensorflow_probability.substrates import jax as tfp
 
 from sipnet_calibration.probability import (
+    NON_NEGATIVE,
     POSITIVE,
     POSITIVE_DEFINITE,
     REAL,
@@ -201,6 +202,26 @@ def test_a_sum_needing_a_dense_matrix_over_the_event_is_refused(terms):
         _model(SumSpec(*terms))
 
 
+def _scale():
+    return FactorSpec(ArraySpec("s", units="1", support=POSITIVE), law=log_normal(median=1.0, geometric_sd=2.0))
+
+
+@pytest.mark.parametrize("hidden", [
+    ScaledSpec(BlockDiagonalSpec(DenseSpec(correlated), by="site"), scale="s"),
+    SumSpec(BlockDiagonalSpec(DenseSpec(correlated), by="site"), DiagonalSpec("variance")),
+])
+def test_a_block_diagonal_held_inside_a_sums_term_is_refused(hidden):
+    with pytest.raises(ValueError, match="hold a block-diagonal inside"):
+        _model(SumSpec(hidden, DiagonalSpec("variance")), _scale())
+
+
+def test_a_scaled_term_of_a_dense_sum_is_scaled():
+    model = _model(SumSpec(ScaledSpec(DenseSpec(correlated), scale="s"), DiagonalSpec("variance")), _scale())
+    expected = 2.5 * _correlated(np.arange(N)) + np.diag(VARIANCE)
+    np.testing.assert_allclose(_dense(model, {"s": 2.5}), expected, rtol=1e-12)
+    _check_density(model, expected, {"s": 2.5})
+
+
 def test_a_sum_has_two_terms():
     with pytest.raises(ValueError, match="at least two"):
         SumSpec(DiagonalSpec("variance"))
@@ -242,6 +263,12 @@ def test_a_scale_whose_support_is_not_positive_is_refused():
         _model(ScaledSpec(DenseSpec(correlated), scale="scale"), scale)
 
 
+def test_a_scale_that_may_be_zero_is_refused():
+    scale = FactorSpec(ArraySpec("scale", units="1", support=NON_NEGATIVE), law=log_normal(median=1.0, geometric_sd=2.0))
+    with pytest.raises(ValueError, match="is not positive"):
+        _model(ScaledSpec(DenseSpec(correlated), scale="scale"), scale)
+
+
 def test_a_scaled_base_may_not_read_its_scale():
     with pytest.raises(ValueError, match="reads its scale"):
         ScaledSpec(DiagonalSpec("scale"), scale="scale")
@@ -268,6 +295,49 @@ def test_groupings_nest():
 def test_a_grouping_whose_groups_are_not_contiguous_is_refused():
     with pytest.raises(ValueError, match="not contiguous"):
         _model(BlockDiagonalSpec(DenseSpec(correlated), by="year"))
+
+
+@pytest.mark.parametrize("by", [[], ["site", "site"]])
+def test_a_grouping_names_distinct_levels(by):
+    with pytest.raises(ValueError, match="one or more distinct levels"):
+        BlockDiagonalSpec(DenseSpec(correlated), by=by)
+
+
+def _per_site(values, sites=SITES) -> xr.DataArray:
+    return xr.DataArray(np.asarray(values, dtype=np.float64), dims=("site",), coords={"site": sites})
+
+
+def test_a_per_site_constant_on_an_own_dim_is_read_at_each_groups_label():
+    """No component is indexed by site, so site is the factor's own dim,
+    labeled by its constants, here in another order than the event's."""
+    y = FactorSpec(
+        ArraySpec("y", units="1", support=REAL, indexed_by=("obs",)),
+        law=GaussianSpec(mean="m", covariance=BlockDiagonalSpec(DiagonalSpec("site_variance"), by="site")),
+        constants={"site_variance": _per_site([3.0, 1.0, 2.0], sites=[9, 3, 5])}, own_dims=["site"],
+    )
+    model = joint(y, _mean(), _mu()).bind(coords={"obs": LABELS})
+    by_site = {9: 3.0, 3: 1.0, 5: 2.0}
+    np.testing.assert_allclose(np.diag(_dense(model)), [by_site[s] for s in LABELS.get_level_values("site")])
+
+
+def test_constants_on_an_own_dim_labeled_two_ways_are_refused():
+    y = FactorSpec(
+        ArraySpec("y", units="1", support=REAL, indexed_by=("obs",)),
+        law=GaussianSpec(mean="m", covariance=BlockDiagonalSpec(DiagonalSpec(lambda a, b: a * b), by="site")),
+        constants={"a": _per_site([1.0, 2.0, 3.0]), "b": _per_site([1.0, 2.0, 3.0], sites=[9, 5, 3])},
+        own_dims=["site"],
+    )
+    with pytest.raises(ValueError, match="with different labels"):
+        joint(y, _mean(), _mu()).bind(coords={"obs": LABELS})
+
+
+def test_a_group_split_by_one_entry_is_not_contiguous():
+    labels = pd.MultiIndex.from_tuples([(1, 0), (2, 0), (1, 1)], names=["site", "t"])
+    y = FactorSpec(ArraySpec("y", units="1", support=REAL, indexed_by=("obs",)),
+                   law=GaussianSpec(mean="mu3", covariance=BlockDiagonalSpec(DiagonalSpec(lambda: 1.0), by="site")))
+    mean = DeterministicSpec(ArraySpec("mu3", units="1", indexed_by=("obs",)), function=lambda mu: jnp.full((3,), mu))
+    with pytest.raises(ValueError, match="not contiguous"):
+        joint(y, mean, _mu()).bind(coords={"obs": labels})
 
 
 def test_a_grouping_by_what_is_not_a_level_is_refused():
@@ -367,6 +437,20 @@ def test_a_gaussian_event_is_one_vector_on_the_reals(event):
         FactorSpec(event, law=GaussianSpec(mean="m", covariance=DiagonalSpec("v")), constants={"v": CONSTANTS["variance"]})
 
 
+def test_a_gaussian_mean_that_is_a_constant_is_refused_at_joint():
+    y = FactorSpec(ArraySpec("y", units="1", support=REAL, indexed_by=("obs",)),
+                   law=GaussianSpec(mean="variance", covariance=DiagonalSpec("t")), constants=CONSTANTS)
+    with pytest.raises(ValueError, match="not a component or input"):
+        joint(y, _mu())
+
+
+def test_a_gaussian_mean_of_another_shape_is_named_as_the_mean():
+    mean = DeterministicSpec(ArraySpec("m", units="1", indexed_by=("obs",)), function=lambda mu: jnp.full((4,), mu))
+    with pytest.raises(ValueError, match=r"centered on 'm' of shape \(4,\)"):
+        joint(_y(DiagonalSpec("variance"), constants={"variance": CONSTANTS["variance"]}), mean, _mu()).bind(
+            coords={"obs": LABELS})
+
+
 def test_a_gaussian_mean_of_other_units_or_dims_is_refused_at_joint():
     with pytest.raises(ValueError, match="layout and units"):
         joint(_y(DiagonalSpec("variance"), constants={"variance": CONSTANTS["variance"]}, units="m"), _mean(), _mu())
@@ -410,6 +494,16 @@ def test_a_pyeki_gaussian_is_a_law():
     np.testing.assert_allclose(
         np.asarray(law.log_prob(Y)), st.multivariate_normal(np.zeros(N), _by_site(_correlated)).logpdf(Y), rtol=1e-12
     )
+
+
+def test_a_gaussian_law_over_a_matrix_block_is_over_its_entries_in_c_order():
+    covariance = _by_site(_correlated)[:6, :6]
+    law = GaussianLaw(jnp.zeros((2, 3)), _linalg.DensePSD(jnp.asarray(covariance)))
+    points = RNG.normal(size=(4, 2, 3))
+    expected = st.multivariate_normal(np.zeros(6), covariance).logpdf(points.reshape(4, 6))
+    np.testing.assert_allclose(np.asarray(law.log_prob(points)), expected, rtol=1e-12)
+    assert jnp.shape(law.log_prob(points[0])) == ()
+    assert law.sample((5,), seed=KEY).shape == (5, 2, 3)
 
 
 def test_a_gaussian_law_needs_an_operator_over_its_block_and_a_key():
@@ -475,6 +569,16 @@ def test_a_covariance_reading_a_parameter_is_built_per_sample():
         for mu, s in ((0.2, 0.5), (-0.4, 3.0))
     ]
     np.testing.assert_allclose(np.asarray(posterior.log_likelihood(theta)), expected, rtol=1e-12)
+
+
+def test_a_prior_putting_mass_on_covariances_that_are_not_positive_definite_binds():
+    """A correlation drawn wide of (-1, 1) is checked per sample, not at the
+    draws binding is made at."""
+    rho = FactorSpec(ArraySpec("rho", units="1", support=REAL), law=normal(mean=0.0, standard_deviation=50.0))
+    covariance = DenseSpec(lambda rho: (1.0 - rho) * jnp.eye(N) + rho * jnp.ones((N, N)))
+    model = _model(covariance, rho, constants={})
+    evaluation = condition_on(model, {"y": Y}).evaluate(jnp.array([[0.0, 0.3], [0.0, 2.0]]))
+    assert evaluation.valid.tolist() == [True, False]
 
 
 def test_a_sample_whose_covariance_is_not_positive_definite_is_invalid():

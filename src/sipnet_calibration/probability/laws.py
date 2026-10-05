@@ -42,8 +42,9 @@ Notes
 Adapters for EnsKit's ``Gaussian`` and numpyro's distributions, which
 :func:`as_law` will recognize by class, come with the foreign-law PR (P9);
 until then they are given as objects implementing :class:`Law`. Today's
-``pyeki.gauss.Gaussian``, which EnsKit's replaces, is adapted already, as
-a :class:`GaussianLaw`.
+``pyeki.gauss.Gaussian``, which EnsKit's replaces, :func:`as_law` makes a
+:class:`GaussianLaw`, which a factor's law function may return; a factor
+whose law is given as one directly comes with P9.
 """
 
 from __future__ import annotations

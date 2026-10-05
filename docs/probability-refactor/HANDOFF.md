@@ -24,8 +24,8 @@ and proofs are the design's §12; the column below is a summary.
 | P2 | `refactor/probability-p2-foundations` | merged #78 | P0 | Supports, with `PositiveDefinite`; `ArraySpec`; `labels` v2; `Layout`; encode and decode; shims left in `parameters` (split into P2a and P2b if large) |
 | P3 | `refactor/probability-p3-prior-model` | merged #79 | P1, P2 | Laws, families, builders; `FactorSpec`, `DeterministicSpec`, decorators; `joint`, `bind`, `FactoredDistribution`; `condition_on` and `Posterior` without simulators |
 | P4 | `refactor/probability-p4-adapter-prep` | merged #80 | P2 | F8; the SIPNET map on dicts and `ArraySpec`s; `ObservationSource.standard_deviation`; the observation dims and constants; `observation.model` |
-| P5 | `refactor/probability-p5-simulator` | open #81 | P3, P4 | The `Simulator` seam; `SIPNETRuns`, with today's `ForwardModel` delegating to it; `SIPNETSimulator`; F6, F7 |
-| P6 | `refactor/probability-p6-gaussian` | waiting | P5 | Covariance specs, `GaussianSpec`, `noise_factor`, `gaussian_likelihood`, through the `probability/_linalg.py` shim over today's pyEKI |
+| P5 | `refactor/probability-p5-simulator` | merged #81 | P3, P4 | The `Simulator` seam; `SIPNETRuns`, with today's `ForwardModel` delegating to it; `SIPNETSimulator`; F6, F7 |
+| P6 | `refactor/probability-p6-gaussian` | open #PR | P5 | Covariance specs, `GaussianSpec`, `noise_factor`, `gaussian_likelihood`, through the `probability/_linalg.py` shim over today's pyEKI |
 | P7 | `refactor/probability-p7-inference` | waiting | P6 | The `inference` package on today's pyEKI |
 | #69 | `feat/single-site-mcmc-vs-eki` | not this refactor's | P7 | PR #69 migrates in its own session |
 | P8 | `refactor/probability-p8-conjugacy` | waiting | P6 | `marginalize`, `full_conditional`, `theta_with` |
@@ -81,6 +81,34 @@ recommendations included, and reports any recommendation it finds doubtful.
   safe. Recommended: P5's `check_given` checks the given `ArraySpec`s'
   element labels, and the map transposes by label where a value carries
   them; or leave it, the risk being a hand-built Dataset.
+- **`noise_factor`'s source argument (P6, found in review).** The design
+  writes `noise_factor(vector, observation_source_names: str |
+  Sequence[str], /, ...)`, and P6 keeps it, accepting one name or a
+  sequence of one. CLAUDE.md's rule refuses a bare string for a sequence
+  argument, and a name argument is singular. Recommended: make it
+  `observation_source_name: str` now, and add the plural form with the
+  correlated-sources factor (open item below); the alternative keeps the
+  design's signature, which breaks the convention until then.
+- **Correlated sources (P6).** A Gaussian whose event spans several
+  components, each on its own observation dim, is refused at `GaussianSpec`
+  and `noise_factor`. Building it needs: `FactorSpec`'s joint-factor rule
+  relaxed for a Gaussian; per-component index shapes in `BoundFactor`; a
+  rule for a constant read on several dims (the design's "concatenated in
+  event order" says nothing of how one constant names several); and the
+  permuted residual of the design's §14, with the EKI view holding the
+  block dense. Recommended: build it when an experiment correlates two
+  sources' errors; no current one does.
+- **"Depends on theta" for a covariance (P6).** D21 says "has a target
+  ancestor". P6 holds a covariance when it is computable from the held
+  values (observed values, inputs, constants and their deterministics), so
+  one reading an observed value that itself has a target ancestor is held.
+  That is exact, the value being held in the conditional, and more
+  permissive than D21. Recommended: keep it.
+- **An asymmetric `DenseSpec` matrix (P6, found in review).** pyEKI's
+  `DensePSD` factors the symmetric part, so a matrix function returning an
+  asymmetric matrix is used as `(A + A^T)/2` without an error. The docstring
+  says so. Recommended: add a symmetry check on concrete matrices (bind and
+  held covariances) if it bites; it cannot run under the per-draw trace.
 
 ## Notes for implementers
 
@@ -630,3 +658,111 @@ two-outputs and finiteness rules, the theta mask and `log_density_given`'s
 - `FactoredDistribution._computed`, `_ancestral` and `_simulate` take a
   `simulators` mapping, so a caller can pass pruned ones, and record each
   run's `SimulatorOutput` in `runs`.
+
+### 2026-10-05: P6, the Gaussian observation model
+
+**Done.**
+
+- `probability/_linalg.py`: the one shim over pyEKI, re-exporting
+  `Gaussian`, `PSDLinOp`, `PSDDiagonal`, `DensePSD`, `PSDScaled`,
+  `PSDBlockDiag`, `block_diag` and `UnsupportedOpError`. `tests/test_package.py`
+  now allows pyEKI in `parameters` and `probability` only through it, and
+  checks it is the one file importing pyEKI.
+- `probability/covariance.py`: `CovarianceSpec` and `DiagonalSpec`,
+  `DenseSpec`, `SumSpec`, `ScaledSpec`, `BlockDiagonalSpec`,
+  `SubmatrixSpec`. Each is bound to its scope at `bind` (`_at(scope)`: the
+  groups are fixed then) and builds a pyEKI operator, or a dense matrix for
+  a sum, per draw.
+- `probability.parts.GaussianSpec(mean=, covariance=)`, a factor's fourth
+  law form; `probability.laws.GaussianLaw`, what it evaluates to, a `Law`
+  over the block holding the operator and the pyEKI `Gaussian`; `as_law`
+  turns a `pyeki.gauss.Gaussian` into one.
+- Binding (`model.py`, `_bound.py`): a Gaussian factor's covariance spec is
+  bound with it; `joint` checks its mean matches its event in layout and
+  units; `describe` says `"Gaussian"`.
+- `Posterior`: a Gaussian factor's covariance computable from the held
+  values is built and factored once at `condition_on` (refused there if not
+  positive definite), and `gaussian_likelihood() -> GaussianLikelihood`
+  (`y`, `noise_covariance` block-diagonal in y's order, `forward(theta) ->
+  (predictions, valid, evaluation)`, `mean_names`, `posterior`).
+- `observation.model.noise_factor`: one source's Gaussian factor, holding
+  the source constants its covariance reads.
+- Tests: 2909 passed and 94 skipped at P5's merge; 2987 and 95 after (one more
+  skip: the real-data test below, without processed files).
+  - Every covariance spec against the dense matrix it stands for, on a
+    stacked dim of three sites with ragged times, and its density against
+    SciPy; nested groupings, per-site scales, submatrices of an
+    inverse-Wishart component.
+  - PR #69's one-site `R`: its four block builders and `config.py` values
+    transcribed, against noise factors on four synthetic sources shaped as
+    its own, equal to 1e-12; its pyEKI `Gaussian`'s log density equals the
+    posterior's log likelihood. A second test repeats the three constraint
+    blocks on the local processed files at Harvard Forest (4977), skipped
+    without them; it passes with `SIPNET_CALIBRATION_DATA` pointed at the
+    root's `data/`.
+  - The Gaussian likelihood's forward map through `SIPNETSimulator` equals
+    P1's `forward_example` predictions, by label, in y's order.
+
+**Review.** One Deep round, four reviewers: numerics, edge cases,
+mutation testing, docs. The numerics reviewer found no wrong density,
+ordering or held-covariance decision. Fixed:
+
+- binding refused a model whose covariance reads a parameter and is not
+  positive definite at one of the two ancestral draws (a correlation with a
+  wide prior); such a covariance is now checked per sample only, and its
+  draws are `NaN` where it fails, not "a value on its support's boundary";
+- a block-diagonal inside a sum's scaled or nested term was summed as a
+  dense matrix over the whole event; it is refused;
+- a per-site constant could not be read at each group's label unless some
+  component was indexed by `site`; a factor's `own_dims` now label it, its
+  constants on one own dim sharing their labels;
+- `BlockDiagonalSpec(by=[])` and a repeated level failed in pyEKI's words;
+- `noise_factor` with a covariance that is not a spec, or constants that
+  are not a mapping, raised Python's errors; one reading a constant its
+  source lacks (a static source's times, a standard deviation not given)
+  is now refused there, by name;
+- a Gaussian mean naming a constant raised a bare `KeyError`; a mean of the
+  wrong shape was reported as a wrong covariance;
+- docs: `laws`' claim about pyEKI's Gaussian, `DenseSpec`'s symmetric part,
+  helper names (`_slice_to_group`, `_evaluate_argument`), import order,
+  method order, a "held" glossary row.
+
+Mutation testing made fifteen mutations, of which six survived; tests now
+kill four of them (a scaled term
+in a dense sum, a matrix-shaped `GaussianLaw` block, a scale on
+`NON_NEGATIVE`, a group split by one entry). Left: the early return for a
+simulator behind a covariance in `_with_held_covariance`, a guard that
+keeps `condition_on` from running a simulator reading only inputs; and the
+finiteness term of `SIPNETSimulator`'s validity, which P6 did not change.
+Judgment calls are the open questions above (`noise_factor`'s argument,
+correlated sources, the reading of D21, asymmetric matrices).
+
+**Deviations from the design**, each recorded in `design.html` ("As built
+in P6"):
+
+- one mean, and an event of one component on `REAL` indexed by one dim at
+  most with no element axes; correlated sources are refused (open question);
+- `GaussianLaw` is the layer's own `Law` over pyEKI's operators;
+- a Gaussian factor gets no probe-point checks; its covariance is checked
+  positive definite at bind only when it reads nothing that varies by draw;
+- "depends on theta" is "not computable from the held values";
+- `BlockDiagonalSpec`'s groups must be contiguous; `SumSpec` sums dense
+  matrices and factors once (a term may be semi-definite);
+- `GaussianLikelihood` holds `posterior` and `mean_names`; its
+  `noise_covariance` over one factor is that factor's operator.
+
+**What P7 and later must know.**
+
+- P7's `eki_problem` reads `gaussian_likelihood()`: `y`, `noise_covariance`
+  (a pyEKI `PSDLinOp`, ready for `pyeki.eki`), and `forward(theta)`, which
+  makes one `evaluate` and returns `NaN` rows where invalid. Keep the
+  evaluation it returns as `last_evaluation`.
+- A block-diagonal covariance over many sites builds one block per site in
+  a Python loop per draw; at hundreds of sites, group equal sizes and vmap
+  (the design's §14 risk).
+- `FactorSpec(law=pyeki_gaussian)` is still refused: `as_law` adapts one
+  only inside a law function. P9's foreign-law work should recognize it,
+  and EnsKit's `Gaussian` (E2) through the same shim.
+- `_with_held_covariance` replaces target and likelihood bounds; the
+  model's own `_factors` keep per-draw covariances, so `sample`,
+  `replicate` and `predict` build them per draw.

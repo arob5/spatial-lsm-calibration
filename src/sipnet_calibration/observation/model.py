@@ -82,7 +82,14 @@ from collections.abc import Mapping, Sequence
 
 import xarray as xr
 
-from sipnet_calibration.observation.vector import ObservationVector
+from sipnet_calibration.observation.vector import (
+    CALENDAR_YEAR,
+    OBSERVED,
+    STANDARD_DEVIATION,
+    TIME_SINCE_EPOCH,
+    WINDOW_LENGTH,
+    ObservationVector,
+)
 from sipnet_calibration.probability import REAL, ArraySpec, CovarianceSpec, FactorSpec, GaussianSpec
 from sipnet_calibration.validation import as_names, truncated
 
@@ -91,6 +98,9 @@ __all__ = [
     "observed_components",
     "prediction_components",
 ]
+
+#: The names of the constants a source may have (``ObservationVector.constants``).
+_SOURCE_CONSTANT_NAMES = frozenset({OBSERVED, STANDARD_DEVIATION, TIME_SINCE_EPOCH, CALENDAR_YEAR, WINDOW_LENGTH})
 
 
 def observed_components(observation_vector: ObservationVector) -> tuple[ArraySpec, ...]:
@@ -151,11 +161,15 @@ def noise_factor(
     ------
     KeyError
         If the source is not in the vector.
-    TypeError, ValueError
+    TypeError
         As :class:`~sipnet_calibration.probability.parts.FactorSpec` and
-        :class:`~sipnet_calibration.probability.parts.GaussianSpec`; and
-        ``ValueError`` for more than one source, or a constant named like
-        one of the source's that the covariance reads.
+        :class:`~sipnet_calibration.probability.parts.GaussianSpec`, and if
+        *covariance* is not a covariance spec or *constants* not a mapping.
+    ValueError
+        As those, and for more than one source; a constant named like one
+        of the source's that the covariance reads; or a covariance reading a
+        source constant the source does not have, such as a standard
+        deviation it was not given.
 
     Notes
     -----
@@ -173,15 +187,15 @@ def noise_factor(
         observation_source_names, message_name="observation_source_names"
     )
     check_noise_factor_is_over_one_source(names)
+    check_covariance_is_a_covariance_spec(covariance)
+    check_constants_are_a_mapping(constants)
     (name,) = names
     event = _component(observation_vector, name, name)
-    source_constants = {
-        constant_name: value
-        for constant_name, value in observation_vector.constants(name).items()
-        if constant_name in covariance.reads
-    }
+    held = observation_vector.constants(name)
     extra = {} if constants is None else dict(constants)
-    check_constants_are_named_apart_from_the_sources(name, source_constants, extra)
+    check_covariance_reads_constants_the_source_has(covariance, held, extra, message_name=name)
+    source_constants = {constant_name: value for constant_name, value in held.items() if constant_name in covariance.reads}
+    check_constants_are_named_apart_from_the_sources(source_constants, extra, message_name=name)
     return FactorSpec(
         event,
         law=GaussianSpec(mean=observation_vector.prediction_name(name), covariance=covariance),
@@ -217,14 +231,48 @@ def check_noise_factor_is_over_one_source(names: Sequence[str]) -> None:
         )
 
 
+def check_covariance_is_a_covariance_spec(covariance: object) -> None:
+    """A noise factor's covariance is declared by a covariance spec."""
+    if not isinstance(covariance, CovarianceSpec):
+        raise TypeError(
+            f"a noise factor's covariance is a {type(covariance).__name__}; give a covariance spec, such as "
+            "DiagonalSpec(...) or BlockDiagonalSpec(DenseSpec(...), by='site')."
+        )
+
+
+def check_constants_are_a_mapping(constants: object) -> None:
+    """A noise factor's further constants are ``{name: DataArray}``."""
+    if constants is not None and not isinstance(constants, Mapping):
+        raise TypeError(f"a noise factor's constants are a {type(constants).__name__}; give {{name: DataArray}}.")
+
+
+def check_covariance_reads_constants_the_source_has(
+    covariance: CovarianceSpec,
+    held: Mapping[str, xr.DataArray],
+    constants: Mapping[str, xr.DataArray],
+    *,
+    message_name: str,
+) -> None:
+    """A noise factor's covariance reads only the source constants its
+    source has: a static source has no times, one without standard
+    deviations none."""
+    lacking = [n for n in covariance.reads if n in _SOURCE_CONSTANT_NAMES and n not in held and n not in constants]
+    if lacking:
+        raise ValueError(
+            f"the covariance of {message_name!r}'s noise factor reads {truncated(lacking)}, which the source does "
+            f"not have (it has {list(held)}); give the source a standard deviation, or read only what it has."
+        )
+
+
 def check_constants_are_named_apart_from_the_sources(
-    observation_source_name: str, source_constants: Mapping[str, xr.DataArray], constants: Mapping[str, xr.DataArray]
+    source_constants: Mapping[str, xr.DataArray], constants: Mapping[str, xr.DataArray], *, message_name: str
 ) -> None:
     """A noise factor's own constants are not named like the source's that
     its covariance reads, which one name would then mean twice."""
     clashing = [name for name in constants if name in source_constants]
     if clashing:
         raise ValueError(
-            f"the noise factor of {observation_source_name!r} is given constants {truncated(clashing)}, named "
-            "like the source's own constants its covariance reads; name them apart."
+            f"the noise factor of {message_name!r} is given constants {truncated(clashing)}, named like the "
+            "source's own constants its covariance reads; name them apart."
         )
+

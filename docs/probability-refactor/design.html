@@ -1202,8 +1202,10 @@ class GaussianSpec:
   into one.</li>
   <li>A Gaussian factor is not given the probe-point checks, its support
   being <code>REAL</code>; at bind it is checked for its event shape and, when
-  its covariance reads no simulator output, for a positive-definite
-  covariance at each draw it is built at.</li>
+  its covariance reads nothing that varies by draw (no parameter, no simulator
+  output), for a positive-definite covariance. One that does is checked per
+  sample, which it makes invalid where it fails, so a prior putting some mass
+  on covariances that are not positive definite still binds.</li>
   <li>"Depends on theta" is read as "is not computable from the held values"
   (observed values, inputs, constants, and the deterministics of them alone,
   no simulator). A covariance reading an observed value that itself has a

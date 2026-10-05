@@ -28,7 +28,9 @@ receives the keywords it names (the keyword rule of
 
 - on the event's dim: sliced to the group;
 - on a dim named like the grouping level: at the group's label, that axis
-  removed, such as a per-site variance under ``by="site"``;
+  removed, such as a per-site variance under ``by="site"``; the dim is a
+  dim of the coords in use (some component is indexed by it) or one of the
+  factor's ``own_dims``, its labels then the constants' own;
 - otherwise: whole.
 
 The event is one component, indexed by one dim at most and with no element
@@ -186,7 +188,9 @@ class DenseSpec(CovarianceSpec):
     ----------
     matrix : str or callable
         Positional-only. The name of an ``(n, n)`` value, or
-        ``(**reads) -> (n, n)``; symmetric positive definite.
+        ``(**reads) -> (n, n)``; symmetric positive definite. Its symmetric
+        part is what is factored, as pyEKI's ``DensePSD`` does, so an
+        asymmetric matrix is not refused.
 
     Raises
     ------
@@ -241,7 +245,9 @@ class SumSpec(CovarianceSpec):
     ValueError
         If there are fewer than two terms; and, when bound, for a
         combination the table refuses, which would need a dense matrix over
-        the whole event: write ``BlockDiagonalSpec(SumSpec(...), by=...)``.
+        the whole event, a block-diagonal term held inside another term
+        (scaled, or in a nested sum) among them: write
+        ``BlockDiagonalSpec(SumSpec(...), by=...)``.
     """
 
     __slots__ = ("terms",)
@@ -262,6 +268,7 @@ class SumSpec(CovarianceSpec):
 
     def _at(self, scope: _Scope) -> _Covariance:
         blockwise = [t for t in self.terms if isinstance(t, BlockDiagonalSpec)]
+        check_sum_holds_no_hidden_block_diagonal(self, scope)
         if not blockwise:
             return _Sum(terms=tuple(t._at(scope) for t in self.terms))
         check_sum_is_blockwise(self, blockwise, scope)
@@ -339,7 +346,8 @@ class BlockDiagonalSpec(CovarianceSpec):
         If *block* is not a covariance spec, or *by* is not one or more
         names.
     ValueError
-        When bound: if the event has no dim, *by* is neither its dim nor
+        If *by* is empty or names a level twice; when bound: if the event
+        has no dim, *by* is neither its dim nor
         levels of it, a group's entries are not contiguous, or a group's
         label is not among the labels of the dim named like *by*, which
         something the block reads is on.
@@ -352,8 +360,10 @@ class BlockDiagonalSpec(CovarianceSpec):
 
     def __init__(self, block: CovarianceSpec, /, *, by: str | Sequence[str]) -> None:
         check_terms_are_covariance_specs([block], what="BlockDiagonalSpec's block")
+        by = (by,) if isinstance(by, str) else as_names(by, message_name="BlockDiagonalSpec's by")
+        check_grouping_names_distinct_levels(by)
         _set(self, "block", block)
-        _set(self, "by", (by,) if isinstance(by, str) else as_names(by, message_name="BlockDiagonalSpec's by"))
+        _set(self, "by", by)
 
     @property
     def reads(self) -> tuple[str, ...]:
@@ -460,7 +470,7 @@ class _Scope:
                 by_positions[level] = int(self.coords[level].get_loc(key[0]))
         read_dims = {name: tuple(d for d in dims if d not in by_positions) for name, dims in self.read_dims.items()}
         fixed = {
-            name: _sliced(np.asarray(value), self.read_dims.get(name, ()), self.event_dim, positions, by_positions)
+            name: _slice_to_group(np.asarray(value), self.read_dims.get(name, ()), self.event_dim, positions, by_positions)
             for name, value in self.fixed.items()
         }
         return _Scope(
@@ -492,7 +502,7 @@ class _Diagonal(_Covariance):
     factor_name: str
 
     def variance(self, reads: Mapping[str, Array]) -> Array:
-        variance = jnp.asarray(_evaluated(self.spec.variance, self.spec.reads, reads), dtype=jnp.float64)
+        variance = jnp.asarray(_evaluate_argument(self.spec.variance, self.spec.reads, reads), dtype=jnp.float64)
         if variance.ndim == 0:
             variance = jnp.broadcast_to(variance, (self.size,))
         check_covariance_has_its_shape(self.factor_name, self.spec, tuple(variance.shape), (self.size,))
@@ -515,7 +525,7 @@ class _Dense(_Covariance):
         return _linalg.DensePSD(self.matrix(reads))
 
     def matrix(self, reads: Mapping[str, Array]) -> Array:
-        matrix = jnp.asarray(_evaluated(self.spec.matrix, self.spec.reads, reads), dtype=jnp.float64)
+        matrix = jnp.asarray(_evaluate_argument(self.spec.matrix, self.spec.reads, reads), dtype=jnp.float64)
         check_covariance_has_its_shape(self.factor_name, self.spec, tuple(matrix.shape), (self.size, self.size))
         return matrix
 
@@ -559,14 +569,14 @@ class _BlockDiagonal(_Covariance):
     read_dims: Mapping[str, tuple[str, ...]]
 
     def operator(self, reads: Mapping[str, Array]) -> _linalg.PSDLinOp:
-        return _linalg.PSDBlockDiag(tuple(group.block.operator(self._sliced(reads, group)) for group in self.groups))
+        return _linalg.PSDBlockDiag(tuple(group.block.operator(self._reads_of_group(reads, group)) for group in self.groups))
 
     def matrix(self, reads: Mapping[str, Array]) -> Array:
-        return jax.scipy.linalg.block_diag(*(group.block.matrix(self._sliced(reads, group)) for group in self.groups))
+        return jax.scipy.linalg.block_diag(*(group.block.matrix(self._reads_of_group(reads, group)) for group in self.groups))
 
-    def _sliced(self, reads: Mapping[str, Array], group: _Group) -> dict[str, Array]:
+    def _reads_of_group(self, reads: Mapping[str, Array], group: _Group) -> dict[str, Array]:
         return {
-            name: _sliced(value, self.read_dims.get(name, ()), self.event_dim, group.positions, group.by)
+            name: _slice_to_group(value, self.read_dims.get(name, ()), self.event_dim, group.positions, group.by)
             for name, value in reads.items()
         }
 
@@ -605,12 +615,23 @@ def _argument_name(argument: Any) -> str:
     return getattr(argument, "__name__", type(argument).__name__)
 
 
-def _evaluated(argument: str | Callable[..., Array], names: Sequence[str], reads: Mapping[str, Array]) -> Array:
+def _evaluate_argument(argument: str | Callable[..., Array], names: Sequence[str], reads: Mapping[str, Array]) -> Array:
     """A string argument's value, or a function called with the *names* it
     reads."""
     if isinstance(argument, str):
         return reads[argument]
     return argument(**{name: reads[name] for name in names})
+
+
+def _holds_a_block_diagonal(spec: CovarianceSpec) -> bool:
+    """Whether *spec* is or holds a :class:`BlockDiagonalSpec`."""
+    if isinstance(spec, BlockDiagonalSpec):
+        return True
+    if isinstance(spec, SumSpec):
+        return any(_holds_a_block_diagonal(term) for term in spec.terms)
+    if isinstance(spec, ScaledSpec):
+        return _holds_a_block_diagonal(spec.base)
+    return False
 
 
 def _group_keys(by: tuple[str, ...], scope: _Scope) -> list[tuple[Any, ...]]:
@@ -631,7 +652,7 @@ def _groups(keys: Sequence[tuple[Any, ...]]) -> list[tuple[tuple[Any, ...], np.n
     return [(key, np.asarray(p, dtype=np.int64)) for key, p in positions.items()]
 
 
-def _sliced(value: Any, dims: tuple[str, ...], event_dim: str | None, positions: np.ndarray, by: Mapping[str, int]) -> Any:
+def _slice_to_group(value: Any, dims: tuple[str, ...], event_dim: str | None, positions: np.ndarray, by: Mapping[str, int]) -> Any:
     """*value*, on *dims*, sliced to a group: taken at *positions* along the
     event's dim, and at its label's position along a dim named like the
     grouping level, that axis removed."""
@@ -700,6 +721,28 @@ def check_sum_is_blockwise(spec: SumSpec, blockwise: Sequence[BlockDiagonalSpec]
             f"the covariance of {scope.factor_name!r} is {spec!r}, a sum that would need a dense matrix over the "
             "whole event: block-diagonal terms are summed only with diagonals, or with block-diagonals of the "
             "same grouping. Write BlockDiagonalSpec(SumSpec(...), by=...)."
+        )
+
+
+def check_sum_holds_no_hidden_block_diagonal(spec: SumSpec, scope: _Scope) -> None:
+    """A sum's terms hold a block-diagonal only as a term of their own,
+    which is summed blockwise; one inside a scaled term or a nested sum
+    would be summed as a dense matrix over the whole event."""
+    hidden = [t for t in spec.terms if not isinstance(t, BlockDiagonalSpec) and _holds_a_block_diagonal(t)]
+    if hidden:
+        raise ValueError(
+            f"the covariance of {scope.factor_name!r} is {spec!r}, whose term(s) {truncated(hidden)} hold a "
+            "block-diagonal inside, which would be summed as a dense matrix over the whole event; move the "
+            "grouping outside, as BlockDiagonalSpec(SumSpec(...), by=...) or "
+            "BlockDiagonalSpec(ScaledSpec(...), by=...)."
+        )
+
+
+def check_grouping_names_distinct_levels(by: tuple[str, ...]) -> None:
+    """A grouping names at least one level, each once."""
+    if not by or len(set(by)) != len(by):
+        raise ValueError(
+            f"BlockDiagonalSpec groups by {list(by)}; give the dim, or one or more distinct levels of it."
         )
 
 
@@ -791,6 +834,7 @@ def check_submatrix_label_map_targets_its_rows(spec: SubmatrixSpec, scope: _Scop
     matrix's first element axis."""
     rows = next(iter(scope.specs[spec.component].element_axes))
     target = scope.label_map_targets.get(spec.label_map)
+    check_event_has_a_dim(scope, what="SubmatrixSpec")
     if target != rows or scope.read_dims.get(spec.label_map) != (scope.event_dim,):
         raise ValueError(
             f"the covariance of {scope.factor_name!r} reads {spec.label_map!r} as a label map from "
