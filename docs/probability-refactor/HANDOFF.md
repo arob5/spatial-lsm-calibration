@@ -28,7 +28,7 @@ and proofs are the design's §12; the column below is a summary.
 | P6 | `refactor/probability-p6-gaussian` | merged #83 | P5 | Covariance specs, `GaussianSpec`, `noise_factor`, `gaussian_likelihood`, through the `probability/_linalg.py` shim over today's pyEKI |
 | P7 | `refactor/probability-p7-inference` | merged #84 | P6 | The `inference` package on today's pyEKI |
 | P8 | `refactor/probability-p8-conjugacy` | merged #85 | P6 | `marginalize`, `full_conditional`, `theta_with` |
-| P9 | `refactor/probability-p9-foreign-laws` | open #86 | P3 | numpyro and EnsKit `Gaussian` adapters; GPJax as an optional test group |
+| P9 | `refactor/probability-p9-foreign-laws` | merged #86 | P3 | numpyro and EnsKit `Gaussian` adapters; GPJax as an optional test group |
 | E1 | `refactor/probability-e1-enskit` | waiting | P9 | Re-pin from pyEKI to EnsKit's `main` (`TARPS-group/EnsKit`, package `enskit`), which moves JAX 0.8 to 0.10 and TFP's nightly with it; the `_linalg` shim on `enskit.linalg` and `enskit.distribution`; `GaussianLaw` and `as_law` on EnsKit's block `Gaussian`; `test_inference` and `test_smc` off the deleted `pyeki.eki`; P1's references rewritten if their bytes move; CLAUDE.md's companion table, upgrade command and pyEKI facts |
 | E2 | `refactor/probability-e2-enskit-eki` | waiting | E1 | EnsKit's EKI driver: `eki_problem` in the terms of `enskit.algorithms.eki`; `initial_ensemble` an EnsKit `Ensemble` |
 | #69 | `feat/single-site-mcmc-vs-eki` | not this refactor's | P7, E2 | PR #69 migrates in its own session, onto the probability layer and EnsKit together |
