@@ -460,12 +460,13 @@ class TestEvaluate:
         self, parameter_vector, sipnet_map, climate, observation_vector, theta
     ):
         forward = build(parameter_vector, sipnet_map, climate, observation_vector.select(sites=[1]))
-        assert not forward._run.returns_model_output
+        run = forward._plan.run
+        assert not run.model_output_variable_names
         overrides = sipnet_overrides(
             fields_of(sipnet_map, parameter_vector, theta), batch={"sample": 0}, site=27
         )
-        output = forward._run(climate=climate[27], site=27, site_observation_vector=None, **overrides)
-        assert output.model_output is None and output.predictions is None
+        output = run(climate=climate[27], site=27, site_observation_vectors=(None,), **overrides)
+        assert output.model_output is None and output.predictions == (None,)
 
 
 class TestFailures:

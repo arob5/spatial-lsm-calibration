@@ -97,18 +97,12 @@ from tensorflow_probability.substrates import jax as tfp
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))  # conftest's stand-in SIPNET, when run as a script
 
-from conftest import located, scaled_niwot_model, site_table_of  # noqa: E402
+from conftest import scaled_niwot_model, site_table_of, two_source_observation_vector  # noqa: E402
 
 from sipnet_calibration import io  # noqa: E402
 from sipnet_calibration.calibration import example_calibration  # noqa: E402
 from sipnet_calibration.forward import ForwardModel  # noqa: E402
 from sipnet_calibration.initial_conditions import read_raw, resolve_initial_condition  # noqa: E402
-from sipnet_calibration.observation import (  # noqa: E402
-    DEFAULT_OBS_OPS,
-    ObservationSource,
-    ObservationVector,
-    SelectTimestep,
-)
 from sipnet_calibration.parameters import (  # noqa: E402
     OPEN_UNIT_INTERVAL,
     POSITIVE,
@@ -309,7 +303,7 @@ def forward_example() -> xr.Dataset:
     forward = ForwardModel(
         scaled_niwot_model(), vector, sipnet_map, site_dims=site_dims,
         climate={1: reference.climate, 27: reference.climate.head(SHORT_STEPS)},
-        backend=SequentialBackend(), observation_vector=forward_observation_vector(site_table),
+        backend=SequentialBackend(), observation_vector=two_source_observation_vector(site_table),
     )
     theta = np.concatenate([
         np.asarray(prior.sample(jax.random.key(SEED), N_FORWARD_DRAWS)),
@@ -391,27 +385,6 @@ def initial_condition_members(site: int, names: tuple[str, ...]) -> dict[str, xr
         )
         for name in names
     }
-
-
-def forward_observation_vector(site_table: pd.DataFrame) -> ObservationVector:
-    """``test_forward``'s two observation sources, at three of the Niwot record's time labels."""
-    wood = niwot_reference_output().select(["wood_carbon"])["wood_carbon"]
-    labels = pd.DatetimeIndex(wood["time"].values[[5, 20, 30]])
-
-    def observed(name: str, values: list[list[float]], attrs: dict[str, str]) -> xr.DataArray:
-        array = xr.DataArray(values, dims=("site", "time"), coords={"site": list(FORWARD_SITES), "time": labels},
-                             attrs=attrs, name=name)
-        return located(array, site_table=site_table)
-
-    biomass = observed("landtrendr_aboveground_biomass", [[100.0, np.nan, 120.0], [110.0, 115.0, np.nan]],
-                       {"units": "Mg ha-1", "constituent": "C"})
-    lai = observed("modis_leaf_area_index", [[3.0, 2.0, np.nan], [np.nan, 1.0, 1.5]], {"units": "m2 m-2"})
-    return ObservationVector(observation_sources=[
-        ObservationSource(observation_source_name="landtrendr_aboveground_biomass", observed_values=biomass,
-                          operator=SelectTimestep("wood_carbon")),
-        ObservationSource(observation_source_name="modis_leaf_area_index", observed_values=lai,
-                          operator=DEFAULT_OBS_OPS["modis_leaf_area_index"]),
-    ])
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────

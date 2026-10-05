@@ -1,5 +1,6 @@
-"""The parts of a model: factors, which declare conditional laws, and
-deterministics, which declare computed components.
+"""The parts of a model: factors, which declare conditional laws;
+deterministics, which declare computed components; and simulators, which
+compute components outside JAX.
 
 Where this sits
 ---------------
@@ -34,14 +35,23 @@ Classes and functions
     A conditional law over one component or several indexed alike.
 :class:`DeterministicSpec`, :func:`deterministic`
     Components computed by a pure JAX function.
+:class:`Simulator`, :class:`SimulatorOutput`
+    Components computed for a batch of samples by code outside JAX, such
+    as a model run, which may fail at some samples; and what one call
+    returns. A simulator is real code, not a declaration: it reads what it
+    names in ``given``, not by the keyword rule.
 """
 
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 import jax
+import numpy as np
+import pandas as pd
 import xarray as xr
 from frozendict import frozendict
 from tensorflow_probability.substrates import jax as tfp
@@ -55,11 +65,14 @@ from sipnet_calibration.probability._validation import (
 from sipnet_calibration.probability.builders import Builder
 from sipnet_calibration.probability.labels import as_constants, as_label_maps
 from sipnet_calibration.probability.laws import Law, distribution_name, is_law
+from sipnet_calibration.probability.layout import LabeledValues
 from sipnet_calibration.probability.spec import ArraySpec
 
 __all__ = [
     "DeterministicSpec",
     "FactorSpec",
+    "Simulator",
+    "SimulatorOutput",
     "deterministic",
     "factor",
 ]
@@ -354,6 +367,124 @@ def deterministic(
     return decorate
 
 
+class Simulator(ABC):
+    """A deterministic part computed outside JAX for a whole batch of
+    samples: a simulation that may fail at some of them.
+
+    The model calls it once per batch with the labeled values of what it
+    reads, and reads at which samples each output was computed. Its outputs
+    are constants to differentiation. It is real code, not a declaration:
+    :meth:`at` is its own binding. A subclass defines :attr:`name`,
+    :attr:`given`, :attr:`outputs`, :meth:`__call__` and :meth:`at`, and may
+    define :meth:`check_given`.
+    """
+
+    @property
+    @abstractmethod
+    def name(self) -> str:
+        """Its name in a description and in a posterior's evaluation."""
+
+    @property
+    @abstractmethod
+    def given(self) -> tuple[str, ...]:
+        """The components and inputs it reads."""
+
+    @property
+    @abstractmethod
+    def outputs(self) -> tuple[ArraySpec, ...]:
+        """The components it produces."""
+
+    @abstractmethod
+    def __call__(self, given_values: LabeledValues) -> SimulatorOutput:
+        """Its outputs at every sample of a batch.
+
+        Parameters
+        ----------
+        given_values : LabeledValues
+            Each component and input it reads, on ``(sample, *indexed_by,
+            *element axes)``, ``sample`` labeled ``0`` to ``J - 1``.
+
+        Returns
+        -------
+        SimulatorOutput
+
+        Raises
+        ------
+        Exception
+            Whatever its machinery raises. A failure at a sample's values is
+            reported in ``SimulatorOutput.valid``, never raised.
+        """
+
+    @abstractmethod
+    def at(self, coords: Mapping[str, pd.Index], outputs: Sequence[str]) -> Simulator:
+        """This simulator at the labels *coords*, computing only *outputs*:
+        itself when both are what it was built for, a restricted copy
+        otherwise. Binding calls it with every output, and a posterior with
+        the outputs its likelihood depends on, so an output only barren
+        factors read is never computed.
+
+        Raises
+        ------
+        ValueError
+            If it cannot produce its outputs at *coords*.
+        """
+
+    def check_given(self, given_specs: Mapping[str, ArraySpec], corner_values: LabeledValues) -> None:
+        """Check, once, that what it reads fits it; ``condition_on`` calls it.
+        Default: no check.
+
+        Parameters
+        ----------
+        given_specs : Mapping[str, ArraySpec]
+            The spec of each component and input it reads.
+        corner_values : LabeledValues
+            What :meth:`__call__` would receive at the corner points of the
+            target.
+
+        Raises
+        ------
+        ValueError
+            If they do not fit, naming the component.
+        """
+
+    @property
+    def law_name(self) -> str:
+        """Its class's name, for the ``law`` column of a model's
+        description, which names what each part evaluates."""
+        return type(self).__name__
+
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}({self.name!r}, given={list(self.given)}, outputs={[o.name for o in self.outputs]})"
+
+
+@dataclass(frozen=True, eq=False, kw_only=True)
+class SimulatorOutput:
+    """What one call of a :class:`Simulator` returns.
+
+    Attributes
+    ----------
+    values : Mapping[str, numpy.ndarray]
+        ``{output name: (J, *block)}``, ``float64``, ``NaN`` where not
+        computed. Keyword-only, as are the others.
+    valid : Mapping[str, numpy.ndarray]
+        ``{output name: (J,)}`` bool: the output was computed at the sample
+        and is finite.
+    record : Any
+        Kept on the evaluation for diagnostics; the model never reads it.
+        Default ``None``.
+    """
+
+    values: Mapping[str, np.ndarray]
+    valid: Mapping[str, np.ndarray]
+    record: Any = None
+
+    def __post_init__(self) -> None:
+        for name in ("values", "valid"):
+            held = getattr(self, name)
+            if isinstance(held, Mapping):
+                object.__setattr__(self, name, frozendict(held))
+
+
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 
@@ -405,6 +536,45 @@ def check_deterministic_spec_is_valid(spec: DeterministicSpec) -> None:
     check_part_reads_what_it_holds(spec, kind="deterministic")
     check_deterministic_reads_a_component(spec)
     check_deterministic_does_not_read_its_outputs(spec)
+
+
+def check_simulator_is_valid(simulator: Simulator) -> None:
+    """A simulator has a name, reads at least one component or input, each
+    named once, and computes distinct components, none of which it reads."""
+    check_simulator_name_is_a_string(simulator)
+    what = f"the simulator {simulator.name!r}'s"
+    check_simulator_given_is_names(simulator)
+    check_names_are_unique(list(simulator.given), message_name=f"{what} given")
+    check_specs_are_a_sequence(simulator.outputs, what=f"{what} outputs")
+    check_specs_are_array_specs(simulator.outputs, what=f"{what} outputs")
+    check_specs_are_not_empty(simulator.outputs, what=f"{what} outputs")
+    check_names_are_unique([o.name for o in simulator.outputs], message_name=f"{what} outputs")
+    check_simulator_does_not_read_its_outputs(simulator)
+
+
+def check_simulator_name_is_a_string(simulator: Simulator) -> None:
+    """A simulator is named by a non-empty string, which keys its outputs'
+    validity and its record."""
+    if not isinstance(simulator.name, str) or not simulator.name:
+        raise TypeError(f"a {type(simulator).__name__}'s name is {simulator.name!r}; give it a non-empty string.")
+
+
+def check_simulator_given_is_names(simulator: Simulator) -> None:
+    """A simulator reads a tuple of at least one name."""
+    given = simulator.given
+    if not isinstance(given, tuple) or not all(isinstance(g, str) for g in given):
+        raise TypeError(f"the simulator {simulator.name!r}'s given is {given!r}; give a tuple of names.")
+    if not given:
+        raise ValueError(f"the simulator {simulator.name!r} reads no component or input; a fixed value is a constant.")
+
+
+def check_simulator_does_not_read_its_outputs(simulator: Simulator) -> None:
+    """A simulator reads none of the components it computes."""
+    own = [g for g in simulator.given if g in {o.name for o in simulator.outputs}]
+    if own:
+        raise ValueError(
+            f"the simulator {simulator.name!r} reads {own}, which it computes; a component is computed from others."
+        )
 
 
 def check_specs_are_a_sequence(specs: Any, *, what: str) -> None:

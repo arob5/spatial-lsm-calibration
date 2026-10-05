@@ -5,7 +5,7 @@ Where this sits
 ---------------
 ::
 
-    probability.parts                   (FactorSpec, DeterministicSpec)
+    probability.parts                   (FactorSpec, DeterministicSpec, Simulator)
       -> probability.model.joint        (ModelSpec: the declared model)
       -> ModelSpec.bind                 (FactoredDistribution: the model at labels)
       -> probability.posterior          (condition_on: the model given values)
@@ -15,7 +15,8 @@ The model
 A model is a directed acyclic graph whose nodes are its parts and its
 inputs. A **factor** (random node) :math:`v` carries a kernel
 :math:`p_v(z_v \\mid z_{\\mathrm{pa}(v)})`; a **deterministic** carries a map
-:math:`z_v = f_v(z_{\\mathrm{pa}(v)})`; an **input** has no parents and its
+:math:`z_v = f_v(z_{\\mathrm{pa}(v)})`, traced, or computed outside JAX by a
+**simulator**, which may fail at some samples; an **input** has no parents and its
 value is supplied. Each part's parents are the components and inputs its
 functions read (the keyword rule, :mod:`~sipnet_calibration.probability.parts`),
 so the graph is derived, never stored. Given inputs :math:`u`, the random
@@ -63,6 +64,17 @@ at two ancestral draws of what it reads when that varies by draw. Each
 deterministic's outputs are checked at the probe points of the random
 components it is computed from, pushed through.
 
+Binding runs no simulator: it binds each one to the labels in use
+(:meth:`Simulator.at <sipnet_calibration.probability.parts.Simulator.at>`)
+and stands a placeholder in for each of its outputs, its bijector's image
+of 0. A factor downstream of a simulator is checked there for its form
+alone (event shape, TFP batch shape, dtype, a density the model can
+evaluate), and a deterministic downstream for its block shapes when a
+factor reads a value that varies by draw, the case in which draws are made. Sampling
+and the joint density run each simulator once for the whole batch; what is
+drawn or computed from an output that failed is ``NaN``, and a density that
+reads one is ``-inf``.
+
 Usage
 -----
 ::
@@ -81,6 +93,7 @@ Usage
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterator, Mapping, Sequence
 from typing import Any
 
@@ -103,6 +116,8 @@ from sipnet_calibration.probability._bound import (
     deterministics_behind,
     finite_or_minus_infinity,
     random_key_for,
+    simulator_at,
+    simulator_outputs_behind,
     split_reads,
 )
 from sipnet_calibration.probability._probes import joint_probe_points
@@ -119,11 +134,19 @@ from sipnet_calibration.probability.labels import (
     is_stacked,
 )
 from sipnet_calibration.probability.layout import (
+    LabeledValues,
     Layout,
     ValuesByName,
     validate_values_by_name,
 )
-from sipnet_calibration.probability.parts import DeterministicSpec, FactorSpec
+from sipnet_calibration.probability.names import SAMPLE
+from sipnet_calibration.probability.parts import (
+    DeterministicSpec,
+    FactorSpec,
+    Simulator,
+    SimulatorOutput,
+    check_simulator_is_valid,
+)
 from sipnet_calibration.probability.spec import ArraySpec
 
 __all__ = [
@@ -136,17 +159,17 @@ __all__ = [
 Array = jax.Array
 
 #: A part of a model.
-type Part = FactorSpec | DeterministicSpec
+type Part = FactorSpec | DeterministicSpec | Simulator
 
 
-def joint(*parts: FactorSpec | DeterministicSpec | ModelSpec, inputs: Sequence[ArraySpec] = ()) -> ModelSpec:
+def joint(*parts: FactorSpec | DeterministicSpec | Simulator | ModelSpec, inputs: Sequence[ArraySpec] = ()) -> ModelSpec:
     """The model whose parts are *parts*, flattened, conditional on *inputs*.
 
     Parts may come in any order; declaration order fixes theta's order.
 
     Parameters
     ----------
-    *parts : FactorSpec, DeterministicSpec or ModelSpec
+    *parts : FactorSpec, DeterministicSpec, Simulator or ModelSpec
         A model's parts and inputs are taken as its own.
     inputs : Sequence[ArraySpec]
         Keyword-only. Input nodes: values the model is conditional on, bound
@@ -155,7 +178,7 @@ def joint(*parts: FactorSpec | DeterministicSpec | ModelSpec, inputs: Sequence[A
     Raises
     ------
     TypeError
-        If a part is none of the three, or an input is not an ArraySpec.
+        If a part is none of the four, or an input is not an ArraySpec.
     ValueError
         As :class:`ModelSpec`.
     """
@@ -354,6 +377,10 @@ class FactoredDistribution:
         The labels of every dim a component or input is indexed by.
     inputs : frozendict of str to xr.DataArray
         Each input's value at the labels in use.
+    simulators : frozendict of str to Simulator
+        Each simulator at the labels in use (:meth:`Simulator.at
+        <sipnet_calibration.probability.parts.Simulator.at>`), computing
+        every output, by name.
 
     Raises
     ------
@@ -374,10 +401,14 @@ class FactoredDistribution:
             if spec.inputs else {}
         ))
         _set(self, "_element_axes", frozendict({a: labels for c in layout.components for a, labels in c.element_axes.items()}))
-        factors, deterministics, fixed = _bound_parts(self, input_values)
+        factors, deterministics, fixed, simulators = _bound_parts(self, input_values)
         _set(self, "_factors", frozendict(factors))
         _set(self, "_deterministics", frozendict(deterministics))
         _set(self, "_fixed", frozendict(fixed))
+        _set(self, "_simulators", frozendict(simulators))
+        _set(self, "_given_layouts", frozendict({
+            name: _layout_of(self, simulator.given) for name, simulator in simulators.items()
+        }))
 
     def __setattr__(self, name: str, value: Any) -> None:
         raise AttributeError(f"a FactoredDistribution is frozen; bind again rather than setting {name!r}.")
@@ -387,6 +418,11 @@ class FactoredDistribution:
         return f"FactoredDistribution(parts={[p.name for p in self.spec.parts]}, coords={coords})"
 
     # ── identity ──────────────────────────────────────────────────────────────
+
+    @property
+    def simulators(self) -> frozendict:
+        """Each simulator at the labels in use, by name."""
+        return self._simulators
 
     def block_shape(self, name: str) -> tuple[int, ...]:
         """A component's or input's block shape at the labels in use."""
@@ -468,9 +504,12 @@ class FactoredDistribution:
         Parts are evaluated in topological order. A factor that reads
         nothing that varies by draw draws ``n`` values at once with
         ``jax.random.fold_in(key, crc32(name))``; one that does splits that
-        key ``n`` ways and draws one value per draw. With *component_names*,
-        only those and their ancestors are drawn, and only those returned;
-        otherwise every component is.
+        key ``n`` ways and draws one value per draw. A simulator runs once
+        for the ``n`` draws; where it fails, its outputs and everything
+        computed or drawn from them are ``NaN``. With *component_names*,
+        only those and their ancestors are drawn, and only those returned,
+        so a simulator runs only when one of them needs it; otherwise every
+        component is.
 
         Raises
         ------
@@ -482,6 +521,10 @@ class FactoredDistribution:
         ValueError
             If *n* is negative, or a draw lands on a support's boundary,
             where theta is not finite; the message names the factor.
+        TypeError, ValueError
+            If a simulator returns other than a whole ``SimulatorOutput``.
+        Exception
+            Whatever a simulator's machinery raises.
         """
         n = as_count(n, message_name="n")
         if component_names is None:
@@ -500,7 +543,9 @@ class FactoredDistribution:
         *block)} -> (*batch,)``, against each support's reference measure,
         ``-inf`` where a factor's density is not finite (a value outside or
         on the boundary of its support). Deterministic components are
-        computed. Traceable.
+        computed, running a simulator if one is upstream of a factor, once
+        for the whole batch; a factor reading a simulator output that failed
+        is ``-inf``. Traceable when no simulator runs.
 
         Raises
         ------
@@ -511,7 +556,11 @@ class FactoredDistribution:
         ValueError
             If *values* holds a deterministic component or an input, or a
             value does not end in its block shape, or the batch shapes
-            differ.
+            differ; or a simulator would run under a JAX trace.
+        TypeError, ValueError
+            If a simulator returns other than a whole ``SimulatorOutput``.
+        Exception
+            Whatever a simulator's machinery raises.
         """
         check_values_hold_each_event(values, self)
         events = [c for p in self.spec.parts if isinstance(p, FactorSpec) for c in p.event]
@@ -520,41 +569,60 @@ class FactoredDistribution:
         lead = tuple(first[: len(first) - len(self._layout.block_shape(events[0].name))])
         random = {c.name: jnp.asarray(values[c.name], dtype=jnp.float64) for c in events}
         read = [g for bound in self._factors.values() for g in bound.spec.given]
-        per_draw, fixed = self._computed(random, self._fixed, lead, read)
+        runs: dict[str, SimulatorOutput] = {}
+        per_draw, fixed = self._computed(random, self._fixed, lead, read, runs=runs)
         total = jnp.zeros(lead, dtype=jnp.float64)
         for bound in self._factors.values():
             own = {name: per_draw[name] for name in bound.names}
             reads, held = split_reads(bound.spec.given, per_draw, fixed)
-            total = total + finite_or_minus_infinity(bound.log_prob_natural(own, reads, held, lead))
+            density = finite_or_minus_infinity(bound.log_prob_natural(own, reads, held, lead))
+            computed = self._draws_computed(bound.spec.given, runs)
+            total = total + (density if computed is None else jnp.where(jnp.asarray(computed).reshape(lead), density, -jnp.inf))
         return total
 
     # ── supporting methods ────────────────────────────────────────────────────
 
     def _ancestral(
-        self, key: Array, n: int, fixed: Mapping[str, Array], *, needed: set[str], theta_out: dict[str, Array] | None = None
+        self,
+        key: Array,
+        n: int,
+        fixed: Mapping[str, Array],
+        *,
+        needed: set[str],
+        per_draw: Mapping[str, Array] | None = None,
+        theta_out: dict[str, Array] | None = None,
+        simulators: Mapping[str, Simulator] | None = None,
+        runs: dict[str, SimulatorOutput] | None = None,
     ) -> tuple[dict[str, Array], dict[str, Array]]:
-        """Ancestral draws of the parts *needed*, *fixed* values held:
-        ``(per-draw values (n, *block), fixed values)``. A factor whose
-        event is all held is not drawn. With *theta_out*, each factor's
-        theta is recorded there, by factor name."""
-        values: dict[str, Array] = {}
+        """Ancestral draws of the parts *needed*: ``(per-draw values (n,
+        *block), fixed values)``, *fixed* held and *per_draw* taken as drawn.
+        A part whose components are all at hand is not drawn. With
+        *theta_out*, each factor's theta is recorded there, by factor name.
+        A simulator is *simulators*' (the model's own by default), its
+        checked output recorded in *runs*; what is drawn or computed from a
+        failed output is ``NaN``."""
+        values: dict[str, Array] = dict(per_draw or {})
         fixed = dict(fixed)
+        simulators = self._simulators if simulators is None else simulators
+        runs = {} if runs is None else runs
         for part in self.spec._order:
-            if part.name not in needed:
+            declared = simulators[part.name].outputs if isinstance(part, Simulator) and part.name in needed else _declared(part)
+            if part.name not in needed or all(c.name in fixed or c.name in values for c in declared):
                 continue
+            if isinstance(part, Simulator):
+                values |= self._simulate(simulators[part.name], values, fixed, (n,), runs)
+                continue
+            reads, held = split_reads(part.given, values, fixed)
+            computed = self._draws_computed(part.given, runs)
             if isinstance(part, DeterministicSpec):
-                if all(c.name in fixed for c in part.outputs):
-                    continue
-                reads, held = split_reads(part.given, values, fixed)
                 out = self._deterministics[part.name].compute(reads, held, (n,))
-                (values if reads else fixed).update(out)
-                continue
-            if all(c.name in fixed for c in part.event):
+                (values if reads else fixed).update(_masked(out, computed, (n,)))
                 continue
             bound = self._factors[part.name]
-            reads, held = split_reads(part.given, values, fixed)
             theta = bound.sample_theta(random_key_for(key, part.name), n, reads, held)
-            check_draws_map_to_finite_theta(part.name, theta)
+            check_draws_map_to_finite_theta(part.name, theta if computed is None else theta[computed])
+            if computed is not None:
+                theta = jnp.where(jnp.asarray(computed)[:, None], theta, jnp.nan)
             if theta_out is not None:
                 theta_out[part.name] = theta
             values |= bound.natural_values(theta)
@@ -566,27 +634,94 @@ class FactoredDistribution:
         fixed: Mapping[str, Array],
         lead: tuple[int, ...],
         names: Sequence[str],
+        *,
+        simulators: Mapping[str, Simulator] | None = None,
+        runs: dict[str, SimulatorOutput] | None = None,
     ) -> tuple[dict[str, Array], dict[str, Array]]:
-        """*per_draw* and *fixed* with every deterministic behind *names*
-        computed where what it reads is at hand: ``(per-draw values, fixed
-        values)``. A deterministic reading only fixed values is computed
-        once, unbatched."""
+        """*per_draw* and *fixed* with every deterministic and simulator
+        behind *names* computed where what it reads is at hand: ``(per-draw
+        values, fixed values)``. A deterministic reading only fixed values is
+        computed once, unbatched; a simulator runs once for the batch, as in
+        :meth:`_ancestral`."""
         needed = self._deterministics_behind(names)
         per_draw, fixed = dict(per_draw), dict(fixed)
+        simulators = self._simulators if simulators is None else simulators
+        runs = {} if runs is None else runs
         for part in self.spec._order:
-            if part.name not in needed or all(c.name in fixed or c.name in per_draw for c in part.outputs):
+            if part.name not in needed:
+                continue
+            declared = simulators[part.name].outputs if isinstance(part, Simulator) else part.outputs
+            if all(c.name in fixed or c.name in per_draw for c in declared):
                 continue
             if not all(g in per_draw or g in fixed for g in part.given):
                 continue
+            if isinstance(part, Simulator):
+                per_draw |= self._simulate(simulators[part.name], per_draw, fixed, lead, runs)
+                continue
             reads, held = split_reads(part.given, per_draw, fixed)
             out = self._deterministics[part.name].compute(reads, held, lead)
-            (per_draw if reads else fixed).update(out)
+            (per_draw if reads else fixed).update(_masked(out, self._draws_computed(part.given, runs), lead))
         return per_draw, fixed
 
     def _deterministics_behind(self, names: Sequence[str]) -> set[str]:
-        """The deterministics (by name) computing *names*, directly or
-        through other deterministics."""
+        """The deterministics and simulators (by name) computing *names*,
+        directly or through others."""
         return deterministics_behind(self.spec, names)
+
+    def _simulate(
+        self,
+        simulator: Simulator,
+        per_draw: Mapping[str, Array],
+        fixed: Mapping[str, Array],
+        lead: tuple[int, ...],
+        runs: dict[str, SimulatorOutput],
+    ) -> dict[str, Array]:
+        """One call of *simulator* for the batch *lead*: its outputs,
+        ``{name: (*lead, *block)}``, ``NaN`` where not computed, as recorded
+        in *runs* by its name. An empty batch calls nothing."""
+        n = math.prod(lead)
+        shapes = {o.name: self._layout.block_shape(o.name) for o in simulator.outputs}
+        if n == 0:
+            runs[simulator.name] = SimulatorOutput(
+                values=frozendict({name: np.zeros((0, *shape)) for name, shape in shapes.items()}),
+                valid=frozendict({name: np.zeros(0, dtype=bool) for name in shapes}),
+            )
+            return {name: jnp.zeros((*lead, *shape)) for name, shape in shapes.items()}
+        output = simulator(self._labeled_given(simulator, per_draw, fixed, lead))
+        check_simulator_output_is_whole(simulator.name, output, shapes, n)
+        returned = {name: np.asarray(output.values[name], dtype=np.float64) for name in shapes}
+        valid = {
+            name: np.asarray(output.valid[name], dtype=bool) & np.isfinite(returned[name]).reshape((n, -1)).all(axis=1)
+            for name in shapes
+        }
+        computed = {
+            name: np.where(valid[name].reshape((n,) + (1,) * len(shape)), returned[name], np.nan)
+            for name, shape in shapes.items()
+        }
+        runs[simulator.name] = SimulatorOutput(values=frozendict(computed), valid=frozendict(valid), record=output.record)
+        return {name: jnp.asarray(value.reshape((*lead, *shapes[name]))) for name, value in computed.items()}
+
+    def _labeled_given(
+        self, simulator: Simulator, per_draw: Mapping[str, Array], fixed: Mapping[str, Array], lead: tuple[int, ...]
+    ) -> LabeledValues:
+        """What *simulator* reads for the batch *lead*, as it receives it:
+        labeled values on ``(sample, *indexed_by, *element axes)``, the
+        batch flattened to ``sample``, fixed values repeated for each."""
+        check_simulator_runs_outside_a_trace(simulator.name, [per_draw[g] for g in simulator.given if g in per_draw])
+        n = math.prod(lead)
+        given = {}
+        for name in simulator.given:
+            shape = self._layout.block_shape(name)
+            value = per_draw[name] if name in per_draw else jnp.broadcast_to(fixed[name], (*lead, *shape))
+            given[name] = np.asarray(value, dtype=np.float64).reshape((n, *shape))
+        return self._given_layouts[simulator.name].values_to_labeled(given, batch_dims=(SAMPLE,))
+
+    def _draws_computed(self, names: Sequence[str], runs: Mapping[str, SimulatorOutput]) -> np.ndarray | None:
+        """``(n,)``: the draws at which every simulator output behind *names*
+        was computed; ``None`` when none is behind them."""
+        behind = simulator_outputs_behind(self.spec, names)
+        masks = [run.valid[name] for run in runs.values() for name in run.valid if name in behind]
+        return None if not masks else np.logical_and.reduce(masks)
 
 
 def block_at_labels(spec: ArraySpec, value: Any, coords: Mapping[str, pd.Index], *, message_name: str) -> Array:
@@ -658,23 +793,33 @@ def _input_values(spec: ModelSpec, inputs: Any, coords: Mapping[str, pd.Index]) 
 
 def _bound_parts(
     model: FactoredDistribution, input_values: Mapping[str, Array]
-) -> tuple[dict[str, BoundFactor], dict[str, BoundDeterministic], dict[str, Array]]:
+) -> tuple[dict[str, BoundFactor], dict[str, BoundDeterministic], dict[str, Array], dict[str, Simulator]]:
     """Every part bound and checked in topological order, held in
-    declaration order, and the values fixed for every draw: the inputs and
-    what is computed from them alone.
+    declaration order; the values fixed for every draw: the inputs and
+    what is computed from them alone; and each simulator at the labels.
 
     When some factor reads a value that varies by draw, two ancestral draws
     are made as the parts are bound, and each such factor is built and
-    checked at both."""
+    checked at both. No simulator runs: its outputs are placeholders there,
+    each its bijector's image of 0, at which the factors downstream are
+    checked for their form only, and the deterministics downstream for
+    their block shapes, when the draws are made."""
     spec = model.spec
     varying = _names_varying_by_draw(spec)
+    downstream = _parts_downstream_of_a_simulator(spec)
     ancestral = any(n in varying for p in spec.parts if isinstance(p, FactorSpec) for n in p.given)
     key = jax.random.key(ANCESTRAL_SEED)
     draws: dict[str, Array] = {}
     fixed: dict[str, Array] = dict(input_values)
     factors: dict[str, BoundFactor] = {}
     deterministics: dict[str, BoundDeterministic] = {}
+    simulators: dict[str, Simulator] = {}
     for part in spec._order:
+        if isinstance(part, Simulator):
+            simulators[part.name] = simulator_at(part, model.coords)
+            if ancestral:
+                draws.update(_placeholders(model, part.outputs, ANCESTRAL_DRAWS))
+            continue
         fixed_reads = _fixed_reads(model, part)
         if isinstance(part, DeterministicSpec):
             bound = BoundDeterministic(
@@ -689,38 +834,80 @@ def _bound_parts(
                 fixed.update(out)
             elif ancestral:
                 reads, held = split_reads(part.given, draws, fixed)
-                draws.update(bound.compute(reads, held, (ANCESTRAL_DRAWS,)))
+                out = bound.compute(reads, held, (ANCESTRAL_DRAWS,))
+                if part.name in downstream:
+                    check_deterministic_has_its_block_shapes(bound, out, 1)
+                draws.update(out)
             continue
         reads, held = split_reads(part.given, draws, fixed)
         per_draw_values = [{n: v[i] for n, v in reads.items()} for i in range(ANCESTRAL_DRAWS)] if reads else [{}]
         bound = BoundFactor.build(
             part, index_shape=model._layout.index_shape(part.event[0].name), fixed_reads=frozendict(fixed_reads),
-            per_draw_values=per_draw_values, fixed_values=held,
+            per_draw_values=per_draw_values, fixed_values=held, downstream_of_a_simulator=part.name in downstream,
         )
         factors[part.name] = bound
         if ancestral:
             theta = bound.sample_theta(random_key_for(key, part.name), ANCESTRAL_DRAWS, reads, held)
-            check_draws_map_to_finite_theta(part.name, theta)
+            if part.name not in downstream:
+                check_draws_map_to_finite_theta(part.name, theta)
             draws |= bound.natural_values(theta)
     for bound in deterministics.values():
-        if any(g in varying for g in bound.spec.given):
+        if any(g in varying for g in bound.spec.given) and bound.name not in downstream:
             _evaluate_deterministic_at_the_probes(model, bound, deterministics, fixed)
     order = [p.name for p in spec.parts]
     return (
         {name: factors[name] for name in order if name in factors},
         {name: deterministics[name] for name in order if name in deterministics},
         fixed,
+        {name: simulators[name] for name in order if name in simulators},
     )
 
 
 def _names_varying_by_draw(spec: ModelSpec) -> set[str]:
-    """The components that vary by draw: every factor's, and every
-    deterministic output computed from one."""
+    """The components that vary by draw: every factor's and simulator's,
+    and every deterministic output computed from one."""
     varying: set[str] = set()
     for part in spec._order:
-        if isinstance(part, FactorSpec) or any(g in varying for g in part.given):
+        if isinstance(part, (FactorSpec, Simulator)) or any(g in varying for g in part.given):
             varying.update(c.name for c in _declared(part))
     return varying
+
+
+def _parts_downstream_of_a_simulator(spec: ModelSpec) -> set[str]:
+    """The parts (by name) with a simulator among their ancestors."""
+    downstream: set[str] = set()
+    for part in spec._order:
+        parents = [spec._owner[g] for g in part.given if g in spec._owner]
+        if any(isinstance(p, Simulator) or p.name in downstream for p in parents):
+            downstream.add(part.name)
+    return downstream
+
+
+def _placeholders(model: FactoredDistribution, specs: Sequence[ArraySpec], n: int) -> dict[str, Array]:
+    """``n`` copies of a value inside each component's support, its
+    bijector's image of 0, ``{name: (n, *block)}``."""
+    return {
+        c.name: c.bijector.forward(jnp.zeros((n, *model._layout.index_shape(c.name), *c.unconstrained_shape)))
+        for c in specs
+    }
+
+
+def _layout_of(model: FactoredDistribution, names: Sequence[str]) -> Layout:
+    """The layout of the components and inputs *names*, in that order, at
+    the model's labels."""
+    specs = [model.spec.component_spec(name) for name in names]
+    return Layout(specs, coords=coords_of(specs, model.coords))
+
+
+def _masked(values: Mapping[str, Array], computed: np.ndarray | None, lead: tuple[int, ...]) -> dict[str, Array]:
+    """*values*, each ``(*lead, *block)``, ``NaN`` at the draws not
+    *computed*, which is flat over *lead*."""
+    if computed is None:
+        return dict(values)
+    mask = jnp.asarray(computed).reshape(lead)
+    return {
+        name: jnp.where(mask.reshape(lead + (1,) * (v.ndim - len(lead))), v, jnp.nan) for name, v in values.items()
+    }
 
 
 def _fixed_reads(model: FactoredDistribution, part: Part) -> dict[str, Any]:
@@ -821,6 +1008,8 @@ def _random_behind(spec: ModelSpec, names: Sequence[str]) -> list[ArraySpec]:
 
 
 def _kind(part: Part) -> str:
+    if isinstance(part, Simulator):
+        return "simulator"
     return "factor" if isinstance(part, FactorSpec) else "deterministic"
 
 
@@ -832,7 +1021,9 @@ def check_model_spec_is_valid(spec: ModelSpec) -> None:
     read, and one set of labels per element axis name."""
     check_model_has_a_part(spec.parts)
     for part in spec.parts:
-        check_part_is_a_factor_or_a_deterministic(part)
+        check_part_is_a_factor_deterministic_or_simulator(part)
+        if isinstance(part, Simulator):
+            check_simulator_is_valid(part)
     check_model_has_a_factor(spec.parts)
     check_inputs_are_array_specs(spec.inputs)
     names = [c.name for p in spec.parts for c in _declared(p)] + [i.name for i in spec.inputs]
@@ -844,20 +1035,21 @@ def check_model_spec_is_valid(spec: ModelSpec) -> None:
 
 
 def check_part_is_a_part(part: Any) -> None:
-    """A model's part is a factor, a deterministic or a model."""
-    if not isinstance(part, (FactorSpec, DeterministicSpec, ModelSpec)):
+    """A model's part is a factor, a deterministic, a simulator or a model."""
+    if not isinstance(part, (FactorSpec, DeterministicSpec, Simulator, ModelSpec)):
         raise TypeError(
-            f"a model's part is a {type(part).__name__}; give FactorSpecs, DeterministicSpecs or ModelSpecs."
+            f"a model's part is a {type(part).__name__}; give FactorSpecs, DeterministicSpecs, Simulators or "
+            "ModelSpecs."
         )
 
 
-def check_part_is_a_factor_or_a_deterministic(part: Any) -> None:
-    """A model spec's part is a factor or a deterministic; models are
-    flattened into one by :func:`joint`."""
-    if not isinstance(part, (FactorSpec, DeterministicSpec)):
+def check_part_is_a_factor_deterministic_or_simulator(part: Any) -> None:
+    """A model spec's part is a factor, a deterministic or a simulator;
+    models are flattened into one by :func:`joint`."""
+    if not isinstance(part, (FactorSpec, DeterministicSpec, Simulator)):
         raise TypeError(
-            f"a ModelSpec's part is a {type(part).__name__}; give FactorSpecs and DeterministicSpecs, and "
-            "combine models with joint()."
+            f"a ModelSpec's part is a {type(part).__name__}; give FactorSpecs, DeterministicSpecs and "
+            "Simulators, and combine models with joint()."
         )
 
 
@@ -896,7 +1088,7 @@ def check_part_reads_declared_names(part: Part, declared: set[str]) -> None:
 def check_constants_are_named_apart(part: Part, declared: set[str]) -> None:
     """No constant or label map is named like a component or input, which
     the function's keyword would then name twice."""
-    clashing = [n for n in (*part.constants, *part.label_maps) if n in declared]
+    clashing = [n for n in (*getattr(part, "constants", ()), *getattr(part, "label_maps", ())) if n in declared]
     if clashing:
         raise ValueError(
             f"the {_kind(part)} {part.name!r} holds constants or label maps {truncated(clashing)} named like "
@@ -915,6 +1107,44 @@ def check_element_axes_agree(specs: Sequence[ArraySpec]) -> None:
                     "labels; an element axis name means one set of labels across a model, so name them apart."
                 )
             seen.setdefault(axis, (spec.name, labels))
+
+
+def check_simulator_runs_outside_a_trace(name: str, values: Sequence[Any]) -> None:
+    """A simulator runs on concrete values: it is code outside JAX, which a
+    traced value cannot reach."""
+    if any(isinstance(v, jax.core.Tracer) for v in values):
+        raise ValueError(
+            f"the simulator {name!r} would run under a JAX trace (jit, grad or vmap), which it cannot; "
+            "evaluate it outside the trace, or hold its outputs (Posterior.log_density_given)."
+        )
+
+
+def check_simulator_output_is_whole(
+    name: str, output: Any, shapes: Mapping[str, tuple[int, ...]], n: int
+) -> None:
+    """A simulator returns a ``SimulatorOutput`` holding each of its outputs
+    at every sample, ``(J, *block)``, and its validity, ``(J,)``."""
+    if not isinstance(output, SimulatorOutput):
+        raise TypeError(f"the simulator {name!r} returned a {type(output).__name__}, not a SimulatorOutput.")
+    for what, held in (("values", output.values), ("valid", output.valid)):
+        if not isinstance(held, Mapping) or set(held) != set(shapes):
+            found = sorted(held) if isinstance(held, Mapping) else type(held).__name__
+            raise ValueError(
+                f"the simulator {name!r} returned {what} for {found}, but computes {sorted(shapes)}; give one "
+                "for each output."
+            )
+    for output_name, shape in shapes.items():
+        if tuple(np.shape(output.values[output_name])) != (n, *shape):
+            raise ValueError(
+                f"the simulator {name!r} returned {output_name!r} of shape {tuple(np.shape(output.values[output_name]))}, "
+                f"but {n} samples of its block are {(n, *shape)}."
+            )
+        if tuple(np.shape(output.valid[output_name])) != (n,) or np.asarray(output.valid[output_name]).dtype != bool:
+            raise ValueError(
+                f"the simulator {name!r} returned the validity of {output_name!r} as "
+                f"{np.asarray(output.valid[output_name]).dtype} of shape {tuple(np.shape(output.valid[output_name]))}; "
+                f"give a bool array of shape ({n},)."
+            )
 
 
 def check_links_are_acyclic(path: Sequence[str], child: str, state: Mapping[str, str]) -> None:

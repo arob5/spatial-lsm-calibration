@@ -685,6 +685,31 @@ def located(array: xr.DataArray, *, site_table: pd.DataFrame | None = None) -> x
     return array.assign_coords({name: c.isel({conventions.SITE: 0}) for name, c in coords.items()})
 
 
+def two_source_observation_vector(site_table: pd.DataFrame, sites: Sequence[int] = (1, 27)):
+    """``test_forward``'s two observation sources at *sites*, at three of the
+    Niwot record's time labels: LandTrendr biomass read by ``SelectTimestep``
+    and MODIS LAI by its default operator, each missing somewhere."""
+    from sipnet_calibration.observation import DEFAULT_OBS_OPS, ObservationSource, ObservationVector, SelectTimestep
+
+    wood = niwot_reference().select(["wood_carbon"])["wood_carbon"]
+    labels = pd.DatetimeIndex(wood["time"].values[[5, 20, 30]])
+
+    def observed(name: str, values: list[list[float]], attrs: dict[str, str]) -> xr.DataArray:
+        array = xr.DataArray(values, dims=("site", "time"), coords={"site": list(sites), "time": labels},
+                             attrs=attrs, name=name)
+        return located(array, site_table=site_table)
+
+    biomass = observed("landtrendr_aboveground_biomass", [[100.0, np.nan, 120.0], [110.0, 115.0, np.nan]],
+                       {"units": "Mg ha-1", "constituent": "C"})
+    lai = observed("modis_leaf_area_index", [[3.0, 2.0, np.nan], [np.nan, 1.0, 1.5]], {"units": "m2 m-2"})
+    return ObservationVector(observation_sources=[
+        ObservationSource(observation_source_name="landtrendr_aboveground_biomass", observed_values=biomass,
+                          operator=SelectTimestep("wood_carbon")),
+        ObservationSource(observation_source_name="modis_leaf_area_index", observed_values=lai,
+                          operator=DEFAULT_OBS_OPS["modis_leaf_area_index"]),
+    ])
+
+
 def dated_observed_values(
     sites: Sequence[int],
     times: Sequence,
@@ -936,6 +961,47 @@ def example_reference_natural_values(reference: xr.Dataset, parameter_vector) ->
 
 
 # ── priors ────────────────────────────────────────────────────────────────────
+
+
+def example_calibration_factors(provenance: str = "Example calibration, as the probability layer declares it.") -> list:
+    """``calibration.example_calibration``'s prior as the probability layer's
+    factors, in its order: the same laws, so the same draws from the same
+    key, bound at coords holding ``pft`` and ``site``."""
+    from sipnet_calibration.probability import (
+        OPEN_UNIT_INTERVAL,
+        POSITIVE,
+        SIMPLEX,
+        ArraySpec,
+        FactorSpec,
+        iid_over_dim,
+        log_normal,
+        log_normal_from_interval,
+        logit_normal,
+        logit_normal_from_interval,
+        softmax_normal,
+    )
+
+    a_max_frac, c_frac_leaf, a_max, fol_resp = 0.76, 0.466, 58.0, 0.17
+    allocation_parts = ("leaf", "wood", "fine_root", "coarse_root")
+    return [
+        FactorSpec(ArraySpec("photosynthetic_capacity", units="nmol g-1 s-1", support=POSITIVE),
+                   law=log_normal(median=a_max * (a_max_frac + fol_resp) / c_frac_leaf, geometric_sd=1.75),
+                   provenance=provenance),
+        FactorSpec(ArraySpec("respiration_share", units="1", support=OPEN_UNIT_INTERVAL),
+                   law=logit_normal_from_interval(lower=0.10 / (a_max_frac + 0.10), upper=0.39 / (a_max_frac + 0.39)),
+                   provenance=provenance),
+        FactorSpec(ArraySpec("allocation", units="1", support=SIMPLEX, indexed_by=("pft",),
+                             element_axes={"allocation_part": allocation_parts}),
+                   law=iid_over_dim(softmax_normal(center=(0.18, 0.40, 0.07, 0.35), logit_sd=0.5)),
+                   provenance=provenance),
+        FactorSpec(ArraySpec("base_soil_respiration", units="yr-1", support=POSITIVE, indexed_by=("pft",)),
+                   law=iid_over_dim(log_normal_from_interval(lower=0.004, upper=0.020)), provenance=provenance),
+        FactorSpec(ArraySpec("leaf_fall_fraction", units="1", support=OPEN_UNIT_INTERVAL),
+                   law=logit_normal(median=0.5, logit_sd=1.7), provenance=provenance),
+        FactorSpec(ArraySpec("initial_soil_carbon", units="g m-2", support=POSITIVE, indexed_by=("site",)),
+                   law=iid_over_dim(log_normal(median=30_000.0, geometric_sd=2.0)), provenance=provenance),
+    ]
+
 
 
 def theta_gaussian(prior, name: str) -> tuple[np.ndarray, np.ndarray]:
