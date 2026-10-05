@@ -1,0 +1,3372 @@
+<title>Probability Layer Redesign</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Spectral:wght@500;600&family=Public+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: a design memo. A sticky contents rail on wide screens, one reading
+   column of about 74ch, and wide code, tables and diagrams that scroll in place. */
+:root{
+  --bg:#f4f6f5; --surface:#ffffff; --sunken:#e9eeeb; --fg:#15201b; --muted:#56655e;
+  --rule:#d2dbd6; --accent:#1b6956; --accent-soft:#dbece5; --ochre:#875a0d;
+  --ochre-soft:#f4e9d4; --red:#9a2e2e; --red-soft:#f5e0de;
+  --hl-keyword:#7a3d9b; --hl-string:#2e6a1e; --hl-comment:#6a7a72; --hl-number:#a04e00;
+  --hl-title:#1c5b89; --hl-meta:#8a5b0e;
+  --display:"Spectral", Georgia, "Times New Roman", serif;
+  --body:"Public Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono:"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#0f1513; --surface:#151d1a; --sunken:#1b2521; --fg:#e2eae6; --muted:#9aaba3;
+    --rule:#2a3732; --accent:#62c3a5; --accent-soft:#183129; --ochre:#e0b464;
+    --ochre-soft:#2c2414; --red:#ec8f8f; --red-soft:#341b1b;
+    --hl-keyword:#cf9cf0; --hl-string:#9fd68b; --hl-comment:#7f9188; --hl-number:#f0a868;
+    --hl-title:#86bff0; --hl-meta:#e0b464; color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0f1513; --surface:#151d1a; --sunken:#1b2521; --fg:#e2eae6; --muted:#9aaba3;
+  --rule:#2a3732; --accent:#62c3a5; --accent-soft:#183129; --ochre:#e0b464;
+  --ochre-soft:#2c2414; --red:#ec8f8f; --red-soft:#341b1b;
+  --hl-keyword:#cf9cf0; --hl-string:#9fd68b; --hl-comment:#7f9188; --hl-number:#f0a868;
+  --hl-title:#86bff0; --hl-meta:#e0b464; color-scheme:dark;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+@media (prefers-reduced-motion: reduce){html{scroll-behavior:auto}}
+body{background:var(--bg);color:var(--fg);font-family:var(--body);font-size:16px;line-height:1.62;
+  padding-inline:16px;padding-block:0 64px}
+.shell{max-width:1240px;margin-inline:auto;display:grid;grid-template-columns:240px minmax(0,1fr);gap:48px}
+@media (max-width: 960px){.shell{grid-template-columns:minmax(0,1fr);gap:0}.rail{display:none}}
+.rail{position:sticky;top:env(safe-area-inset-top,0px);align-self:start;max-height:100vh;overflow-y:auto;
+  padding-block:32px 32px;font-size:13.5px}
+.rail h2{font-family:var(--body);font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin:0 0 10px}
+.rail ol{list-style:none;margin:0;padding:0;display:grid;gap:2px}
+.rail a{display:block;color:var(--muted);text-decoration:none;padding:3px 8px;border-radius:4px;line-height:1.35}
+.rail a:hover,.rail a:focus-visible{color:var(--fg);background:var(--sunken);outline:none}
+.rail .sub a{padding-left:20px;font-size:12.5px}
+main{min-width:0;padding-block:40px 0}
+.doc{max-width:78ch}
+header.masthead{border-bottom:1px solid var(--rule);padding-bottom:28px;margin-bottom:12px}
+.eyebrow{font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--accent);font-weight:600}
+h1{font-family:var(--display);font-weight:600;font-size:clamp(30px,4.2vw,42px);line-height:1.12;margin:10px 0 14px;text-wrap:balance;letter-spacing:-.01em}
+.lede{font-size:18px;color:var(--fg);max-width:68ch;margin:0}
+.meta{display:flex;flex-wrap:wrap;gap:8px 22px;margin-top:18px;font-size:13.5px;color:var(--muted)}
+.meta b{color:var(--fg);font-weight:600}
+h2{font-family:var(--display);font-weight:600;font-size:28px;line-height:1.2;margin:56px 0 14px;text-wrap:balance;scroll-margin-top:16px}
+h2 .num{font-family:var(--mono);font-size:15px;color:var(--accent);font-weight:500;margin-right:10px;vertical-align:3px}
+h3{font-family:var(--body);font-weight:700;font-size:19px;margin:36px 0 10px;scroll-margin-top:16px;text-wrap:balance}
+h4{font-family:var(--body);font-weight:600;font-size:15.5px;margin:24px 0 6px;color:var(--fg)}
+p{margin:0 0 14px}
+ul,ol{margin:0 0 14px;padding-left:22px}
+li{margin:3px 0}
+a{color:var(--accent)}
+a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+code{font-family:var(--mono);font-size:.86em;background:var(--sunken);padding:.08em .32em;border-radius:3px;overflow-wrap:anywhere}
+pre{margin:0 0 18px;background:var(--surface);border:1px solid var(--rule);border-radius:6px;overflow-x:auto;font-size:13px;line-height:1.55}
+pre code{display:block;background:none;padding:14px 16px;font-size:inherit;overflow-wrap:normal;white-space:pre;min-width:max-content}
+.math{font-family:var(--display);font-size:17px;background:var(--surface);border:1px solid var(--rule);border-radius:6px;padding:14px 18px;margin:0 0 18px;overflow-x:auto;line-height:1.9}
+.math .row{white-space:nowrap}
+var{font-family:var(--display);font-style:italic}
+.table-wrap{overflow-x:auto;margin:0 0 18px;border:1px solid var(--rule);border-radius:6px;background:var(--surface)}
+table{border-collapse:collapse;width:100%;font-size:14px;font-variant-numeric:tabular-nums}
+th,td{text-align:left;vertical-align:top;padding:8px 12px;border-bottom:1px solid var(--rule)}
+th{font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);font-weight:600;background:var(--sunken)}
+tr:last-child td{border-bottom:none}
+td code{white-space:nowrap}
+.note,.decision,.warn{border-radius:6px;padding:12px 16px;margin:0 0 18px;font-size:15px}
+.note{background:var(--accent-soft)}
+.decision{background:var(--ochre-soft)}
+.warn{background:var(--red-soft)}
+.note b.tag,.decision b.tag,.warn b.tag{font-size:11px;letter-spacing:.12em;text-transform:uppercase;display:block;margin-bottom:2px}
+.note b.tag{color:var(--accent)} .decision b.tag{color:var(--ochre)} .warn b.tag{color:var(--red)}
+.note p:last-child,.decision p:last-child,.warn p:last-child{margin-bottom:0}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px;margin:0 0 18px}
+.card{background:var(--surface);border:1px solid var(--rule);border-radius:6px;padding:14px 16px;min-width:0}
+.card h4{margin-top:0}
+.card p{font-size:14.5px}
+.pill{display:inline-block;font-size:11px;letter-spacing:.06em;text-transform:uppercase;font-weight:600;padding:1px 7px;border-radius:999px;vertical-align:2px}
+.pill.core{background:var(--accent-soft);color:var(--accent)}
+.pill.adapter{background:var(--ochre-soft);color:var(--ochre)}
+.pill.new{background:var(--sunken);color:var(--muted)}
+.sig{font-family:var(--mono);font-size:13.5px;color:var(--muted)}
+pre.mermaid{background:var(--surface);padding:16px;text-align:center}
+hr{border:none;border-top:1px solid var(--rule);margin:40px 0}
+.small{font-size:13.5px;color:var(--muted)}
+/* highlight.js tokens, from the theme */
+.hljs-keyword,.hljs-built_in,.hljs-literal{color:var(--hl-keyword)}
+.hljs-string,.hljs-doctag{color:var(--hl-string)}
+.hljs-comment{color:var(--hl-comment);font-style:italic}
+.hljs-number{color:var(--hl-number)}
+.hljs-title,.hljs-title.function_,.hljs-title.class_{color:var(--hl-title)}
+.hljs-meta,.hljs-decorator{color:var(--hl-meta)}
+.hljs-params{color:inherit}
+.formal{background:var(--surface);border:1px solid var(--rule);border-radius:6px;padding:12px 16px;margin:0 0 18px}
+.formal p:last-child,.formal ul:last-child,.formal ol:last-child{margin-bottom:0}
+mjx-container[display="true"]{overflow-x:auto;overflow-y:hidden;max-width:100%;padding:2px 0}
+</style>
+<script>window.MathJax={tex:{inlineMath:[["\\(","\\)"]],displayMath:[["\\[","\\]"]]},svg:{fontCache:"global"},options:{skipHtmlTags:["script","noscript","style","textarea","pre","code"]}};</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/3.2.2/es5/tex-svg-full.min.js" async></script>
+
+<div class="shell">
+<nav class="rail" aria-label="Contents">
+  <h2>Contents</h2>
+  <ol>
+    <li><a href="#summary">Summary</a></li>
+    <li><a href="#criteria">The criteria</a></li>
+    <li><a href="#today">What is wrong today</a></li>
+    <li><a href="#model">The probabilistic model</a></li>
+    <li class="sub"><a href="#stages">Declare, bind, condition, evaluate</a></li>
+    <li class="sub"><a href="#components">Components and labels</a></li>
+    <li class="sub"><a href="#graph">The model graph</a></li>
+    <li class="sub"><a href="#binding">Binding</a></li>
+    <li class="sub"><a href="#conditioning">Conditioning</a></li>
+    <li class="sub"><a href="#coordinates">Coordinates</a></li>
+    <li class="sub"><a href="#failures">Failures</a></li>
+    <li class="sub"><a href="#checks">Construction checks</a></li>
+    <li class="sub"><a href="#mapping">The calibration in these terms</a></li>
+    <li><a href="#architecture">Architecture</a></li>
+    <li><a href="#vocabulary">Vocabulary</a></li>
+    <li><a href="#core">The core API</a></li>
+    <li class="sub"><a href="#core-support">Supports</a></li>
+    <li class="sub"><a href="#core-spec">ArraySpec</a></li>
+    <li class="sub"><a href="#core-reads">What functions read</a></li>
+    <li class="sub"><a href="#core-laws">Laws and families</a></li>
+    <li class="sub"><a href="#core-factor">FactorSpec</a></li>
+    <li class="sub"><a href="#core-gaussian">GaussianSpec</a></li>
+    <li class="sub"><a href="#core-covariance">Covariance specs</a></li>
+    <li class="sub"><a href="#core-deterministic">DeterministicSpec</a></li>
+    <li class="sub"><a href="#core-simulator">Simulator</a></li>
+    <li class="sub"><a href="#core-joint">ModelSpec, bind</a></li>
+    <li class="sub"><a href="#core-layout">Layout</a></li>
+    <li class="sub"><a href="#core-posterior">Conditioning API</a></li>
+    <li class="sub"><a href="#core-conjugacy">Conjugacy</a></li>
+    <li><a href="#adapters">The adapter layer</a></li>
+    <li><a href="#inference">Inference adapters</a></li>
+    <li><a href="#examples">Worked examples</a></li>
+    <li class="sub"><a href="#ex1">1 · Block-diagonal noise</a></li>
+    <li class="sub"><a href="#ex2">2 · The Harvard Forest prior</a></li>
+    <li class="sub"><a href="#ex3">3 · Covariates, global, per site</a></li>
+    <li class="sub"><a href="#ex4">4 · Inverse gamma and Wishart</a></li>
+    <li><a href="#migration">Migration</a></li>
+    <li><a href="#plan">PR plan</a></li>
+    <li><a href="#decisions">Decisions</a></li>
+    <li><a href="#open">Open questions</a></li>
+  </ol>
+</nav>
+
+<main>
+<div class="doc">
+
+<header class="masthead">
+  <div class="eyebrow">spatial-lsm-calibration · design proposal · revision 5</div>
+  <h1>One probability layer for the prior and the observation model</h1>
+  <p class="lede">A proposal to generalize the parameter layer PR #72 merged into a
+  small probability layer, independent of this project. A user <b>declares</b>
+  a model in specs. The specs are <b>bound</b> to the labels in use, which gives
+  a distribution. That distribution is <b>evaluated</b>, draw by draw, as
+  ordinary laws from TFP and EnsKit. Conditioning it on the data gives the
+  target every inference algorithm reads.</p>
+  <div class="meta">
+    <span><b>Date</b> 2026-10-04 (revision 5)</span>
+    <span><b>Base</b> <code>origin/main</code> at <code>ec21aa9</code> (PR #72)</span>
+    <span><b>References</b> ProbPipe <code>design/</code> at PR #467; EnsKit redesign at pyEKI <code>a9e2faf</code></span>
+    <span><b>Status</b> being implemented; the handoff document records which PRs have landed</span>
+  </div>
+</header>
+
+<section id="summary">
+<h2><span class="num">1</span>Summary</h2>
+<p>Today the package says what is believed about the parameters, but not what is
+believed about the data. <code>Prior</code> is a factored density over one
+vector. The observation side has a vector and its operators, but no
+distribution, so the experiment writes the noise model, the likelihood and every
+algorithm's glue by hand.</p>
+<p>The proposal replaces <code>sipnet_calibration.parameters</code> with
+<code>sipnet_calibration.probability</code>, built on one idea: <b>a model is a
+product of conditional laws over named components, some of which are computed
+from others</b>. Conditioning a model on the values of some components gives a
+target over the rest. A model passes through three stages, and the names say
+which stage an object belongs to:</p>
+<ol>
+  <li><b>Declare.</b> A user writes specs, which hold no labels and no
+  numbers. Every declaration class ends in <code>Spec</code>:
+    <ul>
+      <li><code>ArraySpec</code>: what a component is;</li>
+      <li><code>FactorSpec</code>: a conditional law;</li>
+      <li><code>GaussianSpec</code> and the covariance specs: a structured
+      Gaussian law;</li>
+      <li><code>DeterministicSpec</code>: a traced function.</li>
+    </ul>
+  A <code>Simulator</code>, the forward model, is the one part that is real code
+  rather than a declaration. <code>joint(*parts, inputs=...)</code> collects the
+  parts, and declares the inputs, into a <code>ModelSpec</code>.</li>
+  <li><b>Bind.</b> <code>model_spec.bind(coords=...)</code> gives the labels of
+  every dim (which sites, which observations) and returns a
+  <code>FactoredDistribution</code>.</li>
+  <li><b>Evaluate.</b> At each draw, each factor spec becomes an ordinary
+  law:
+    <ul>
+      <li>a TFP distribution for a prior;</li>
+      <li>an EnsKit <code>Gaussian</code> with <code>enskit.linalg</code>
+      covariance operators for a noise model.</li>
+    </ul>
+  <code>model.law(name, given=...)</code> returns that law for inspection.</li>
+</ol>
+<p><code>condition_on(model, observed)</code> applies Bayes' rule to a bound
+model and gives a <code>Posterior</code>, the one object every inference
+adapter reads. It provides:</p>
+<ul>
+  <li>the layout of theta;</li>
+  <li>the prior's sampler and density;</li>
+  <li>a batched log likelihood that runs the simulator once per batch and scores
+  failed samples <code>-inf</code>;</li>
+  <li>the Gaussian structure EKI needs;</li>
+  <li>closed-form full conditionals for Gibbs steps;</li>
+  <li>a traced density for gradients in whatever no simulator reads.</li>
+</ul>
+<p>The adapter layer gets thinner:</p>
+<ul>
+  <li><b>The forward model</b> becomes a <code>Simulator</code>. It no longer
+  sees theta, the vector or the derived parameters.</li>
+  <li><b>The observation vector</b> supplies the observed components, their
+  per-observation constants, and a one-line noise factor per source
+  (<code>noise_factor</code>).</li>
+  <li><b>The algorithm adapters</b> (EnsKit, SMC, MCMC) move to a new
+  generic <code>inference</code> package.</li>
+</ul>
+<p>The vocabulary follows ProbPipe's where its design is settled: component,
+factor (always a law), event, given, <code>FactoredDistribution</code>,
+<code>condition_on</code>, batch dim <code>sample</code>. The Gaussian and the
+linear algebra are EnsKit's: a covariance spec evaluates to an
+<code>enskit.linalg</code> operator, and a Gaussian factor to an EnsKit
+<code>Gaussian</code>.</p>
+</section>
+
+<section id="criteria">
+<h2><span class="num">2</span>The criteria, and how the design meets them</h2>
+<div class="table-wrap"><table>
+<thead><tr><th>Criterion</th><th>How the design meets it</th><th>Where it is enforced</th></tr></thead>
+<tbody>
+<tr><td>1. The core imports nothing particular to this project</td>
+<td><code>probability</code> knows dims, labels and arrays. It imports TFP and,
+from EnsKit, only its two generic lower layers, <code>linalg</code> and
+<code>distribution</code>. Sites, SIPNET, PyEns and observation sources are
+absent: an observation is a component like any other. <code>inference</code>
+imports <code>probability</code>, <code>smc</code> (itself generic) and the
+algorithm packages.</td>
+<td><code>tests/test_package.py</code>'s import check, extended to both
+packages. <code>inference</code> imports <code>smc</code>, which imports
+<code>io</code>, <code>validation</code> and <code>conventions</code>, generic
+modules that the check allows.</td></tr>
+<tr><td>2. Each abstraction has one interpretation and a scoped purpose</td>
+<td>Each class answers one question:
+<ul>
+  <li><code>ArraySpec</code>: what a component is;</li>
+  <li><code>FactorSpec</code>: how it is distributed given others;</li>
+  <li><code>DeterministicSpec</code> and <code>Simulator</code>: how it is
+  computed;</li>
+  <li><code>ModelSpec</code>: the declared model;</li>
+  <li><code>FactoredDistribution</code>: that model at a set of labels;</li>
+  <li><code>Posterior</code>: the model given values;</li>
+  <li><code>Layout</code>: named arrays as one flat vector.</li>
+</ul>
+The suffix <code>Spec</code> marks a declaration, and every docstring opens with
+what the thing is.</td>
+<td>§4.1 and each docstring's first sentence.</td></tr>
+<tr><td>3. A friendly API that hides what users need not think about</td>
+<td>A user writes specs, then calls <code>joint</code>, <code>bind</code> and
+<code>condition_on</code>. The library derives everything else: the layouts of
+theta and y, the draw order, prediction names, per-observation constants,
+Jacobians and display labels. No constructor takes a display-only argument,
+and functions receive only the keywords they name.</td>
+<td>§7.3, and the constructors in §7.</td></tr>
+<tr><td>4. Worked examples of the four models</td>
+<td>Full code for each, and what inference reads from it.</td>
+<td>§10.</td></tr>
+<tr><td>ProbPipe as the eventual target</td>
+<td>The same objects and words, and a mapping table that lists every
+departure.</td>
+<td>§6.</td></tr>
+</tbody></table></div>
+</section>
+
+<section id="today">
+<h2><span class="num">3</span>What is wrong today</h2>
+<p>The parameter layer PR #72 merged is sound for what it does. The trouble is
+that it is a prior engine, the inference problem is a joint model, and
+everything between the two is written by hand. The PR #69 experiment at
+<code>7949640</code> is the evidence; the F-numbers are from the survey of
+it.</p>
+<div class="grid2">
+  <div class="card"><h4>No observation model</h4>
+  <p><b>F11.</b> R is assembled against Flat positions, with block builders
+  chosen by source name, at one site only. The measurement standard deviations
+  are re-read from the data sources.</p>
+  <p><b>F12.</b> The Gaussian density exists five times, and nothing scores a
+  failed sample.</p></div>
+  <div class="card"><h4>No target for samplers</h4>
+  <p><b>F16.</b> There is no log posterior or base density for SMC or MCMC.</p>
+  <p><b>F1.</b> The prior Gaussian for pyEKI is rebuilt by unwrapping TFP
+  objects.</p></div>
+  <div class="card"><h4>A forward model of five objects</h4>
+  <p><b>F5.</b> Vector, map, site dims, external inputs, observation vector.</p>
+  <p><b>F7.</b> Calibrated and external initial states are told apart by string
+  names.</p>
+  <p><b>F4.</b> A one-sample evaluation copies a private merge.</p></div>
+  <div class="card"><h4>Labels lost and rebuilt</h4>
+  <p><b>F2, F3, F13.</b> Theta is saved unlabeled, figures rebuild the
+  calibration to label it, and Flat is re-sliced by positions.</p>
+  <p><b>F8.</b> <code>ValueRequirement</code>s restate the parameters'
+  declarations.</p></div>
+</div>
+<p>Two structural causes lie behind these. First, the prior and the likelihood
+are different kinds of object: one is a declarative, checked, traced density,
+the other whatever the experiment writes. Second, the forward model sits on the
+wrong side of the seam: it takes theta and converts it itself, so it must know
+the vector, the derived parameters and theta's layout.</p>
+</section>
+<section id="model">
+<h2><span class="num">4</span>The probabilistic model</h2>
+<p>This section defines the model mathematically, independent of any application:
+the graph, what binding does to it, and what conditioning does to it (§4.1–§4.8).
+§4.9 then maps this project's calibration onto the definitions.</p>
+
+<h3 id="stages">4.1 Declare, bind, condition, evaluate</h3>
+<div class="table-wrap"><table>
+<thead><tr><th>Stage</th><th>Call</th><th>Result</th><th>Mathematically</th></tr></thead>
+<tbody>
+<tr><td><b>Declare</b></td><td>specs; <code>joint(*parts, inputs=...)</code></td><td><code>ModelSpec</code></td><td>A graph \(G\) of random, deterministic and input nodes, with a kernel or function at each (§4.3). It holds no labels in use and no input values.</td></tr>
+<tr><td><b>Bind</b></td><td><code>model_spec.bind(coords=..., inputs=...)</code></td><td><code>FactoredDistribution</code></td><td>The value spaces fixed by the labels in use, and the inputs set to values. The result is one probability distribution \(P\) over the random nodes (§4.4).</td></tr>
+<tr><td><b>Condition</b></td><td><code>condition_on(model, observed)</code></td><td><code>Posterior</code></td><td>\(P\) conditioned on observed values. The target is the law of the remaining relevant random nodes, the parameters (§4.5).</td></tr>
+<tr><td><b>Evaluate</b></td><td>internal, per draw; <code>model.law(name, given=...)</code> to inspect</td><td>a <b>law</b> per factor</td><td>\(p_v(\cdot \mid z_{\mathrm{pa}(v)})\) at one value of \(z_{\mathrm{pa}(v)}\): a TFP distribution, or an EnsKit <code>Gaussian</code>.</td></tr>
+</tbody></table></div>
+<p>Every class whose instances are declarations ends in <code>Spec</code>. A
+<code>Simulator</code> is real code, not a declaration: it runs, and
+<code>Simulator.at</code> is its own binding. Binding again with fewer labels is how a
+model is restricted, so one <code>ModelSpec</code> serves a one-site and a 200-site
+calibration.</p>
+
+<h3 id="components">4.2 Components and their labels</h3>
+<p>A <b>component</b> is a named array a draw of the model holds. Its
+<code>ArraySpec</code> says what its values are and which axes it has. There are
+two kinds of axes, and their labels come from different places:</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Axes</th><th>What they are</th><th>Labels come from</th><th>Change?</th></tr></thead>
+<tbody>
+<tr><td><b>element axes</b></td><td>the axes of one value: the four parts of an allocation simplex, the rows and columns of a covariance matrix</td><td>the <code>ArraySpec</code> (<code>element_axes</code>), since they are part of what the value is</td><td>never</td></tr>
+<tr><td><b><code>indexed_by</code> dims</b></td><td>the dims the value is replicated over: one value per site, per PFT</td><td>the <b>coords</b>, <code>{dim: labels}</code>, given to <code>bind</code></td><td>with each <code>bind</code></td></tr>
+</tbody></table></div>
+<p>A component's <b>block</b> is all its values. Its shape is
+<code>(*[len(coords[d]) for d in indexed_by], *element shape)</code>. Two kinds
+of fixed data sit on the same axes, and functions read them:</p>
+<ul>
+  <li>a <b>constant</b>, a value per label, such as a covariate per site or a
+  measurement standard deviation per observation;</li>
+  <li>a <b>label map</b>, which sends each label of one dim to a label of another
+  dim or element axis, such as each site to its PFT. A function receives it as
+  integer positions.</li>
+</ul>
+<p>For example, with <code>coords = {"pft": ["boreal", "temperate"], "site": [620, 865, 1037]}</code>:</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Declared</th><th>A function receives</th></tr></thead>
+<tbody>
+<tr><td><code>ArraySpec("allocation", support=SIMPLEX, units="1", indexed_by=("pft",), element_axes={"allocation_part": ("leaf", "wood", "fine_root", "coarse_root")})</code></td><td>a block <code>(2, 4)</code></td></tr>
+<tr><td><code>ArraySpec("soil_carbon", support=POSITIVE, units="kg m-2", indexed_by=("site",))</code></td><td>a block <code>(3,)</code></td></tr>
+<tr><td>constant <code>median</code>: a DataArray on <code>site</code></td><td><code>(3,)</code>, read at the labels in use</td></tr>
+<tr><td>label map <code>site_pft</code>: a DataArray on <code>site</code> named <code>"pft"</code>, values <code>["boreal", "boreal", "temperate"]</code></td><td><code>[0, 0, 1]</code>, so <code>x_pft[site_pft]</code> is each site's PFT value</td></tr>
+</tbody></table></div>
+<p>A dim whose labels are a <code>pandas.MultiIndex</code> is a <b>stacked
+dim</b>. It is how a ragged set of labels becomes one dim, such as the
+<code>(site, time)</code> pairs an observation source observes. A level of a
+stacked dim may be named wherever a dim may be: in a selector, and as the
+grouping of a block-diagonal covariance.</p>
+
+<h3 id="graph">4.3 The model graph</h3>
+<div class="formal"><p><b>Definition 1 (model).</b> A model is a directed acyclic
+graph \(G = (V, E)\) whose nodes are its parts and its inputs,
+\[ V = R \sqcup D \sqcup U, \]
+with an edge \(w \to v\) when part \(v\) reads a component of \(w\). Write
+\(\mathrm{pa}(v)\), \(\mathrm{an}(v)\) and \(\mathrm{de}(v)\) for the parents,
+ancestors and descendants of \(v\). Each node has a value \(z_v \in
+\mathcal Z_v\): the tuple of the blocks of the components it declares.</p>
+<ul>
+  <li><b>Random nodes</b> \(v \in R\) are the factors (<code>FactorSpec</code>). Each carries a
+  Markov kernel with density \(p_v(z_v \mid z_{\mathrm{pa}(v)})\) against a
+  reference measure \(\lambda_v\) on \(\mathcal Z_v\): Lebesgue measure per number on an interval, on the
+  first \(k-1\) coordinates on the simplex, on the lower triangle for a
+  positive-definite matrix.</li>
+  <li><b>Deterministic nodes</b> \(v \in D\) are the <code>DeterministicSpec</code>s and
+  <code>Simulator</code>s. Each carries a map \(f_v : \mathcal D_v \to \mathcal Z_v\)
+  on a domain \(\mathcal D_v \subseteq \mathcal Z_{\mathrm{pa}(v)}\), which is all
+  of \(\mathcal Z_{\mathrm{pa}(v)}\) except for a simulator that can fail.</li>
+  <li><b>Input nodes</b> \(v \in U\) are declared by <code>joint(..., inputs=)</code>.
+  They have no parents and carry nothing; their values are supplied.</li>
+</ul>
+<p>Any node may read any other kind, inputs included: a deterministic node that
+reads only inputs is a fixed computed value.</p></div>
+<p>The graph is not stored. It is derived from the names each part's functions read
+(the keyword rule, §7.3), and its edges are acyclic by construction or
+refused.</p>
+<div class="formal"><p><b>Proposition 1 (the joint law).</b> Extend each
+partial map by a value \(\bot\) off its domain, \(\bar f_v = f_v\) on
+\(\mathcal D_v\) and \(\bot\) elsewhere, and let every node that reads
+\(\bot\) take the value \(\bot\) (a kernel puts its mass there). Since \(G\) is
+acyclic, each deterministic value is then a function of the random and input
+values, \(z_D = F(z_R, z_U)\), computed in topological order. Given inputs \(u\), the random values have the joint density
+\[ p(z_R \mid u) \;=\; \prod_{v \in R} p_v\big(z_v \mid z_{\mathrm{pa}(v)}\big)
+   \qquad \text{against } \lambda_R = \textstyle\bigotimes_{v\in R} \lambda_v, \]
+with every deterministic and input value substituted, on
+\(\mathcal Z_R\) extended by \(\bot\). Ancestral sampling in topological
+order draws from it.</p></div>
+<p>A deterministic node therefore adds nothing to the density: it is a change of
+what each kernel reads, not a factor. Equivalently, the joint law of all of
+\(z_R, z_D\) is \(\prod_{v\in R} p_v \prod_{v \in D} \delta\big(z_v - f_v(z_{\mathrm{pa}(v)})\big)\).</p>
+
+<h3 id="binding">4.4 Binding</h3>
+<p>Binding makes the model one distribution.</p>
+<ul>
+  <li><b>Coords.</b> The coords fix every value space: a component's block shape
+  is the number of labels of each <code>indexed_by</code> dim, by its element
+  shape. Constants and label maps are read at those labels.</li>
+  <li><b>Inputs.</b> The inputs are set to values \(u_0\).</li>
+</ul>
+<p>The result is the distribution</p>
+\[ P \;=\; p(\,\cdot \mid u_0) \quad \text{on } \mathcal Z_R . \]
+<p>A <code>FactoredDistribution</code> is \(P\): <code>sample</code> draws from it
+ancestrally, and <code>log_prob</code> evaluates its density. An input is part of the
+model's declaration, because parts read it. Its value is part of binding, because
+it is fixed data, like the labels.</p>
+
+<h3 id="conditioning">4.5 Conditioning</h3>
+<p>Conditioning is Bayes' rule, and nothing else. Let \(O \subseteq R\) be the
+observed nodes, with values \(y = (y_v)_{v\in O}\). Two sets of the remaining
+nodes are determined by the graph alone:</p>
+<div class="formal"><p><b>Definition 2 (barren nodes, target).</b> The
+<b>barren</b> nodes are the unobserved random nodes with no observed descendant,
+\[ B \;=\; \{\, v \in R \setminus O \;:\; \mathrm{de}(v) \cap O = \varnothing \,\}, \]
+descendants taken through deterministic nodes as well. The <b>target</b> is the
+rest, \(T = R \setminus (O \cup B)\), and its components are the
+<b>parameters</b>. When nothing is observed there is nothing to prune toward:
+by convention \(B = \varnothing\) and \(T = R\), so conditioning on nothing
+gives the prior over every random node.</p></div>
+<div class="formal"><p><b>Proposition 2 (barren nodes drop out).</b> The
+posterior factors as
+\[ p(z_T, z_B \mid y) \;=\; p(z_T \mid y) \prod_{v \in B} p_v\big(z_v \mid z_{\mathrm{pa}(v)}\big), \qquad
+   p(z_T \mid y) \;\propto\; \prod_{v\in T} p_v\big(z_v \mid z_{\mathrm{pa}(v)}\big)
+   \prod_{v \in O} p_v\big(y_v \mid z_{\mathrm{pa}(v)}\big). \]
+<i>Proof.</i> No node of \(T \cup O\) is a descendant of a barren node: an observed one by
+definition, and a target one because its observed descendant would then descend
+from the barren node. So no kernel of \(T \cup O\) reads \(z_B\), even through a
+deterministic node. The barren kernels integrate to one, leaves first. ∎</p></div>
+<p>So the target \(p(z_T \mid y)\) is what inference samples. Barren nodes, such as
+a validation source left unobserved, are drawn afterwards from their kernels given
+posterior draws of \(z_T\). This is the posterior predictive, provided by
+<code>Posterior.predict</code>. No argument names them: the graph does.</p>
+<div class="formal"><p><b>Definition 3 (prior, likelihood).</b> Split the observed
+nodes by whether they have a target ancestor (through any node),
+\[ O_\theta = \{\, v \in O : \mathrm{an}(v) \cap T \neq \varnothing \,\}, \qquad
+   O_c = O \setminus O_\theta , \]
+and define
+\[ \pi(z_T) = \prod_{v\in T} p_v\big(z_v \mid z_{\mathrm{pa}(v)}\big), \qquad
+   L(z_T) = \prod_{v \in O_\theta} p_v\big(y_v \mid z_{\mathrm{pa}(v)}\big), \qquad
+   C = \prod_{v \in O_c} p_v\big(y_v \mid z_{\mathrm{pa}(v)}\big). \]
+Then
+\[ p(z_T \mid y) = \frac{\pi(z_T)\, L(z_T)}{Z}, \qquad Z = \int \pi L \, d\lambda_T, \qquad p(y) = C\, Z . \]
+Ancestry over-approximates dependence: a node in \(O_\theta\) may have a kernel
+that is in fact constant in \(z_T\) (\(t \to o' \to o''\) with \(o', o''\)
+observed). Treating it as in \(O_\theta\) is safe, and every rule below that
+asks whether something <b>depends on the target</b> means "has a target
+ancestor".</p></div>
+<div class="formal"><p><b>Proposition 3.</b></p>
+<ol>
+  <li>\(\pi\) is a normalized density on \(\mathcal Z_T\): integrate its kernels in
+  reverse topological order, observed values held.</li>
+  <li>In general \(\pi(z_T) = p(z_T \mid \mathrm{do}(z_O = y))\): the target kernels
+  with every observed value held. When no node of \(O_\theta\) is an ancestor
+  of a target node,
+  \[ \pi(z_T) = p(z_T \mid y_{O_c}), \qquad L(z_T) = p(y_{O_\theta} \mid z_T, y_{O_c}), \qquad Z = p(y_{O_\theta} \mid y_{O_c}), \]
+  and when moreover no observed node is an ancestor of a target node, \(\pi\) is
+  the marginal law of \(z_T\) under \(P\), the <b>prior</b>. In every case
+  ancestral sampling of the target kernels, with observed values held,
+  draws from \(\pi\).</li>
+  <li>Observing the nodes of \(O_c\) gives the same \(\pi\), \(L\) and \(Z\)
+  as declaring them inputs bound to the same values; only the evidence of all
+  observations, \(p(y) = C Z\), includes \(\log C\).</li>
+</ol></div>
+<p>Two consequences replace the <code>fixed=</code> and <code>predictive=</code>
+arguments of revision 3:</p>
+<ul>
+  <li><b>Holding a hyperparameter at a value is observing it.</b> When it has no
+  target ancestor, it lands in \(O_c\), and the model is as if it were an input
+  (Proposition 3.3). The likelihood \(L\), EKI's y and its R exclude it. A
+  target kernel that reads it sees the held value, in \(\pi\) and in
+  <code>sample_prior</code> alike. A hyperparameter with random parents is held by
+  observing those parents too.</li>
+  <li><b>When it has a target ancestor</b> (a variance drawn given a parameter),
+  observing it is Bayes' rule and informs that parameter, as it should. Holding it
+  without informing anything is a different model: one that declares it an
+  input.</li>
+</ul>
+<p>The implementation adds one deliberate limitation that is not mathematical:
+no target node may have a simulator among its ancestors, so that \(\pi\) is
+evaluated and sampled without a simulator run. It refuses sound models, such as
+a latent state centered on a prediction, and can be lifted when one is
+needed. <i>As built in P5:</i> nor may an observed node with no target
+ancestor (in \(O_c\)), whose density is the evidence's constant \(C\),
+computed once at <code>condition_on</code>; such a node would need a
+simulator run there. A factor's event is also wholly observed or not:
+observing part of a joint factor, or some of a component's labels, is refused.
+The way to use fewer labels is to bind fewer.</p>
+
+<h3 id="coordinates">4.6 The parameters' coordinates</h3>
+<p>Each target node's value is mapped to unconstrained coordinates by its
+components' bijections, \(z_T = T(\theta)\), \(\theta \in \mathbb R^{D}\), in
+declaration order. The target density of \(\theta\) is</p>
+\[ \log p(\theta \mid y) \;=\; \log \pi\big(T(\theta)\big) + \sum_{p} \log \big|J_p(\theta_p)\big| + \log L\big(T(\theta)\big) - \log Z, \]
+<p>with \(J_p\) the Jacobian of the bijection of parameter \(p\) against its
+reference measure. A target kernel that is a pushforward through its components'
+own bijections is evaluated by its base density, exactly, with no Jacobian, as
+today. <code>Posterior.log_prior</code> is the first two terms, and
+<code>Posterior.log_likelihood</code> the third.</p>
+
+<h3 id="failures">4.7 Failures</h3>
+<p>With \(\bot\) as in Proposition 1, an observed kernel that reads \(\bot\)
+gives the observed value density zero. Only the simulator outputs that target and
+\(O_\theta\) kernels depend on matter; an output only barren nodes read is
+never computed. With \(\mathcal V\) the set of \(z_T\) at which every needed
+output is defined, the posterior is the truncation</p>
+\[ p(z_T \mid y) \;\propto\; \pi(z_T)\, L(z_T)\, \mathbf 1\{z_T \in \mathcal V\}, \]
+<p>and \(Z = \int_{\mathcal V} \pi L\) is the probability that the needed
+outputs are computed and y is observed. It is not the evidence of a prior
+renormalized on \(\mathcal V\), which differs by \(\pi(\mathcal V)\).</p>
+<p>Validity is defined per sample:</p>
+<ul>
+  <li>a sample of theta is <b>valid</b> when \(T(\theta) \in \mathcal V\) and
+  every \(O_\theta\) kernel's log density is finite there, the second condition
+  covering a covariance that depends on the target and fails to factor;</li>
+  <li><code>log_prior</code> is \(\log \pi\) everywhere, finite or not by
+  itself;</li>
+  <li><code>log_likelihood</code> and the target are \(-\infty\) in an invalid
+  sample.</li>
+</ul>
+<p>The adapters translate the flag into each package's contract:</p>
+<ul>
+  <li><code>NaN</code> for <code>smc</code>'s count of failed runs;</li>
+  <li>non-finite rows of predictions for EnsKit;</li>
+  <li>\(-\infty\) for MCMC.</li>
+</ul>
+<p>Failures that belong to no sample are refused once, at
+<code>condition_on</code>:</p>
+<ul>
+  <li>a constant that is not finite at a label in use;</li>
+  <li>an observed value outside its support;</li>
+  <li>a target or \(O_c\) kernel that is not finite at the observed values;</li>
+  <li>a covariance that depends on no target node and is not positive definite.
+  Such a covariance is built and factored there, once, and shared by every
+  draw.</li>
+</ul>
+
+<h3 id="checks">4.8 Construction checks</h3>
+<p>Each check runs at the earliest stage that has its data:</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Stage</th><th>Checks</th></tr></thead>
+<tbody>
+<tr><td>construction of a spec</td><td>Names and types; the keyword rule; a custom bijector maps onto its support at the probe points.</td></tr>
+<tr><td><code>joint</code></td><td>Every name a part reads is declared; the links are acyclic; a <code>GaussianSpec</code>'s means match their components in layout and units.</td></tr>
+<tr><td><code>bind</code></td><td>Constants, label maps and inputs cover the labels in use. The probe-point checks below run for every random component, whatever its later role: probe points in its unconstrained coordinates, its law built at two ancestral draws of what it reads when that varies by draw (as PR #72's prior does; P3). A law that is or wraps a discrete law, a point mass or an LKJ law, which has no density against its support's reference measure, is refused by class (P3, Andrew's decision). A deterministic's outputs are checked at the probe points of the random components behind it, pushed through the deterministic nodes with no simulator ancestor. A factor downstream of a simulator has its event shape checked with <code>jax.eval_shape</code>. <i>As built in P5:</i> binding runs no simulator, and stands in for each of its outputs a placeholder, its bijector's image of 0. A factor downstream is built there and checked for its form alone (event shape, TFP batch shape, dtype, and a density the model can evaluate, the class-based checks), not for its support, which would be checked at values no simulation gave; a deterministic downstream is checked for its block shapes. A placeholder replaces <code>jax.eval_shape</code> because the bound factor also needs its law's form: whether it pushes forward through its components' bijectors.</td></tr>
+<tr><td><code>condition_on</code></td><td>Each simulator's <code>check_given</code>, at the corner points of the target. The once-only checks of §4.7.</td></tr>
+</tbody></table></div>
+<p>Two fixed sets of points in theta are used. A check at them is evidence, not
+proof: a property that fails only between or beyond the points passes.</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Points</th><th>Definition</th><th>Checks</th></tr></thead>
+<tbody>
+<tr><td><b>probe points</b></td><td>θ = 0; ±<var>c</var><b>1</b> for <var>c</var> ∈ {3, 10, 20}; ±<var>c</var><var>e</var><sub><var>i</var></sub> along each unconstrained number of one value, for <var>c</var> ∈ {10, 20}; four fixed-seed random directions of norm 10. This is today's <code>_probes.py</code>.</td><td>
+<ul>
+  <li>a custom bijector maps onto its support;</li>
+  <li>a law has its components' event shape and support;</li>
+  <li>a law is a pushforward through its components' bijectors, compared only
+  when the base's event shape is theta's block shape, otherwise change of
+  variables;</li>
+  <li>a deterministic's output lies in its declared support.</li>
+</ul></td></tr>
+<tr><td><b>corner points</b></td><td>Each parameter at every combination of {−12, 0, 12} over the unconstrained numbers of one value, the same at every label, the other parameters at 0. A value of more than 6 numbers instead takes the 2<var>e</var> + 3 points 0, ±12·<b>1</b> and ±12<var>e</var><sub><var>i</var></sub>. This is today's <code>_corner_theta</code>, moved to the core.</td><td>a simulator accepts what the prior can produce (<code>Simulator.check_given</code>)</td></tr>
+</tbody></table></div>
+<h3 id="mapping">4.9 The calibration in these terms</h3>
+<p>Every quantity of the SIPNET calibration is a node of one of the three kinds.
+Its role in an analysis follows from what is observed:</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Quantity</th><th>Node</th><th>Declared by</th><th>Role, when the sources are observed</th></tr></thead>
+<tbody>
+<tr><td>SIPNET-facing parameters \(x\) (capacity, allocation, initial pools)</td><td>random</td><td><code>FactorSpec</code></td><td>target</td></tr>
+<tr><td>derived quantities (each site's PFT mean, a regression on covariates)</td><td>deterministic</td><td><code>DeterministicSpec</code></td><td>computed</td></tr>
+<tr><td>uncalibrated initial states (ensemble medians)</td><td>input</td><td><code>joint(..., inputs=)</code>, bound by <code>bind</code></td><td>fixed data</td></tr>
+<tr><td>the forward model: SIPNET runs reduced by the observation operators</td><td>deterministic, partial</td><td><code>SIPNETSimulator</code>, a <code>Simulator</code></td><td>computed; failures truncate the target</td></tr>
+<tr><td>predictions \(m_k\), one per source</td><td>components of the forward model's node</td><td><code>ObservationVector</code></td><td>computed</td></tr>
+<tr><td>noise hyperparameters \(\varphi\)</td><td>random, roots</td><td><code>FactorSpec</code></td><td>target; or observed at a value to hold it (\(O_c\))</td></tr>
+<tr><td>observed values \(y_k\) of a calibration source</td><td>random, parents \(m_k\) and \(\varphi\)</td><td><code>observation.model.noise_factor</code></td><td>observed, in \(O_\theta\)</td></tr>
+<tr><td>a validation source \(y'_k\)</td><td>random, parent \(m'_k\)</td><td><code>observation.model.noise_factor</code></td><td>unobserved, so barren: dropped, then drawn by <code>predict</code></td></tr>
+</tbody></table></div>
+<pre class="mermaid">
+flowchart LR
+  phi(["φ: noise hyperparameters"]) --> y
+  x(["x: parameters"]) --> f["f: derived (deterministic)"]
+  x --> G
+  f --> G
+  u[/"u: initial states (input)"/] --> G
+  G["G: forward model (simulator)"] --> m["m: predictions"]
+  m --> y(["y: calibration sources (observed)"])
+  m --> yv(["y′: validation source (barren)"])
+</pre>
+<p>Rounded nodes are random, rectangles deterministic, the parallelogram an input.
+With \(y\) observed, \(B = \{y'\}\), \(T = \{x, \varphi\}\) and
+\(O_\theta = \{y\}\). For the calibration this gives</p>
+\[ \pi(x, \varphi) = \pi(x)\,\pi(\varphi), \qquad
+   L(x, \varphi) = \prod_k \mathcal N\big(y_k ;\ m_k(x, u),\ \Sigma_k(\varphi)\big), \]
+<p>with \(m_k(x, u) = H_k(\mathrm{SIPNET}(\psi(x, f(x), u)))\) and the truncation of
+§4.7 where SIPNET fails. A <b>prediction</b> is the forward model's value of an
+observed quantity; how \(y_k\) relates to it is whatever law the source's factor
+declares. It is Gaussian only when a <code>GaussianSpec</code> says so.</p>
+<h4>Example: a noise variance, four ways</h4>
+<p>Take \(\sigma^2 \sim \mathrm{IG}(a, b)\), \(y \mid \theta, \sigma^2 \sim \mathcal N(G(\theta), \sigma^2 R)\)
+and \(\theta \sim \pi\):</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Calls</th><th>\(T\)</th><th>\(O_c\)</th><th>\(L\)</th><th>EKI view</th></tr></thead>
+<tbody>
+<tr><td><code>condition_on(model, {"y": y0})</code></td><td>\(\theta, \sigma^2\)</td><td>∅</td><td>\(\mathcal N(y_0; G(\theta), \sigma^2 R)\)</td><td>refused: the covariance depends on \(\sigma^2 \in T\)</td></tr>
+<tr><td><code>condition_on(model, {"y": y0, "sigma2": s0})</code></td><td>\(\theta\)</td><td>\(\{\sigma^2\}\)</td><td>\(\mathcal N(y_0; G(\theta), s_0 R)\)</td><td>\(y_0\), \(R = s_0 R\)</td></tr>
+<tr><td>\(\sigma^2\) declared an input; <code>bind(..., inputs={"sigma2": s0})</code>, then <code>condition_on(model, {"y": y0})</code></td><td>\(\theta\)</td><td>∅</td><td>the same</td><td>the same; the evidence differs by \(\log \mathrm{IG}(s_0)\)</td></tr>
+<tr><td>\(\sigma^2 \sim \mathrm{IG}(a, b(\tau))\) with \(\tau \in T\); <code>condition_on(model, {"y": y0, "sigma2": s0})</code></td><td>\(\theta, \tau\)</td><td>∅: \(\sigma^2 \in O_\theta\)</td><td>\(\mathcal N(y_0; G(\theta), s_0 R)\, \mathrm{IG}(s_0; a, b(\tau))\)</td><td>refused: \(\sigma^2\)'s factor is not Gaussian; \(s_0\) informs \(\tau\)</td></tr>
+</tbody></table></div>
+</section>
+
+
+<section id="architecture">
+<h2><span class="num">5</span>Architecture</h2>
+<p>The dependencies run one way:</p>
+<pre class="mermaid">
+flowchart LR
+  subgraph ext["generic packages"]
+    TFP["TFP"]
+    EL["enskit.linalg"]
+    ED["enskit.distribution"]
+  end
+  subgraph core["probability (generic)"]
+    SP["ArraySpec, FactorSpec, GaussianSpec, covariance specs, DeterministicSpec, Simulator"] --> MS["joint: ModelSpec"]
+    MS --> FD["bind: FactoredDistribution"]
+    FD --> PO["condition_on: Posterior"]
+  end
+  subgraph inf["inference (generic)"]
+    EK["EnsKit"]
+    SM["SMC"]
+    MC["MCMC"]
+  end
+  subgraph adapt["adapter layer (this project)"]
+    SD["SiteDims"]
+    OV["ObservationVector"]
+    FM["SIPNETSimulator: a Simulator"]
+  end
+  ext --> core
+  PO --> EK & SM & MC
+  core --> adapt
+  XP["experiments / task / config.py"] --> adapt & core & inf
+</pre>
+<div class="table-wrap"><table>
+<thead><tr><th>Package</th><th>Holds</th><th>Imports from the package</th></tr></thead>
+<tbody>
+<tr><td><span class="pill core">core</span> <code>probability</code></td><td>supports, specs, laws, joint and binding, layout, conditioning, conjugacy</td><td>nothing outside itself</td></tr>
+<tr><td><span class="pill core">core</span> <code>inference</code></td><td>the EnsKit, SMC and MCMC adapters over a <code>Posterior</code></td><td><code>probability</code>, <code>smc</code></td></tr>
+<tr><td><code>smc</code></td><td>unchanged</td><td><code>io</code>, <code>validation</code></td></tr>
+<tr><td><span class="pill adapter">adapter</span> <code>site_dims</code></td><td>unchanged: coords, covariates and label maps of the sites</td><td><code>sites</code>, <code>site_labels</code></td></tr>
+<tr><td><span class="pill adapter">adapter</span> <code>observation</code></td><td>sources, operators, time alignment; <b>new</b>: observation dims, constants, prediction names, <code>observed_values_by_component</code></td><td><code>fields</code> (still TFP-free)</td></tr>
+<tr><td><span class="pill adapter">adapter</span> <code>observation.model</code> <span class="pill new">new</span></td><td>the observed and prediction components, <code>noise_factor</code>; not imported by <code>observation/__init__</code>, so PyEns workers and the data sources never load TFP</td><td><code>observation</code>, <code>probability</code></td></tr>
+<tr><td><span class="pill adapter">adapter</span> <code>sipnet_parameter_map</code></td><td>unchanged rules; its fit check reads <code>ArraySpec</code>s</td><td><code>probability</code>, <code>site_dims</code>, …</td></tr>
+<tr><td><span class="pill adapter">adapter</span> <code>forward</code></td><td><code>SIPNETRuns</code>; <code>SIPNETSimulator</code>, a <code>Simulator</code>; today's <code>ForwardModel</code> until it is removed</td><td><code>probability</code>, <code>observation</code>, <code>sipnet_parameter_map</code>, …</td></tr>
+</tbody></table></div>
+<p>The seam between the core and the adapters is labeled values:
+<code>{name: xr.DataArray}</code>, each on
+<code>(sample, *indexed_by, *element axes)</code>. It is a dict, not PR #72's
+<code>Dataset</code>, because components on different observation dims do not
+share a grid. Two stacked dims with a <code>site</code> level cannot be merged
+into one Dataset. A simulator receives labeled values, and returns arrays by
+name with a validity flag per output and sample. It never sees theta.</p>
+</section>
+
+<section id="vocabulary">
+<h2><span class="num">6</span>Vocabulary</h2>
+<p>These words join the glossary in <code>CLAUDE.md</code>. "Component" was
+retired from the simplex sense, which has its own words, and returns here with
+ProbPipe's meaning. The glossary's "natural and unconstrained sizes differ only
+on the simplex" is amended: a positive-definite matrix also differs,
+<var>p</var><sup>2</sup> against <var>p</var>(<var>p</var>+1)/2.</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Word</th><th>Meaning</th><th>Not to be confused with</th></tr></thead>
+<tbody>
+<tr><td><b>spec</b></td><td>a declaration, holding no labels and no numbers; its class ends in <code>Spec</code></td><td>the distribution it becomes once bound and evaluated</td></tr>
+<tr><td><b>bind</b></td><td>give a model spec the labels of its dims, making a <code>FactoredDistribution</code></td><td></td></tr>
+<tr><td><b>law</b></td><td>the concrete distribution a factor spec evaluates to for one draw of what it reads. <code>FactorSpec.law</code> holds the law, or how to build it per draw</td><td>a factor, which declares one</td></tr>
+<tr><td><b>draw</b></td><td>one joint value of every component; a batch of draws has batch dim <code>sample</code></td><td></td></tr>
+<tr><td><b>depends on θ</b></td><td>has a parameter among its ancestors in the given graph, through deterministics and simulators</td><td>"reads a parameter", which is direct only</td></tr>
+<tr><td><b>component</b></td><td>a named array a draw of a model holds, declared by an <code>ArraySpec</code></td><td>a field (an <code>xr.DataArray</code> under the field contract)</td></tr>
+<tr><td><b>part</b></td><td>a factor or a deterministic of a model</td><td></td></tr>
+<tr><td><b>factor</b></td><td>a part declaring a conditional law over its event, given other components: a <code>FactorSpec</code></td><td>a prior term, which is now a latent factor</td></tr>
+<tr><td><b>deterministic</b></td><td>a part computing components from others: a <code>DeterministicSpec</code> or a <code>Simulator</code></td><td>a derived parameter, now a deterministic's output</td></tr>
+<tr><td><b>event</b></td><td>the components a factor declares</td><td>TFP's event shape</td></tr>
+<tr><td><b>block</b></td><td>all values of one component, shape <code>(*index shape, *element shape)</code></td><td>a block of a block-diagonal covariance, and an EnsKit block (a named 1-D vector), each said in full</td></tr>
+<tr><td><b>coords</b></td><td><code>{dim: labels}</code>, the labels of every dim a component is indexed by, given to <code>bind</code></td><td>element axes' labels, which are on the spec</td></tr>
+<tr><td><b>label map</b></td><td>a fixed map from each label of one dim to a label of another dim or element axis</td><td>"membership", retired</td></tr>
+<tr><td><b>stacked dim</b></td><td>a dim whose labels are a <code>pandas.MultiIndex</code></td><td>a batch dim</td></tr>
+<tr><td><b>input</b></td><td>a node with no parents and no law, a value the model is conditional on: declared by an <code>ArraySpec</code> in <code>joint(..., inputs=)</code>, bound by <code>bind(..., inputs=)</code></td><td>an external input (the SIPNET adapter's word for one kind of input)</td></tr>
+<tr><td><b>parameter</b></td><td>a component of a target node. A random node nothing observed descends from is barren, so a parameter no part reads leaves theta, and is listed in <code>barren_names</code></td><td>a SIPNET parameter</td></tr>
+<tr><td><b>observed</b></td><td>a random node conditioned on at a value; <b>constant</b> when its kernel depends on no target node</td><td></td></tr>
+<tr><td><b>barren</b></td><td>an unobserved random node with no observed descendant; dropped by conditioning, drawn by <code>predict</code> (Shachter's term)</td><td></td></tr>
+<tr><td><b>target</b></td><td>the random nodes left to infer: neither observed nor barren; their components are the parameters</td><td></td></tr>
+<tr><td><b>prediction</b></td><td>the forward model's value of an observed quantity, on the observation's labels and in its units: <code>predicted_&lt;source&gt;</code></td><td>"predictions", the Flat <code>(J, N)</code>, which keeps its meaning</td></tr>
+<tr><td><b>sample</b></td><td>one row of a batched theta <code>(J, D)</code>, as today: one draw</td><td>a run, one SIPNET execution; a sample has one run per site</td></tr>
+</tbody></table></div>
+
+<h3>Mapping to ProbPipe and EnsKit</h3>
+<div class="table-wrap"><table>
+<thead><tr><th>Here</th><th>ProbPipe (design, PR #467)</th><th>EnsKit</th><th>Note</th></tr></thead>
+<tbody>
+<tr><td><code>Support</code>, <code>bijector_for</code></td><td><code>Constraint</code>, <code>bijector_for</code></td><td></td><td>"Constraint" names the project's constraint data sources.</td></tr>
+<tr><td><code>ArraySpec</code></td><td>a component of an <code>OutputSpec</code> with a <code>NumericArraySpec</code></td><td>a block's name and dimension</td><td>Our dims are ProbPipe's symbolic dims; <code>bind</code> is its binding of them.</td></tr>
+<tr><td><code>FactorSpec</code> given nothing / given components</td><td><code>Distribution</code> / <code>ConditionalDistribution</code></td><td></td><td>One class (D2). ProbPipe's are standalone objects; a factor spec is evaluated only within a bound model.</td></tr>
+<tr><td><code>GaussianSpec</code></td><td><code>LinearGaussianConditional</code> (A = I, b = 0)</td><td>evaluates to <code>Gaussian.independent</code></td><td></td></tr>
+<tr><td>covariance specs</td><td></td><td>evaluate to <code>PSDDiagonal</code>, <code>DensePSD</code>, <code>PSDBlockDiag</code>, <code>PSDScaled</code></td><td>Ours declare structure over labels; EnsKit's operators do the algebra.</td></tr>
+<tr><td><code>DeterministicSpec</code></td><td>a <code>Function</code> lifted over a distribution</td><td><code>maps.pushforward</code> of a callable</td><td></td></tr>
+<tr><td><code>Simulator</code></td><td>a <code>@function</code> with <code>sequential</code> dispatch</td><td>the simulator contract; <code>BlackBox</code></td><td>Both signal a failed sample by non-finite values; ProbPipe has no contract yet.</td></tr>
+<tr><td><code>joint</code> → <code>ModelSpec</code>; <code>bind</code> → <code>FactoredDistribution</code></td><td><code>lik * prior</code> → <code>FactoredDistribution</code> / <code>FactoredConditionalDistribution</code></td><td></td><td>One class for both cases (D8).</td></tr>
+<tr><td><code>bind(coords=, inputs=)</code>; <code>condition_on(model, observed)</code></td><td><code>condition_on(d, given)</code>: curry, exact slice, Bayes' rule</td><td></td><td>Inputs are bound at <code>bind</code> (curry); observing is Bayes' rule, which covers the exact slice when the observed kernel is constant in the target (D9). It returns the target, which an adapter samples.</td></tr>
+<tr><td><code>Layout</code>; values by name</td><td><code>NumericRecordSpec</code>; <code>NumericRecord</code></td><td>named blocks</td><td>The same canonical order.</td></tr>
+<tr><td><code>key=</code> arguments</td><td><code>workflow_run(seed=)</code></td><td>typed keys</td><td>Each factor is keyed by <code>crc32(name)</code> (D7).</td></tr>
+</tbody></table></div>
+</section>
+<section id="core">
+<h2><span class="num">7</span>The core API: <code>sipnet_calibration.probability</code></h2>
+<p>The public API, with docstrings as they would be written. Private helpers are
+not listed, and what PR #72 wrote and is kept is named rather than repeated.
+Each class takes its first argument positionally and the rest by keyword.</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Module</th><th>Public names</th><th>From</th></tr></thead>
+<tbody>
+<tr><td><code>support</code></td><td><code>Support</code>, <code>Interval</code>, <code>Simplex</code>, <code>PositiveDefinite</code>, the constants, <code>DEFAULT_BIJECTORS</code>, <code>bijector_for</code></td><td><code>parameters.support</code> + <code>PositiveDefinite</code></td></tr>
+<tr><td><code>spec</code></td><td><code>ArraySpec</code></td><td><code>Parameter</code></td></tr>
+<tr><td><code>labels</code></td><td>the coords, constants and label maps rules</td><td><code>parameters.labels</code></td></tr>
+<tr><td><code>laws</code></td><td><code>Law</code>, <code>as_law</code>, <code>pushforward</code></td><td>new</td></tr>
+<tr><td><code>families</code>, <code>builders</code></td><td>today's seven families + <code>normal</code>, <code>inverse_gamma</code>, <code>inverse_wishart</code>; <code>iid_over_dim</code>, <code>independent_over_dim</code>, <code>gaussian_copula</code></td><td><code>parameters.families</code>, <code>prior_functions</code></td></tr>
+<tr><td><code>parts</code></td><td><code>FactorSpec</code>, <code>factor</code>, <code>GaussianSpec</code>, <code>DeterministicSpec</code>, <code>deterministic</code>, <code>Simulator</code>, <code>SimulatorOutput</code></td><td><code>PriorTerm</code>, <code>DerivedParameter</code>, new</td></tr>
+<tr><td><code>covariance</code></td><td><code>CovarianceSpec</code>, <code>DiagonalSpec</code>, <code>DenseSpec</code>, <code>SumSpec</code>, <code>ScaledSpec</code>, <code>BlockDiagonalSpec</code>, <code>SubmatrixSpec</code></td><td>new</td></tr>
+<tr><td><code>model</code></td><td><code>joint</code>, <code>ModelSpec</code>, <code>FactoredDistribution</code></td><td><code>Prior</code>, <code>DerivedParameters</code></td></tr>
+<tr><td><code>layout</code></td><td><code>Layout</code>, <code>ValuesByName</code>, <code>LabeledValues</code>, their validators, <code>encode_labeled_values</code>, <code>decode_labeled_values</code></td><td><code>ParameterVector</code></td></tr>
+<tr><td><code>posterior</code></td><td><code>condition_on</code>, <code>Posterior</code>, <code>PosteriorEvaluation</code>, <code>GaussianLikelihood</code>, <code>FullConditional</code></td><td>new</td></tr>
+</tbody></table></div>
+
+<h3 id="core-support">7.1 Supports</h3>
+<p><code>Support</code>, <code>Interval</code>, <code>Simplex</code>,
+<code>bijector_for</code> and the constants are kept as they are. One support is
+added:</p>
+<pre><code class="language-python">@dataclass(frozen=True)
+class PositiveDefinite(Support):
+    r"""The symmetric positive-definite matrices, over the last two axes.
+
+    Its default bijection is the Cholesky factor with a log diagonal,
+
+    .. math::
+
+        \theta \in \mathbb R^{p(p+1)/2} \;\mapsto\; L \;\mapsto\; L L^\top,
+        \qquad L \text{ lower triangular}, \quad L_{ii} = e^{\theta_{ii}},
+
+    ``tfb.Chain([tfb.CholeskyOuterProduct(),
+    tfb.FillScaleTriL(diag_bijector=tfb.Exp(), diag_shift=None)])``. A density
+    on the set is against Lebesgue measure on the :math:`p(p+1)/2` entries of
+    the lower triangle. Theta's entries follow ``tfb.FillTriangular``'s
+    packing, labeled ``"L[i,j]"`` from the value's axis labels, on one
+    element axis named ``"&lt;row axis&gt;_&lt;column axis&gt;_cholesky"`` that
+    replaces the last two. The probes :math:`-10 \cdot 1` and
+    :math:`-20 \cdot 1` give values too ill-conditioned to invert, so a
+    check that round-trips a bijector skips them (P2).
+
+    Attributes
+    ----------
+    event_ndims : int
+        2.
+    name : str
+        ``"positive definite"``.
+    """
+
+    def contains(self, values) -&gt; Array:
+        """Whether each ``(..., p, p)`` matrix is finite, symmetric to a relative
+        ``1e-10``, and has a Cholesky factor: ``(..., p, p) -&gt; (...)``."""
+
+    def closure(self) -&gt; Support:
+        """The positive semi-definite matrices."""
+
+
+#: The symmetric positive-definite matrices.
+POSITIVE_DEFINITE = PositiveDefinite()</code></pre>
+
+<h3 id="core-spec">7.2 <code>ArraySpec</code></h3>
+<p><code>ArraySpec</code> replaces <code>Parameter</code>, since it declares any
+component, whatever its role. <code>element_axes</code> replaces
+<code>shape</code> and <code>element_labels</code>. <code>long_name</code> is
+gone: display names belong to the plotting registry.</p>
+<pre><code class="language-python">@dataclass(frozen=True, eq=False)
+class ArraySpec:
+    r"""A declaration of one component: a named array a draw of a model holds.
+
+    A component has one **value** at each tuple of labels of its
+    ``indexed_by`` dims; a value's own axes are its **element axes**. All its
+    values are its **block**, of shape
+
+    .. math::
+
+        (n_1, \dots, n_m,\ e_1, \dots, e_r),
+
+    with :math:`n_i` the number of labels of the :math:`i`-th ``indexed_by``
+    dim, given when the model is bound, and :math:`e_j` the length of the
+    :math:`j`-th element axis, given here.
+
+    Parameters
+    ----------
+    name : str
+        Positional-only. A Python identifier and not a keyword: functions
+        receive the component's values by this name.
+    units : str or None
+        Keyword-only, required. A UDUNITS string, ``"1"`` for a dimensionless
+        quantity, or ``None`` when units do not apply (an innovation, a
+        coefficient of standardized covariates).
+    support : Support
+        Keyword-only. The set one value lies in. Default :data:`REAL`.
+    indexed_by : tuple of str
+        Keyword-only. The dims the value is replicated over, in order.
+        Default ``()``.
+    element_axes : Mapping[str, Sequence[str] | int]
+        Keyword-only. One entry per axis of one value, in order: the axis's
+        name, and its labels (unique strings), or its length ``n``, which
+        labels it ``"0"`` to ``"n - 1"``. It fixes the value's shape, names
+        its axes, and labels each position along them. Default ``{}``: a
+        scalar.
+    bijector : tfb.Bijector, optional
+        Keyword-only. :math:`T`, from unconstrained space onto the support,
+        acting on the last ``support.event_ndims`` element axes; default
+        ``bijector_for(support)``. Read only when the component is a
+        parameter, where it fixes theta's coordinates.
+
+    Attributes
+    ----------
+    shape : tuple of int
+        One value's shape.
+
+    Raises
+    ------
+    TypeError
+        If an argument has the wrong type.
+    ValueError
+        If the name is not an identifier or is a keyword; a dim, axis or
+        label repeats; an axis is named like the component or a dim; the
+        shape lacks the support's event axes; or a custom bijector does not
+        map onto the support at the probe points.
+
+    Examples
+    --------
+    &gt;&gt;&gt; ArraySpec("respiration_share", units="1", support=OPEN_UNIT_INTERVAL)
+    &gt;&gt;&gt; ArraySpec("allocation", units="1", support=SIMPLEX, indexed_by=("pft",),
+    ...           element_axes={"allocation_part": ("leaf", "wood", "fine_root", "coarse_root")})
+    &gt;&gt;&gt; ArraySpec("biomass_error_covariance", units="Mg2 ha-2", support=POSITIVE_DEFINITE,
+    ...           element_axes={"year": YEARS, "other_year": YEARS})
+    """</code></pre>
+
+<h3 id="core-reads">7.3 What functions read</h3>
+<p>A part's functions read components and four other kinds of thing, defined in
+<code>labels.py</code> and delivered at the labels in use:</p>
+<ul>
+  <li><b>Coords</b> are <code>{dim: pandas.Index}</code>, given to
+  <code>bind</code>. Labels are unique integers or strings, or a
+  <code>MultiIndex</code> whose named levels are integers, strings or
+  <code>datetime64[ns]</code>.</li>
+  <li><b>Inputs</b> are declared by <code>ArraySpec</code>s in
+  <code>joint(..., inputs=)</code> and read like components.</li>
+  <li><b>A constant</b> is a <code>float64</code> or <code>bool</code>
+  <code>xr.DataArray</code>, finite at every label in use. Each of its dims is
+  one of three kinds:
+    <ul>
+      <li>a dim of the coords (stacked dims included);</li>
+      <li>an element axis of a component the part declares or reads;</li>
+      <li>its own dim, passed whole, which the part declares in
+      <code>own_dims=</code> so that a misspelled dim is still an error: a
+      site's <code>(x, y)</code> on a <code>coordinate</code> dim, for
+      example.</li>
+    </ul>
+  It arrives transposed: the part's <code>indexed_by</code> dims first, then the
+  part's element axes, then its other dims in its own order.</li>
+  <li><b>A label map</b> is a one-dimensional <code>xr.DataArray</code> on a
+  dim of the coords, named for its target (a dim or an element axis), whose
+  values are the target's labels. It arrives as <code>int64</code> positions
+  into the target's labels in use.</li>
+</ul>
+<p>An element axis name means one set of labels across a model: two components
+whose element axes share a name share its labels, which <code>joint</code> checks.
+A label map can then target an element axis by name alone.</p>
+<p>These names are reserved and refused as component, input or axis names:
+<code>theta</code>, <code>theta_entry</code>, <code>component</code>,
+<code>element</code> and <code>sample</code>.</p>
+<div class="decision"><b class="tag">The keyword rule</b>
+<p>A function a user writes is called with the names of its parameters that have
+no default. This covers a factor's law function, a deterministic's function, and
+a callable in a covariance spec. A function with <code>*args</code>,
+<code>**kwargs</code> or a positional-only parameter is refused, since what it
+reads cannot be read off its signature. A <code>functools.partial</code>'s bound
+arguments are defaults, so they are not read. Each name a function reads is one
+of the following:</p>
+<ul>
+  <li>a constant or label map the part holds;</li>
+  <li>a component or an input. These names are the part's <b>given</b>
+  components, so there is no <code>given=</code> argument. A
+  <code>GaussianSpec</code> adds its means and the names its covariance spec
+  reads. A builder declares what it reads.</li>
+</ul>
+<p>A name that nothing declares is a <code>ValueError</code> at
+<code>joint</code>, and so is a name that is both a constant and a component.</p></div>
+
+<h3 id="core-laws">7.4 Laws and families</h3>
+<pre><code class="language-python">class Law(Protocol):
+    """What the core requires of a factor's law: TFP's ``log_prob`` and
+    ``sample``, with ``log_prob`` against the reference measure of the event's
+    support. TFP distributions satisfy it; others go through :func:`as_law`."""
+
+    def log_prob(self, value: Array) -&gt; Array: ...
+    def sample(self, sample_shape: tuple[int, ...] = (), seed: Array | None = None) -&gt; Array: ...
+
+
+def as_law(distribution: Any) -&gt; Law:
+    """*distribution* as a :class:`Law`.
+
+    A TFP distribution is returned unchanged. Two others are adapted, found
+    by the nearest class in their MRO; a law from any other package is
+    given as an object that implements :class:`Law` itself:
+
+    - ``enskit.distribution.Gaussian``: ``log_prob`` is ``log_density`` of
+      its blocks, and ``sample`` draws :math:`m + L z` itself, one draw at a
+      time, since ``Gaussian.sample`` returns an ``Ensemble`` of at least two
+      particles. A ``GaussianSpec``'s block over several components is read
+      and drawn as the dict of them;
+    - ``numpyro.distributions.distribution.Distribution``, GPJax's
+      ``GaussianDistribution`` among them: ``sample(key, sample_shape)``
+      becomes ``sample(sample_shape, seed=key)``.
+
+    Raises
+    ------
+    TypeError
+        If *distribution* is none of these and does not implement :class:`Law`.
+
+    Notes
+    -----
+    A factor's ``law`` is tested with this before it is tested for being
+    callable, since numpyro distributions are callable.
+    """
+
+
+def pushforward(base: Any, *, support: Support | None = None,
+                bijector: tfb.Bijector | None = None) -&gt; Law:
+    r"""The law of :math:`T(u)`, :math:`u \sim` *base*, with :math:`T` the
+    *bijector*, or ``bijector_for(support)``; exactly one of the two.
+
+    A factor whose law is a pushforward through its component's own bijector
+    is evaluated by the base density, whatever package the base comes from.
+
+    Raises
+    ------
+    TypeError
+        If both or neither of *support* and *bijector* are given, or
+        :func:`as_law` cannot adapt *base*.
+    """</code></pre>
+<p><i>As built in P9:</i></p>
+<ul>
+  <li><b>Recognition by name.</b> numpyro is not a dependency of the package.
+  A numpyro distribution is recognized by the qualified names of the classes
+  in its MRO (<code>numpyro.distributions.distribution.Distribution</code>),
+  in a private module, <code>probability._numpyro</code>, so no file imports
+  numpyro or GPJax and importing the layer loads neither (tested). numpyro is
+  in the <code>dev</code> dependency group for the tests, and GPJax in an
+  optional <code>gpjax</code> group.</li>
+  <li><b>The adapters.</b> <code>as_law</code> makes a numpyro distribution a
+  <code>NumpyroLaw</code>, which reorders <code>sample</code>'s arguments and
+  vmaps <code>log_prob</code> over the axes in front of its batch and event:
+  GPJax's <code>GaussianDistribution.log_prob</code> does not broadcast over
+  them, and the core batches its values there. The project still pins pyEKI
+  from before EnsKit's rename, so pyEKI's <code>Gaussian</code> is the one
+  adapted, as P6 built it, to a <code>GaussianLaw</code>, found through the
+  <code>_linalg</code> shim; E1 moves the shim and the adapter to EnsKit's
+  <code>Gaussian</code>. D24's "EnsKit" is pyEKI until then.</li>
+  <li><b>Where adaptation happens.</b> <code>FactorSpec</code> holds a bare law
+  adapted, and the bound factor adapts what a law function returns, so a law
+  function may return any of the three kinds unwrapped.
+  <code>is_law</code> answers for the kinds <code>as_law</code> adapts
+  too.</li>
+  <li><b>A pushforward of another package's base.</b> <code>pushforward</code> of a TFP base still
+  returns an exact <code>tfd.TransformedDistribution</code> (parity); of any
+  other base, a <code>PushforwardLaw</code>, which a bound factor recognizes as
+  a pushforward through its components' bijectors and evaluates by the base
+  density, as the example of §10.3 needs. A base must say its
+  <code>event_shape</code>, which the bijector's log-Jacobian is summed
+  over.</li>
+  <li><b>Laws with no density.</b> The P3 check looks inside the adapters and
+  numpyro's wrappers (<code>Independent</code>, <code>ExpandedDistribution</code>,
+  <code>MaskedDistribution</code>, <code>TransformedDistribution</code>, the
+  mixtures), and refuses numpyro's <code>Delta</code>, <code>Unit</code> and
+  LKJ laws by class, and its discrete laws by their support's
+  <code>is_discrete</code>; a discrete law drawing integers, as numpyro's do,
+  is refused for its dtype before that check runs. On the simplex, numpyro's <code>Dirichlet</code> is accepted beside
+  TFP's: its density is against the same measure.</li>
+  <li><b>The builders stay TFP's.</b> <code>iid_over_dim</code> and
+  <code>independent_over_dim</code> wrap a law in TFP's <code>Sample</code> or
+  <code>Independent</code>, and refuse a law from another package with a
+  <code>TypeError</code> that says to give the factor a law over the whole
+  block instead.</li>
+</ul>
+<p><i>As built in E1:</i></p>
+<ul>
+  <li>The project tracks EnsKit's <code>main</code>, and the
+  <code>_linalg</code> shim imports <code>enskit.linalg</code> and
+  <code>enskit.distribution</code>, so the <code>Gaussian</code> D24's
+  <code>as_law</code> adapts is EnsKit's, no longer pyEKI's.</li>
+  <li>A <code>GaussianLaw</code> holds an EnsKit <code>Gaussian</code> of one
+  block, its covariance the block's independent term
+  (<code>.gaussian</code>), and scores by its <code>log_density</code>; it
+  still draws <code>m + L z</code> itself.</li>
+  <li>§9.1's interim pyEKI driver code no longer runs; E2 rewrites §9.1 on
+  EnsKit's driver, and until then the usage in
+  <code>inference/eki.py</code>'s docstring is EnsKit's.</li>
+  <li><code>as_law</code> adapts an EnsKit <code>Gaussian</code> of one block,
+  with a factor row or not, to a <code>GaussianLaw</code> over the block's
+  covariance (<code>Gaussian.cov</code>). It refuses one of several blocks,
+  which no factor's law is until correlated sources are built (the reading of
+  several components as the dict of them, above), and a block with no
+  independent term, whose covariance <code>F F<sup>T</sup></code> EnsKit holds
+  as the factor alone, which cannot whiten (and is singular when the factor
+  has fewer columns than the block has entries).</li>
+</ul>
+<p>The families <code>log_normal</code>, <code>log_normal_from_interval</code>,
+<code>log_normal_from_samples</code>, <code>logit_normal</code>,
+<code>logit_normal_from_interval</code>, <code>logit_normal_from_samples</code>
+and <code>softmax_normal</code> are kept. Three are added. Each returns a type
+the conjugate rules can recognize.</p>
+<pre><code class="language-python">def normal(*, mean: ArrayLike, standard_deviation: ArrayLike) -&gt; tfd.Normal:
+    r""":math:`\mathcal N(\mu, \sigma^2)` per number, on :data:`REAL`.
+
+    Raises
+    ------
+    ValueError
+        If a standard deviation is not positive.
+    """
+
+
+def inverse_gamma(*, shape: ArrayLike, scale: ArrayLike) -&gt; tfd.InverseGamma:
+    r"""The inverse gamma on :data:`POSITIVE`,
+
+    .. math::
+
+        p(v) = \frac{b^a}{\Gamma(a)}\, v^{-a-1} e^{-b/v},
+
+    *shape* :math:`a`, *scale* :math:`b`; mean :math:`b/(a-1)` for
+    :math:`a &gt; 1`.
+
+    Raises
+    ------
+    ValueError
+        If *shape* or *scale* is not positive.
+    """
+
+
+class InverseWishart(tfd.TransformedDistribution):
+    r"""The inverse Wishart :math:`\mathcal W^{-1}_p(\nu, \Psi)` on
+    :data:`POSITIVE_DEFINITE`,
+
+    .. math::
+
+        p(\Sigma) = \frac{|\Psi|^{\nu/2}}{2^{\nu p/2}\,\Gamma_p(\nu/2)}\,
+            |\Sigma|^{-(\nu+p+1)/2}\,
+            \exp\!\big(-\tfrac12 \operatorname{tr}(\Psi \Sigma^{-1})\big),
+        \qquad \nu &gt; p - 1,
+
+    against the lower triangle; mean :math:`\Psi/(\nu - p - 1)` for
+    :math:`\nu &gt; p + 1`. It is the law of :math:`W^{-1}`, :math:`W \sim`
+    ``tfd.WishartTriL(df=nu, scale_tril=cholesky(inv(Psi)))``, through
+    ``tfb.Chain([tfb.CholeskyOuterProduct(), tfb.CholeskyToInvCholesky(),
+    tfb.Invert(tfb.CholeskyOuterProduct())])``.
+
+    Parameters
+    ----------
+    degrees_of_freedom : float
+        :math:`\nu`.
+    scale : ArrayLike
+        :math:`\Psi`, ``(p, p)`` positive definite.
+
+    Raises
+    ------
+    ValueError
+        If *scale* is not ``(p, p)`` positive definite, or :math:`\nu \le p - 1`.
+
+    Notes
+    -----
+    ``input_output_cholesky=True`` would be wrong: ``log_prob`` is then still
+    :math:`W`'s density, not its Cholesky factor's.
+    """
+
+
+def inverse_wishart(*, degrees_of_freedom: float, scale: ArrayLike) -&gt; InverseWishart:
+    """``InverseWishart(degrees_of_freedom, scale)``, the families' calling form."""</code></pre>
+<p>The builders <code>iid_over_dim</code>, <code>independent_over_dim</code> and
+<code>gaussian_copula</code> are kept. They wrap TFP laws, so they take TFP laws
+only. Each now exposes what it wraps and what it reads:</p>
+<ul>
+  <li><code>.law</code>: the law per label, so the conjugate rules see an
+  <code>inverse_gamma</code> inside <code>iid_over_dim</code>;</li>
+  <li><code>.reads</code>: the names it reads, so the keyword rule infers the
+  factor's given components and constants.</li>
+</ul>
+
+<h3 id="core-factor">7.5 <code>FactorSpec</code></h3>
+<pre><code class="language-python">@dataclass(frozen=True, eq=False)
+class FactorSpec:
+    r"""A declaration of one factor: the conditional law of the components it
+    declares, given the components its law reads,
+
+    .. math::
+
+        p_B(z_B \mid z_g;\ c).
+
+    Evaluated at one draw of what it reads, it is a law over its event.
+
+    Parameters
+    ----------
+    event : ArraySpec or Sequence[ArraySpec]
+        Positional-only. One component, or several indexed by the same dims
+        (a joint factor), in the order of their entries in theta.
+    law : Law, callable, builder or GaussianSpec
+        Keyword-only. The law, or how to build it per draw:
+
+        - a law, when the factor reads nothing and its one component is
+          indexed by nothing; :func:`as_law` adapts it;
+        - a function ``(**reads) -&gt; law``, for one draw: a law of TFP batch
+          shape ``()`` over the block, or over a dict of blocks for a joint
+          factor; traced and vmapped over draws;
+        - a builder's result (:func:`iid_over_dim` and the others), which
+          the core also gives the index shape;
+        - a :class:`GaussianSpec`.
+    constants, label_maps : Mapping[str, xr.DataArray]
+        Keyword-only. Fixed data the law reads (:mod:`~sipnet_calibration.probability.labels`).
+    own_dims : tuple of str
+        Keyword-only. Dims of the constants that are neither dims of the
+        coords nor element axes, passed whole. Default ``()``.
+    provenance : str, optional
+        Keyword-only. Where the law comes from, with its citation. This
+        project requires it of every factor (``describe_calibration``
+        refuses a missing one); the core does not.
+
+    Attributes
+    ----------
+    name : str
+        ``"+".join`` of the event's names; the factor's randomness is keyed
+        by it.
+    given : tuple of str
+        The components and inputs the law reads, inferred from its keywords.
+
+    Raises
+    ------
+    TypeError
+        If *event* is not one or more :class:`ArraySpec`, or *law* is none of
+        the four forms.
+    ValueError
+        If the event is empty, a joint factor's components are indexed
+        differently, or a name repeats across the event, the constants and
+        the label maps.
+
+    Notes
+    -----
+    A law must marginalize consistently: bound at fewer labels, it must be
+    the marginal of the law at more. The builders satisfy this, and so does a
+    Gaussian process evaluated at the labels in use. A law that standardizes
+    a covariate over the labels in use does not.
+    """
+
+
+def factor(event: ArraySpec | Sequence[ArraySpec], /, *,
+           constants: Mapping[str, xr.DataArray] | None = None,
+           label_maps: Mapping[str, xr.DataArray] | None = None,
+           provenance: str) -&gt; Callable[[Callable[..., Law]], FactorSpec]:
+    """Decorate a law function to make a :class:`FactorSpec` with it as ``law``.
+
+    Examples
+    --------
+    &gt;&gt;&gt; @factor(ArraySpec("soil_carbon", units="kg m-2", support=POSITIVE, indexed_by=("site",)),
+    ...         provenance="...")
+    ... def soil_carbon(soil_carbon_location, soil_carbon_spread):
+    ...     normal = tfd.Independent(tfd.Normal(soil_carbon_location, soil_carbon_spread), 1)
+    ...     return pushforward(normal, support=POSITIVE)
+    """</code></pre>
+
+<h3 id="core-gaussian">7.6 <code>GaussianSpec</code></h3>
+<pre><code class="language-python">@dataclass(frozen=True, eq=False)
+class GaussianSpec:
+    r"""A Gaussian law centered on given components, for a FactorSpec's ``law``:
+
+    .. math::
+
+        z \mid m, \phi \sim \mathcal N\big(m,\ \Sigma(\phi)\big).
+
+    Evaluated at one draw it is an ``enskit.distribution.Gaussian`` with one
+    block, the event components' entries concatenated in event order: mean
+    :math:`m`, and independent term :math:`\Sigma` built by *covariance*.
+
+    Parameters
+    ----------
+    mean : str or tuple of str
+        Keyword-only. One component per event component, of the same layout
+        and units. Over several components the event may span several dims,
+        one per component: the one exception to a joint factor's rule that
+        its components share their dims. Each constant is then read on its own
+        component's dim and concatenated in event order.
+    covariance : CovarianceSpec
+        Keyword-only. :math:`\Sigma` over the event's entries.
+
+    Raises
+    ------
+    ValueError
+        At :func:`joint`: if an event component is not on :data:`REAL`, or a
+        mean differs from its event component in layout or units.
+
+    Notes
+    -----
+    The core reads the declaration without evaluating it, to tell whether
+    :math:`\Sigma` depends on theta (:meth:`Posterior.gaussian_likelihood`)
+    and whether it has a conjugate form (:meth:`FactoredDistribution.marginalize`).
+    A law function returning an EnsKit ``Gaussian`` evaluates to the same law
+    but is opaque to both. A covariance that does not depend on theta is
+    built and factored once, at :func:`condition_on`.
+    """</code></pre>
+<p><i>As built in P6:</i></p>
+<ul>
+  <li>A <code>GaussianSpec</code> has <b>one mean</b>, and its factor's event is
+  <b>one component on <code>REAL</code>, indexed by one dim at most, with no
+  element axes</b>, so its entries are its labels in order. A Gaussian over
+  several components on different dims (correlated sources) is refused, at
+  <code>GaussianSpec</code> and at <code>noise_factor</code>: it needs
+  <code>FactorSpec</code>'s joint-factor rule relaxed, per-component index
+  shapes in the bound factor, a rule for constants read on several dims, and
+  the permuted residual of §14, and no experiment asks for it yet. The handoff
+  document lists it as an open item.</li>
+  <li>Evaluated, it is a <code>probability.laws.GaussianLaw</code>: a
+  <code>Law</code> over the event's block holding one of pyEKI's operators
+  (through <code>probability/_linalg.py</code>) and the
+  <code>pyeki.gauss.Gaussian</code> of its flattened block
+  (<code>.gaussian</code>). Its draws are <code>m + L z</code>, made by the
+  law itself. <code>as_law</code> turns a <code>pyeki.gauss.Gaussian</code>
+  into one. (Since E1, the operators and the <code>Gaussian</code> are
+  EnsKit's: see "As built in E1" in §7.)</li>
+  <li>A Gaussian factor is not given the probe-point checks, its support
+  being <code>REAL</code>; at bind it is checked for its event shape and, when
+  its covariance reads nothing that varies by draw (no parameter, no simulator
+  output), for a positive-definite covariance. One that does is checked per
+  sample, which it makes invalid where it fails, so a prior putting some mass
+  on covariances that are not positive definite still binds.</li>
+  <li>"Depends on theta" is read as "is not computable from the held values"
+  (observed values, inputs, constants, and the deterministics of them alone,
+  no simulator). A covariance reading an observed value that itself has a
+  target ancestor is then held, which is exact: the value is held in the
+  conditional.</li>
+</ul>
+
+<h3 id="core-covariance">7.7 Covariance specs</h3>
+<p>A covariance spec declares structure over labels: which entries form blocks,
+and what each block is built from. Evaluated, it is an
+<code>enskit.linalg</code> operator, and EnsKit does the algebra.</p>
+<pre><code class="language-python">class CovarianceSpec(ABC):
+    """How a covariance is built from what its factor reads.
+
+    Its *scope* is the entries it covers: the factor's event, or one group of
+    a :class:`BlockDiagonalSpec`. Evaluated at one draw it is an
+    ``enskit.linalg.PSDLinOp`` over its scope. A string argument names a
+    constant or a component; a callable receives the keywords it names.
+    """
+
+
+@dataclass(frozen=True)
+class DiagonalSpec(CovarianceSpec):
+    r""":math:`\Sigma = \operatorname{diag}(v)`; evaluates to ``PSDDiagonal``.
+
+    Parameters
+    ----------
+    variance : str or callable
+        Positional-only. Each entry's variance, positive: a name, or
+        ``(**reads) -&gt; (n,)``.
+    """
+
+
+@dataclass(frozen=True)
+class DenseSpec(CovarianceSpec):
+    r"""A full matrix over the scope; evaluates to ``DensePSD``.
+
+    Parameters
+    ----------
+    matrix : str or callable
+        Positional-only. A name, or ``(**reads) -&gt; (n, n)``, symmetric
+        positive definite.
+    """
+
+
+@dataclass(frozen=True)
+class SumSpec(CovarianceSpec):
+    r""":math:`\Sigma = \sum_i \Sigma_i` over the scope.
+
+    ================================== =================================
+    terms                              result
+    ================================== =================================
+    diagonals                          ``PSDDiagonal``
+    any terms, inside one block        ``DensePSD`` of that block
+    block-diagonal + diagonal          blockwise, the diagonal sliced
+    block-diagonal, equal groupings    blockwise
+    anything else                      refused
+    ================================== =================================
+
+    Parameters
+    ----------
+    *terms : CovarianceSpec
+        Positional. At least two.
+
+    Raises
+    ------
+    ValueError
+        For a combination the table refuses, which would need a dense matrix
+        over the whole event; write ``BlockDiagonalSpec(SumSpec(...))``.
+    """
+
+
+@dataclass(frozen=True)
+class ScaledSpec(CovarianceSpec):
+    r""":math:`\Sigma = s\,\Sigma_0`, :math:`s` a positive component; evaluates
+    to ``PSDScaled``.
+
+    Parameters
+    ----------
+    base : CovarianceSpec
+        Positional-only. :math:`\Sigma_0`; it may not read *scale*.
+    scale : str
+        Keyword-only. :math:`s`: a scalar component, or inside a
+        :class:`BlockDiagonalSpec` one indexed by the grouping level.
+    """
+
+
+@dataclass(frozen=True)
+class BlockDiagonalSpec(CovarianceSpec):
+    r"""Independent groups of entries, each with its own block; evaluates to
+    ``PSDBlockDiag``.
+
+    Entries sharing their labels at *by* form a group, the scope of *block*.
+    What *block* reads arrives:
+
+    - on the event's dim: sliced to the group;
+    - on a dim named like *by*: at the group's label, such as a per-site
+      variance under ``by="site"``;
+    - otherwise: whole.
+
+    Parameters
+    ----------
+    block : CovarianceSpec
+        Positional-only.
+    by : str or tuple of str
+        Keyword-only. A level of the event's stacked dim, the dim itself, or
+        several levels.
+
+    Raises
+    ------
+    ValueError
+        At :meth:`ModelSpec.bind`: if *by* is not a level of the event's dim,
+        or its labels are not among those of the dim named like it.
+    """
+
+
+@dataclass(frozen=True)
+class SubmatrixSpec(CovarianceSpec):
+    r""":math:`\Sigma_{ij} = S[\mu_i, \mu_j]`, a matrix component's rows and
+    columns at each entry's label; evaluates to ``DensePSD``.
+
+    Parameters
+    ----------
+    component : str
+        Positional-only. A component on :data:`POSITIVE_DEFINITE`, ``(p, p)``.
+    label_map : str
+        Keyword-only. A label map :math:`\mu` from the event's dim to the
+        component's first element axis.
+
+    Raises
+    ------
+    ValueError
+        If two entries in the scope map to one label.
+    """</code></pre>
+<p><i>As built in P6:</i></p>
+<ul>
+  <li>Each spec is bound to its scope with the factor, at <code>bind</code>
+  (which entries form which group is fixed then), and builds its operator at
+  each draw from what the factor reads, sliced to the scope.</li>
+  <li>A <code>BlockDiagonalSpec</code>'s groups must be <b>contiguous</b> in the
+  event, so that the operator is the covariance in the event's order; one that
+  is not is refused at bind. An observation dim grouped by <code>site</code>,
+  sorted by site, always is. Groups are in order of first appearance;
+  <code>by</code> may be several levels, or the dim itself (one entry per
+  group); groupings nest.</li>
+  <li><code>SumSpec</code> adds its terms as dense matrices and factors the sum
+  once, since a term may be only semi-definite (an <code>outer</code> product of
+  standard deviations). Its table's second row reads "no block-diagonal term:
+  <code>DensePSD</code> over the scope", inside a block or not;
+  blockwise sums are rewritten as <code>BlockDiagonalSpec(SumSpec(...))</code>.</li>
+  <li><code>DiagonalSpec</code>'s name may be a scalar's, which every entry
+  takes; <code>ScaledSpec</code>'s scale may be a constant as well as a
+  component, and a component's support must keep it positive.</li>
+  <li>A value precondition (a positive variance, a positive-definite block) is
+  not checked when an operator is built, as EnsKit does outside its debug mode:
+  one that fails gives a density that is not finite. A covariance the held
+  values fix is checked once at <code>condition_on</code>, one read at a draw
+  makes that sample invalid.</li>
+</ul>
+
+<h3 id="core-deterministic">7.8 <code>DeterministicSpec</code></h3>
+<pre><code class="language-python">@dataclass(frozen=True, eq=False)
+class DeterministicSpec:
+    r"""A declaration of components computed from others by a pure JAX
+    function,
+
+    .. math::
+
+        z_B = f(z_g;\ c).
+
+    It adds nothing to the density and has no entries in theta. Calling it
+    calls the function for one draw.
+
+    Parameters
+    ----------
+    outputs : ArraySpec or Sequence[ArraySpec]
+        Positional-only. An output's support other than :data:`REAL` is
+        checked at the probe points.
+    function : callable
+        Keyword-only. ``(**reads) -&gt; block``, or a dict of blocks for several
+        outputs, for one draw; traced and vmapped over draws.
+    constants, label_maps : Mapping[str, xr.DataArray]
+        Keyword-only. As :class:`FactorSpec`'s.
+    own_dims : tuple of str
+        Keyword-only. As :class:`FactorSpec`'s (P3: §7.3 lets any part
+        declare its own dims).
+
+    Attributes
+    ----------
+    given : tuple of str
+        The components and inputs it reads; at least one.
+
+    Raises
+    ------
+    TypeError, ValueError
+        As :class:`FactorSpec`'s, and if the function reads no component.
+    """
+
+    def __call__(self, **reads: Array) -&gt; Array | dict[str, Array]:
+        """``function(**reads)``."""
+
+
+def deterministic(outputs: ArraySpec | Sequence[ArraySpec], /, *,
+                  constants: Mapping[str, xr.DataArray] | None = None,
+                  label_maps: Mapping[str, xr.DataArray] | None = None
+                  ) -&gt; Callable[[Callable[..., Any]], DeterministicSpec]:
+    """Decorate a function to make a :class:`DeterministicSpec` computing with it.
+
+    Examples
+    --------
+    &gt;&gt;&gt; @deterministic(ArraySpec("soil_carbon_location", units="kg m-2", indexed_by=("site",)),
+    ...                label_maps={"site_pft": site_dims.labels("pft")})
+    ... def soil_carbon_location(soil_carbon_pft_mean, site_pft):
+    ...     return soil_carbon_pft_mean[site_pft]
+    """</code></pre>
+
+<h3 id="core-simulator">7.9 <code>Simulator</code></h3>
+<pre><code class="language-python">class Simulator(ABC):
+    """A deterministic part computed outside JAX for a whole batch of samples:
+    a simulation that may fail at some of them.
+
+    The model calls it once per batch with the labeled values of what it
+    reads, and reads which samples each output was computed at. Its outputs
+    are constants to differentiation. It is real code, not a declaration.
+    """
+
+    @property
+    @abstractmethod
+    def name(self) -&gt; str:
+        """Its name in ``describe`` and in :class:`PosteriorEvaluation`."""
+
+    @property
+    @abstractmethod
+    def given(self) -&gt; tuple[str, ...]:
+        """The components and inputs it reads."""
+
+    @property
+    @abstractmethod
+    def outputs(self) -&gt; tuple[ArraySpec, ...]:
+        """The components it produces."""
+
+    @abstractmethod
+    def __call__(self, given_values: LabeledValues) -&gt; SimulatorOutput:
+        """Its outputs at every sample of a batch.
+
+        Parameters
+        ----------
+        given_values : LabeledValues
+            Each component and input it reads, on ``(sample, *indexed_by,
+            *element axes)``, ``sample`` labeled ``0`` to ``J - 1``.
+
+        Returns
+        -------
+        SimulatorOutput
+
+        Raises
+        ------
+        Exception
+            Whatever its machinery raises. A failure at a sample's values is
+            reported in ``SimulatorOutput.valid``, never raised.
+        """
+
+    @abstractmethod
+    def at(self, coords: Mapping[str, pd.Index], outputs: Sequence[str]) -&gt; Simulator:
+        """This simulator at the labels *coords*, computing only *outputs*:
+        itself when both are what it was built for, a restricted copy
+        otherwise. ``bind`` calls it with every output, and a posterior with
+        the outputs its target and likelihood depend on, so a source only
+        barren nodes read is never run.
+
+        Raises
+        ------
+        ValueError
+            If it cannot produce its outputs at *coords*.
+        """
+
+    def check_given(self, given_specs: Mapping[str, ArraySpec],
+                    corner_values: LabeledValues) -&gt; None:
+        """Check, once, that what it reads fits it; :func:`condition_on` calls
+        it. Default: no check.
+
+        Parameters
+        ----------
+        given_specs : Mapping[str, ArraySpec]
+            The spec of each component and input it reads.
+        corner_values : LabeledValues
+            What :meth:`__call__` would receive at the corner points.
+
+        Raises
+        ------
+        ValueError
+            If they do not fit, naming the component.
+        """
+
+
+@dataclass(frozen=True, eq=False)
+class SimulatorOutput:
+    """What one call of a :class:`Simulator` returns.
+
+    Attributes
+    ----------
+    values : Mapping[str, numpy.ndarray]
+        ``{output name: (J, *block)}``, ``float64``, ``NaN`` where not
+        computed.
+    valid : Mapping[str, numpy.ndarray]
+        ``{output name: (J,)}`` bool: the output was computed at the sample
+        and is finite.
+    record : Any
+        Kept on the evaluation for diagnostics; the model never reads it.
+    """</code></pre>
+
+<h3 id="core-joint">7.10 <code>joint</code>, <code>ModelSpec</code> and binding</h3>
+<pre><code class="language-python">def joint(*parts: FactorSpec | DeterministicSpec | Simulator | ModelSpec,
+          inputs: Sequence[ArraySpec] = ()) -&gt; ModelSpec:
+    """The model whose parts are *parts*, flattened, conditional on *inputs*.
+
+    Parts may come in any order; the examples write them conditional-first,
+    ``joint(likelihood, forward_model, prior)``, as ProbPipe requires.
+    Declaration order fixes theta's order.
+
+    Parameters
+    ----------
+    *parts : FactorSpec, DeterministicSpec, Simulator or ModelSpec
+    inputs : Sequence[ArraySpec]
+        Keyword-only. Input nodes: values the model is conditional on, bound
+        by :meth:`ModelSpec.bind`.
+
+    Raises
+    ------
+    ValueError
+        If a component or input is declared twice, a part reads a name
+        nothing declares, the links form a cycle, or a ``GaussianSpec``'s
+        mean differs from its event in layout or units.
+    """
+
+
+@dataclass(frozen=True, eq=False)
+class ModelSpec:
+    r"""A declaration of a model: its parts and inputs, and the density they
+    define,
+
+    .. math::
+
+        p(z \mid u) = \prod_{b\ \text{factor}} p_b(z_{B_b} \mid z_{g(b)}, u)
+            \prod_{d\ \text{deterministic}} \delta\big(z_{B_d} - f_d(z_{g(d)}, u)\big).
+
+    Made by :func:`joint`.
+
+    Attributes
+    ----------
+    parts : tuple
+        In declaration order.
+    component_names, input_names : tuple of str
+        In declaration order.
+    """
+
+    def component_spec(self, name: str) -&gt; ArraySpec:
+        """The spec of a component or input; ``KeyError`` for any other name."""
+
+    def bind(self, *, coords: Mapping[str, Sequence[Any]],
+             inputs: Mapping[str, Any] | None = None) -&gt; FactoredDistribution:
+        """The model at the labels *coords* and the input values *inputs*: one
+        distribution over its random nodes.
+
+        Parameters
+        ----------
+        coords : Mapping[str, Sequence]
+            Keyword-only. The labels of every dim a component or input is
+            indexed by; other dims are ignored, so ``site_dims.coords`` may be
+            passed whole.
+        inputs : Mapping[str, Any], optional
+            Keyword-only. One value per declared input, a labeled
+            ``xr.DataArray`` aligned by label or an array of its block shape.
+
+        Raises
+        ------
+        KeyError
+            If a dim is missing, or *inputs* names no declared input.
+        ValueError
+            If an input is missing, extra or not finite; a
+            constant, label map or input lacks a label in use; a simulator
+            cannot be bound (:meth:`Simulator.at`); or a check at the probe
+            points fails, naming the part.
+        """
+
+    def describe(self) -&gt; pd.DataFrame:
+        """One row per part: ``class``, ``law`` (family or function name),
+        ``given``, ``indexed_by``, ``provenance``."""
+
+
+@dataclass(frozen=True, eq=False)
+class FactoredDistribution:
+    """A model at a set of labels: the joint distribution of its components,
+    conditional on its inputs. Made by :meth:`ModelSpec.bind`.
+
+    Attributes
+    ----------
+    spec : ModelSpec
+    coords : frozendict of str to pandas.Index
+    """
+
+    def law(self, component_name: str, /, *, given: Mapping[str, ArrayLike]) -&gt; Law:
+        """The law of the factor declaring *component_name*, for one draw.
+
+        Parameters
+        ----------
+        component_name : str
+            Positional-only.
+        given : Mapping[str, ArrayLike]
+            Keyword-only. One value of its block shape for each component and
+            input the factor reads.
+
+        Returns
+        -------
+        Law
+            A TFP distribution or an adapted EnsKit ``Gaussian``.
+
+        Raises
+        ------
+        KeyError
+            If no component is called *component_name*, or *given* lacks a
+            name the factor reads.
+        ValueError
+            If a deterministic declares *component_name*.
+        """
+
+    def select(self, **selectors: Sequence[Any]) -&gt; FactoredDistribution:
+        """``spec.bind`` at fewer labels: each selector, a dim or a level of a
+        stacked dim, keeps those labels everywhere.
+
+        Raises
+        ------
+        TypeError, KeyError, ValueError
+            As ``ParameterVector.select`` today, and as :meth:`ModelSpec.bind`.
+        """
+
+    def marginalize(self, component_names: Sequence[str]) -&gt; FactoredDistribution:
+        """The model with *component_names* integrated out by a conjugate rule:
+        each one's factor, and the factor that reads it, become one factor.
+
+        Raises
+        ------
+        ValueError
+            If no rule applies, naming the condition that failed.
+        """
+
+    def sample(self, key: Array, n: int, *,
+               component_names: Sequence[str] | None = None) -&gt; ValuesByName:
+        """``n`` ancestral draws, ``{name: (n, *block)}``.
+
+        Parts are evaluated in topological order. A factor that reads no
+        component draws ``n`` values at once with ``jax.random.fold_in(key,
+        crc32(name))``; one that reads components splits that key ``n`` ways
+        and draws one value per draw, as today's prior does. With
+        *component_names*, only those and their ancestors are drawn, so a
+        simulator runs only when one of them needs it. Where a simulator
+        fails, its outputs and their descendants are ``NaN``.
+
+        """
+
+    def log_prob(self, values: Mapping[str, ArrayLike]) -&gt; Array:
+        """The joint log density of every factor's event,
+        ``{name: (*batch, *block)} -&gt; (*batch,)``, against each support's
+        reference measure. Deterministic components are computed, running a
+        simulator if one is upstream of a factor; traceable when none is.
+
+        Raises
+        ------
+        KeyError
+            If *values* lacks a factor's event.
+        ValueError
+            If *values* holds a deterministic component, which is computed,
+            not given.
+        """
+
+    def describe(self) -&gt; pd.DataFrame:
+        """``spec.describe()``, with ``evaluated_by`` (``"base density"``,
+        ``"change of variables"``, ``"Gaussian"`` or ``"-"``) and the block
+        shapes."""</code></pre>
+
+<h3 id="core-layout">7.11 <code>Layout</code> and the two forms of values</h3>
+<p>Values cross module boundaries in two forms, each an alias with a validator
+beside it, as CLAUDE.md requires:</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Alias</th><th>Form</th><th>Validator</th></tr></thead>
+<tbody>
+<tr><td><code>ValuesByName</code></td><td><code>dict[str, jax.Array]</code>: each component's block, <code>(*batch, *block shape)</code>; traceable</td><td><code>validate_values_by_name(values, layout)</code></td></tr>
+<tr><td><code>LabeledValues</code></td><td><code>dict[str, xr.DataArray]</code>: each on <code>(*batch dims, *indexed_by, *element axes)</code>, a stacked dim with its <code>MultiIndex</code>, batch dims <code>int64</code> from 0; a dict because observation dims do not share a grid</td><td><code>validate_labeled_values(values, layout)</code></td></tr>
+</tbody></table></div>
+<p><code>Layout</code> is today's <code>ParameterVector</code>, generalized to any
+named arrays. Users meet it as <code>posterior.parameters</code>, whose
+<code>.unconstrained</code> is theta's layout, and as
+<code>posterior.observations</code>, y's. Its methods keep today's names:
+<code>index</code>, <code>select</code>, <code>positions</code>,
+<code>describe</code>, <code>unconstrained</code>, <code>to_natural</code>,
+<code>to_unconstrained</code>, <code>contains</code>, and the conversions
+between Flat, values by name and labeled values. It changes in three ways:</p>
+<ul>
+  <li><b>No <code>order</code> argument.</b> The order is ProbPipe's canonical
+  one: components in declaration order, each block in C order.</li>
+  <li><b>Merged index levels.</b> The index's levels are
+  <code>("component", *dims, *levels of stacked dims, "element")</code>, and
+  same-named levels are one level. <code>positions(site=[4977])</code> thus
+  finds a site in every component.</li>
+  <li><b>Two storage functions:</b></li>
+</ul>
+<pre><code class="language-python">def encode_labeled_values(values: LabeledValues) -&gt; xr.Dataset:
+    """*values* as one Dataset netCDF can hold: each stacked dim's levels as
+    plain coordinates named ``"&lt;dim&gt;__&lt;level&gt;"``, and an attribute
+    recording them."""
+
+
+def decode_labeled_values(dataset: xr.Dataset) -&gt; LabeledValues:
+    """The inverse of :func:`encode_labeled_values`.
+
+    Raises
+    ------
+    ValueError
+        If *dataset* lacks the attribute :func:`encode_labeled_values` writes.
+    """</code></pre>
+
+<h3 id="core-posterior">7.12 Conditioning: <code>condition_on</code> and <code>Posterior</code></h3>
+<pre><code class="language-python">def condition_on(model: FactoredDistribution, observed: Mapping[str, Any]) -&gt; Posterior:
+    r"""Bayes' rule: *model* given the values *observed* of some random nodes.
+
+    With :math:`O` the observed nodes, the barren nodes :math:`B` (unobserved,
+    no observed descendant) are dropped, and the target is the law of the
+    rest, :math:`T`,
+
+    .. math::
+
+        p(z_T \mid y) \propto \prod_{v \in T} p_v(z_v \mid z_{\mathrm{pa}(v)})
+            \prod_{v \in O} p_v(y_v \mid z_{\mathrm{pa}(v)}).
+
+    Observed nodes whose kernels depend on no target node contribute only a
+    constant, so observing a hyperparameter at a value holds it fixed.
+
+    Parameters
+    ----------
+    model : FactoredDistribution
+    observed : Mapping[str, Any]
+        ``{component name: value}``, every component of each observed factor;
+        a labeled ``xr.DataArray`` aligned by label, or an array of the block
+        shape.
+
+    Raises
+    ------
+    KeyError
+        If a name is not a component a factor declares, or a labeled value
+        lacks a label in use.
+    ValueError
+        If part of a factor's event is observed, a value is not finite or
+        outside its support, nothing is left to infer, a target node has a
+        simulator among its ancestors, a covariance that depends on no target
+        node is not positive definite, or a simulator's ``check_given``
+        fails.
+    """
+
+
+@dataclass(frozen=True, eq=False)
+class Posterior:
+    r"""A model conditioned on values: the unnormalized density of its
+    parameters in unconstrained coordinates,
+
+    .. math::
+
+        \log p(\theta \mid y) = \log \pi_\theta(\theta) + \log L(\theta) + \text{const},
+
+    and what an inference algorithm reads from it. It holds no samples.
+
+    Attributes
+    ----------
+    model : FactoredDistribution
+    parameters : Layout
+        The parameters' natural layout; ``parameters.unconstrained`` is
+        theta's, of ``D`` entries.
+    observations : Layout or None
+        The layout of the observed components the likelihood depends on
+        (:math:`O_\theta`), of ``N`` entries; ``None`` when there are none,
+        since a layout holds at least one component (P3).
+    y : jax.Array
+        ``(N,)``, their values.
+    observed : frozendict of str to xr.DataArray
+        The observed values.
+    parameter_names : tuple of str
+        The target's components, :math:`T`.
+    barren_names : tuple of str
+        The barren nodes' components, :math:`B`, drawn by :meth:`predict`.
+    constant_names : tuple of str
+        Observed components with no target ancestor, :math:`O_c`: in the
+        evidence, not in the likelihood.
+    log_constant : float
+        :math:`\log C`, their kernels' log density at the observed values;
+        ``log p(y) = log Z + log_constant``.
+    dimension : int
+        ``D``.
+    simulator_free_positions : numpy.ndarray
+        ``int64``, the entries of theta with no simulator among their
+        descendants.
+    simulators : frozendict of str to Simulator
+        Each simulator the likelihood depends on, at the outputs it depends
+        on (P5).
+    """
+
+    def sample_prior(self, key: Array, n: int) -&gt; Array:
+        r"""``n`` draws of theta from :math:`\pi`, ``(n, D)``: the target kernels
+        sampled ancestrally with every observed value held, so a target kernel
+        that reads a held hyperparameter sees its value. No simulator runs."""
+
+    def log_prior(self, theta: ArrayLike) -&gt; Array:
+        r""":math:`\log \pi_\theta(\theta)`, ``(..., D) -&gt; (...)``, normalized,
+        ``-inf`` where a latent factor's density is not finite; traceable."""
+
+    def evaluate(self, theta: ArrayLike) -&gt; PosteriorEvaluation:
+        """Evaluate the target at a batch of theta, running each simulator once.
+
+        Parameters
+        ----------
+        theta : ArrayLike
+            ``(J, D)``, or ``(D,)`` for one sample; finite.
+
+        Returns
+        -------
+        PosteriorEvaluation
+
+        Raises
+        ------
+        ValueError
+            If *theta* is not ``(J, D)`` or ``(D,)``, or not finite.
+        """
+
+    def log_likelihood(self, theta: ArrayLike) -&gt; Array:
+        """``evaluate(theta).log_likelihood``, ``(J,)``, and ``()`` for one
+        sample, when a simulator is upstream of the likelihood; without one,
+        a traced function, ``(..., D) -&gt; (...)`` (P3, kept in P5)."""
+
+    def log_density(self, theta: ArrayLike) -&gt; Array:
+        """``evaluate(theta).log_density``, ``(J,)``; traced without a
+        simulator, as :meth:`log_likelihood`."""
+
+    def log_density_given(self, evaluation: PosteriorEvaluation) -&gt; Callable[[Array], Array]:
+        r"""The log posterior as a function of the entries of theta that no
+        simulator depends on (has among its descendants), every other entry and every simulator output held at
+        *evaluation*'s: ``(J, D_free) -&gt; (J,)``, traceable.
+
+        Its gradient is the posterior's in those entries, which sit at
+        :attr:`simulator_free_positions` of theta.
+        """
+
+    def predict(self, key: Array, theta: ArrayLike) -&gt; tuple[ValuesByName, Mapping[str, Array]]:
+        """Draws of the barren components at a batch of theta, each kernel
+        sampled once per sample with the observed values held: the posterior
+        predictive of what was not observed (a validation source).
+
+        Returns
+        -------
+        (ValuesByName, Mapping[str, jax.Array])
+            ``{name: (J, *block)}``, and per component ``(J,)`` bool, whether
+            the simulator outputs it reads were computed.
+        """
+
+    def replicate(self, key: Array, theta: ArrayLike) -&gt; tuple[ValuesByName, Mapping[str, Array]]:
+        """Replicated draws of the :math:`O_\theta` components at a batch of
+        theta, each from its kernel given the sample: a posterior predictive
+        check of the observations. :math:`O_c` components are held, and not
+        replicated. Returns as :meth:`predict`. (P5: the :math:`O_\theta`
+        factors are drawn ancestrally, so one that reads another reads its
+        replicate.)"""
+
+    def simulator_inputs(self, theta: ArrayLike, simulator_name: str) -&gt; LabeledValues:
+        """What the simulator *simulator_name* reads at a batch of theta, as it
+        would receive it: for running it with other reductions, a daily
+        output say."""
+
+    def natural_values(self, theta: ArrayLike) -&gt; ValuesByName:
+        """The parameters' values at theta, and those of the deterministics with
+        no simulator ancestor; traceable."""
+
+    def theta_with(self, theta: ArrayLike, values: Mapping[str, ArrayLike]) -&gt; Array:
+        r"""*theta* with the named parameters set to natural *values* through
+        :math:`T^{-1}`; traceable.
+
+        Raises
+        ------
+        KeyError
+            If a name is not a parameter.
+        ValueError
+            If a value has no theta (:meth:`Layout.contains`).
+        """
+
+    def to_labeled(self, theta: ArrayLike) -&gt; LabeledValues:
+        """A batch as labeled values, batch dim ``sample``: the natural values,
+        and ``"theta"`` on ``(sample, theta_entry)``. ``theta`` is a reserved
+        name."""
+
+    def gaussian_likelihood(self) -&gt; GaussianLikelihood:
+        r"""The likelihood as :math:`y \sim \mathcal N(G(\theta), R)`.
+
+        Raises
+        ------
+        ValueError
+            Unless the kernel of every node in :math:`O_\theta` is a
+            :class:`GaussianSpec` whose covariance has no target ancestor. The
+            message names the factor and the target ancestors, and suggests
+            observing them at values.
+        """
+
+    def full_conditional(self, component_name: str) -&gt; FullConditional:
+        """The closed-form law of one parameter given everything else.
+
+        Raises
+        ------
+        ValueError
+            If no conjugate rule applies, naming the condition that failed.
+        """
+
+    def describe(self) -&gt; pd.DataFrame:
+        """One row per component and input: ``role`` (``"parameter"``,
+        ``"observed"``, ``"observed, constant"``, ``"barren"``, ``"input"`` or
+        ``"computed"``), and the declaring part's name and class."""
+
+
+@dataclass(frozen=True, eq=False)
+class PosteriorEvaluation:
+    """What one :meth:`Posterior.evaluate` computed.
+
+    Attributes
+    ----------
+    theta : jax.Array
+        ``(J, D)``.
+    log_prior : jax.Array
+        ``(J,)``, :math:`\log \pi` everywhere, as :meth:`Posterior.log_prior`.
+    log_likelihood, log_density : jax.Array
+        ``(J,)``; ``-inf`` where ``valid`` is false.
+    valid : jax.Array
+        ``(J,)`` bool: every simulator output the target and :math:`O_\theta`
+        kernels depend on was computed, and every :math:`O_\theta` kernel's
+        log density is finite.
+    simulator_valid : jax.Array
+        ``(J,)`` bool: those simulator outputs were computed. Where it holds
+        and ``valid`` does not, the traced part failed numerically.
+    values : ValuesByName
+        Every deterministic component, ``(J, *block)``. (P5: those the
+        likelihood reads, simulator outputs among them, and those computable
+        without a simulator; a pruned output is not computed.)
+    simulator_records : frozendict of str to Any
+        Each simulator's ``SimulatorOutput.record``.
+    """
+
+
+@dataclass(frozen=True, eq=False)
+class GaussianLikelihood:
+    r"""The likelihood :math:`y \sim \mathcal N(G(\theta), R)` over
+    :math:`O_\theta`, with :math:`R` independent of the target and
+    :math:`G(\theta)` the means of those Gaussian factors.
+
+    Attributes
+    ----------
+    y : jax.Array
+        ``(N,)``.
+    noise_covariance : enskit.linalg.PSDLinOp
+        :math:`R`, block-diagonal over the observed factors, in
+        ``observations``' order.
+    """
+
+    def forward(self, theta: ArrayLike) -&gt; tuple[Array, Array, PosteriorEvaluation]:
+        r""":math:`G(\theta)`, each observed Gaussian factor's mean component at
+        theta in ``observations``' order: ``(predictions (J, N), valid (J,),
+        evaluation)``, ``NaN`` in an invalid sample."""
+
+    # As built in P6: GaussianLikelihood also holds ``posterior`` and
+    # ``mean_names``; ``noise_covariance`` over one factor is that factor's
+    # operator itself (pyEKI's ``block_diag`` of one block), over several a
+    # ``PSDBlockDiag`` of them.
+
+
+@dataclass(frozen=True, eq=False)
+class FullConditional:
+    """The closed-form law of one parameter given every other component.
+
+    Attributes
+    ----------
+    component_name : str
+    rule : str
+        ``"inverse gamma scale"`` or ``"inverse Wishart"``.
+    """
+
+    def law(self, evaluation: PosteriorEvaluation, sample: int) -&gt; Law:
+        """Its law at sample *sample* of *evaluation*, an unbatched law; a
+        family over samples is ``jax.vmap`` of this."""
+
+    def sample(self, key: Array, evaluation: PosteriorEvaluation) -&gt; Array:
+        """One value per sample of *evaluation*, ``(J, *block)``."""</code></pre>
+
+<h3 id="core-conjugacy">7.13 Conjugacy</h3>
+<p>Two rules are matched on the declarations, never on values. Both are
+optional: a model with an inverse gamma or inverse Wishart component is valid
+with those components as parameters, sampled jointly. The conditions are chosen
+narrow, for the cases this project's noise models produce. They can be widened,
+for a scale shared by two factors or prior constants that are parameters.</p>
+<h4>R1. Inverse gamma on a covariance scale</h4>
+<p>It applies when:</p>
+<ul>
+  <li>a component <var>v</var>, scalar or indexed by a dim <var>d</var>, has a
+  factor whose law is <code>inverse_gamma(shape=a, scale=b)</code>, alone or
+  under <code>iid_over_dim</code> or <code>independent_over_dim</code>, and
+  which reads no component;</li>
+  <li>exactly one part reads <var>v</var>, and it is a factor whose law is a
+  <code>GaussianSpec</code> with covariance
+  <code>ScaledSpec(base, scale=v)</code> or
+  <code>BlockDiagonalSpec(ScaledSpec(base, scale=v), by=d)</code>;</li>
+  <li><code>base</code> does not depend on <var>v</var>.</li>
+</ul>
+<p>For <code>full_conditional</code>, <var>v</var> must be a parameter and the
+reading factor observed or a parameter; its residual is its event value minus
+its mean. For group <var>s</var> with <var>n<sub>s</sub></var> entries, residual
+<var>r<sub>s</sub></var> = <var>y<sub>s</sub></var> − <var>m<sub>s</sub></var>
+and <var>q<sub>s</sub></var> =
+<var>r<sub>s</sub></var><sup>⊤</sup><var>R<sub>s</sub></var><sup>−1</sup><var>r<sub>s</sub></var>:</p>
+<div class="math">
+<div class="row">marginal: &nbsp;<var>y<sub>s</sub></var> ~ t<sub>2<var>a</var></sub>(<var>m<sub>s</sub></var>, (<var>b</var>/<var>a</var>)<var>R<sub>s</sub></var>), &nbsp; log p = log Γ(<var>a</var> + <var>n<sub>s</sub></var>/2) − log Γ(<var>a</var>) + <var>a</var> log <var>b</var> − (<var>n<sub>s</sub></var>/2) log 2π − ½ log|<var>R<sub>s</sub></var>| − (<var>a</var> + <var>n<sub>s</sub></var>/2) log(<var>b</var> + <var>q<sub>s</sub></var>/2)</div>
+<div class="row">full conditional: &nbsp;<var>v<sub>s</sub></var> | rest ~ IG(<var>a</var> + <var>n<sub>s</sub></var>/2, <var>b</var> + <var>q<sub>s</sub></var>/2)</div>
+</div>
+<p>A scalar <var>v</var> shared by every group gives one Student-t, with
+<var>n</var> = Σ<var>n<sub>s</sub></var> and <var>q</var> =
+Σ<var>q<sub>s</sub></var>.</p>
+<h4>R2. Inverse Wishart on a covariance block</h4>
+<p>It applies when:</p>
+<ul>
+  <li>a <var>p</var> × <var>p</var> component <var>S</var> has a factor whose
+  law is <code>inverse_wishart(degrees_of_freedom=ν, scale=Ψ)</code> and which
+  reads no component;</li>
+  <li>exactly one part reads <var>S</var>, and it is a factor whose law is a
+  <code>GaussianSpec</code> with covariance
+  <code>BlockDiagonalSpec(SubmatrixSpec(S, label_map=μ), by=g)</code>, with
+  nothing added;</li>
+  <li>every group maps to the same <var>q</var> of <var>S</var>'s labels,
+  <var>O</var>.</li>
+</ul>
+<p>Then <var>S<sub>OO</sub></var> ~
+W<sup>−1</sup><sub><var>q</var></sub>(ν′, Ψ<sub><var>OO</var></sub>), with
+ν′ = ν − (<var>p</var> − <var>q</var>). With <var>n</var> groups, residuals
+<var>r<sub>i</sub></var> and <var>E</var> =
+Σ<var>r<sub>i</sub></var><var>r<sub>i</sub></var><sup>⊤</sup>:</p>
+<div class="math">
+<div class="row">full conditional: &nbsp;<var>S<sub>OO</sub></var> | rest ~ W<sup>−1</sup>(ν′ + <var>n</var>, Ψ<sub><var>OO</var></sub> + <var>E</var>); the rest of <var>S</var> drawn from its prior conditional given <var>S<sub>OO</sub></var></div>
+<div class="row">marginal: &nbsp;log p(<var>r</var><sub>1:<var>n</var></sub>) = −(<var>nq</var>/2) log π + log Γ<sub><var>q</var></sub>((ν′+<var>n</var>)/2) − log Γ<sub><var>q</var></sub>(ν′/2) + (ν′/2) log|Ψ<sub><var>OO</var></sub>| − ((ν′+<var>n</var>)/2) log|Ψ<sub><var>OO</var></sub> + <var>E</var>|</div>
+</div>
+<div class="warn"><b class="tag">Where R2 stops</b><p>R2 does not cover:</p>
+<ul>
+  <li>groups that map to different subsets of <var>S</var>'s labels, as when
+  sites' records are ragged;</li>
+  <li>a term added to the submatrix.</li>
+</ul>
+<p>An exact Gibbs step for the ragged case, by data augmentation, exists but is
+not proposed. <code>marginalize</code> and <code>full_conditional</code> refuse
+both cases and say why, and joint sampling covers them.</p>
+<p><i>As built in P8:</i></p>
+<ul>
+  <li><b>The marginal factor's law.</b> The design left it unnamed. It is one
+  of two law forms of a new module, <code>probability.scale_mixtures</code>:
+  <code>StudentTSpec(mean=, covariance=, shape=, scale=, by=None)</code>, a
+  Student-t per group (one group without <code>by</code>), and
+  <code>MatrixStudentTSpec(mean=, by=, label_map=, degrees_of_freedom=,
+  scale=)</code>, evaluated to <code>StudentTLaw</code> and
+  <code>MatrixStudentTLaw</code>. They hold the prior's numbers as labeled
+  arrays, read by label when bound, so a marginal model selected at fewer
+  labels is the marginal of the selection, R2's rows <var>O</var> found again
+  there. With <code>GaussianSpec</code> they are the parts module's
+  <code>CENTERED_LAW_SPECS</code>: bound with their factor and checked as a
+  Gaussian is. A user may declare one directly, as a Student-t noise
+  model.</li>
+  <li><b>Names.</b> The code calls R1 the <i>scale rule</i> and R2 the
+  <i>block rule</i>, since R1 also names the removal PR.</li>
+  <li><b>Where things live.</b> <code>FullConditional</code> is in
+  <code>posterior</code>, as §6's module list has it; the rules are a new
+  module, <code>probability.conjugacy</code>: <code>conjugate_rule(model,
+  name) -&gt; ConjugateRule</code>, which holds the matched factors, the
+  marginal law and the full conditional's arithmetic from residuals;
+  <code>marginalize</code>; <code>InverseWishartGivenRows</code>, R2's full
+  conditional, the posterior on the observed rows and the prior on the rest
+  (the inverse Wishart itself when every row is observed), unchecked so
+  that it is <code>NaN</code> at a sample whose mean was not computed;
+  and the rule names <code>INVERSE_GAMMA_SCALE</code> and
+  <code>INVERSE_WISHART</code>. <code>FullConditional</code> also holds
+  <code>posterior</code>.</li>
+  <li><b>Matching.</b> R1's prior is recognized from its bound law, which is
+  fixed because its factor reads no component: an inverse gamma alone, under
+  <code>Sample</code> (<code>iid_over_dim</code>) or under
+  <code>Independent</code> (<code>independent_over_dim</code>), whatever
+  function built it; R2's is an exact <code>InverseWishart</code>. A scalar
+  <var>v</var> under <code>BlockDiagonalSpec(ScaledSpec(base, scale=v),
+  by=g)</code> takes any grouping and gives one Student-t over the event with
+  covariance <code>BlockDiagonalSpec(base, by=g)</code>. A <var>v</var> on
+  <var>d</var> grouped otherwise is already refused when the model is
+  bound.</li>
+  <li><b>Marginalizing.</b> Names are integrated out in order, each from the
+  model the last left; the marginal factor takes the reader's place in
+  declaration order and keeps its constants the marginal reads; its
+  provenance joins the reader's and the prior's. An empty list is refused.
+  A Student-t's covariance is built per evaluation, not held at
+  <code>condition_on</code> as a Gaussian's is.</li>
+  <li><b>Full conditionals.</b> Where an evaluation's mean was not computed,
+  the law's parameters and draws are <code>NaN</code>.
+  <code>theta_with</code> checks a value has a theta only when it is
+  concrete, so it stays traceable.</li>
+  <li><b>The proofs.</b> R1's full conditional is checked against a long
+  random-walk Metropolis chain, as planned, and against the joint density
+  exactly. R2's is checked against the joint density exactly and against its
+  closed-form moments, including the rows drawn from the prior given
+  <var>S<sub>OO</sub></var>, rather than a chain over a matrix.</li>
+</ul></div>
+</section>
+
+
+<section id="adapters">
+<h2><span class="num">8</span>The adapter layer</h2>
+<p>The adapters are where sites, observation sources and SIPNET meet the core.
+Each gets smaller, because the core now does the composing.</p>
+
+<h3>8.1 <code>site_dims</code></h3>
+<p><code>SiteDims</code> is unchanged. It supplies <code>coords</code> for
+<code>bind</code>, <code>covariate(name)</code> as a constant, and
+<code>labels(dim)</code> as a label map.</p>
+
+<h3>8.2 <code>observation</code></h3>
+<p>Two changes:</p>
+<ul>
+  <li><b>An observation source carries its measurement standard
+  deviations.</b> Today they are dropped (F11).</li>
+  <li><b>The observation vector says what each source contributes to a
+  model,</b> and gives up y's Flat order. That order now belongs to the
+  posterior (<code>posterior.y</code>, <code>posterior.observations</code>), so
+  the forward model, the covariance and a figure cannot disagree about it.</li>
+</ul>
+<p>The operators, <code>predict</code>, <code>select</code> and
+<code>restrict_to_sites</code> are kept.</p>
+<pre><code class="language-python">@dataclass(frozen=True, eq=False, kw_only=True)
+class ObservationSource:
+    """One observation source: its observed values, their measurement
+    standard deviations, and the operator that predicts them.
+
+    Parameters
+    ----------
+    observation_source_name, observed_values, operator
+        As today.
+    standard_deviation : ObservedValues or None
+        Each observation's measurement-error standard deviation, on the
+        observed values' grid and in their units; finite and non-negative at
+        every observation, so a gap is filled before the source is built. A
+        zero is allowed (MODIS reports some); a covariance built from it must
+        still be positive definite, which ``condition_on`` checks.
+
+    Raises
+    ------
+    ValueError
+        As today, and if *standard_deviation* is negative or missing at an
+        observation, or is not on the observed values' labels.
+    """
+
+
+@dataclass(frozen=True, eq=False, kw_only=True)
+class ObservationVector:
+    """The observation sources of an experiment, as components of a model.
+
+    For each source ``k`` it defines, by name:
+
+    - its **observation dim**, ``"&lt;source&gt;_observation"``, a stacked dim
+      whose labels are the ``(site, time)`` pairs the source observes (a
+      one-level ``(site,)`` MultiIndex if static), sorted by site, then time;
+    - its **observed component**, named for the source, on that dim, on
+      :data:`REAL`, in the observed values' units (not their constituent,
+      which an ArraySpec does not hold: P4);
+    - its **prediction**, ``predicted_&lt;source&gt;``, of the same layout: the
+      forward model's value of the observed quantity;
+    - its **constants**, on that dim: ``observed``, ``standard_deviation``
+      (when given), and for a timed source ``time_since_epoch`` (seconds since
+      1970-01-01 UTC), ``calendar_year`` and, when windowed,
+      ``window_length`` (seconds).
+
+    A user does not type an observation dim's name or a prediction's. The
+    components themselves, which need the probability layer, are made by
+    :mod:`~sipnet_calibration.observation.model`, so this class stays free of
+    TFP.
+    """
+
+    # kept: observation_sources, observation_source_names, sites, site_table,
+    # output_variable_names, sipnet_parameter_names_read, describe, select,
+    # restrict_to_sites, predict
+    # retired once PR #69 has migrated: y, dimension, index, positions, flat, fields
+
+    @property
+    def coords(self) -&gt; frozendict:
+        """``{observation dim: pandas.MultiIndex}``, one per source, for ``bind``."""
+
+    def observed_values_by_component(self) -&gt; dict[str, xr.DataArray]:
+        """``{observed component name: values on its observation dim}``, for
+        :func:`condition_on`'s *observed*."""
+
+    def year_label_map(self, observation_source_name: str) -&gt; xr.DataArray:
+        """A label map named ``year`` on the source's observation dim: each
+        observation's calendar year, as a string label.
+
+        Raises
+        ------
+        ValueError
+            If the source is static.
+        """
+
+    def prediction_name(self, observation_source_name: str) -&gt; str:
+        """The name of a source's prediction, ``"predicted_&lt;source&gt;"``.
+
+        Raises
+        ------
+        KeyError
+            If the source is not in the vector.
+        """
+
+    def with_observed_values(self, values: Mapping[str, ObservedValues]) -&gt; ObservationVector:
+        """This vector with other observed values on the same labels, such as
+        synthetic data for a twin experiment, so that the constants a noise
+        factor reads (``observed``) follow them.
+
+        Raises
+        ------
+        KeyError
+            If a source is not in the vector.
+        ValueError
+            If a source's values are not on its labels.
+        """
+
+    def to_fields(self, labeled: LabeledValues) -&gt; dict[str, Field]:
+        """Each source's variable of *labeled* (observed, predicted or a
+        residual), unstacked to a field on ``(*batch, site[, time])``."""
+
+    # Added in P4, where the design named no method:
+    def observation_dim_name(self, observation_source_name: str) -&gt; str: ...
+    def constants(self, observation_source_name: str) -&gt; dict[str, xr.DataArray]:
+        """The constants listed above, float64 on the observation dim."""
+    # and ObservationSource.observation_labels, the MultiIndex of the source's
+    # observations, which coords holds per source. A standard deviation
+    # lacking an observed label is a KeyError, CLAUDE.md's rule for a label
+    # the data lacks, rather than the ValueError written above.
+
+
+# sipnet_calibration.observation.model: imports probability; not imported by
+# observation/__init__.
+
+def observed_components(observation_vector: ObservationVector) -&gt; tuple[ArraySpec, ...]:
+    """The observed components, one per source, in declaration order."""
+
+
+def prediction_components(observation_vector: ObservationVector) -&gt; tuple[ArraySpec, ...]:
+    """The predictions, one per source, in declaration order: a forward
+    model's outputs."""
+
+
+def noise_factor(observation_vector: ObservationVector,
+                 observation_source_names: str | Sequence[str], /, *,
+                 covariance: CovarianceSpec,
+                 constants: Mapping[str, xr.DataArray] | None = None,
+                 label_maps: Mapping[str, xr.DataArray] | None = None,
+                 provenance: str | None = None) -&gt; FactorSpec:
+    r"""The noise factor of one source, or of several whose errors are
+    correlated,
+
+    .. math::
+
+        y_k \mid m_k, \phi \sim \mathcal N\big(m_k,\ \Sigma_k(\phi)\big),
+
+    a :class:`FactorSpec` whose law is a :class:`GaussianSpec` centered on
+    the sources' predictions and holding their constants.
+
+    Parameters
+    ----------
+    observation_vector : ObservationVector
+        Positional-only.
+    observation_source_names : str or Sequence[str]
+        Positional-only.
+        One source, or several, whose constants are concatenated in this
+        order.
+    covariance : CovarianceSpec
+        Keyword-only. :math:`\Sigma_k`; ``BlockDiagonalSpec(..., by="site")``
+        gives one block per site. The components it names, such as a noise
+        variance, are read.
+    constants, label_maps : Mapping[str, xr.DataArray], optional
+        Keyword-only. More, beside the sources'.
+    provenance : str, optional
+        Keyword-only.
+
+    Raises
+    ------
+    KeyError
+        If a source is not in the vector.
+    ValueError
+        As :class:`FactorSpec` and :class:`GaussianSpec`.
+
+    Notes
+    -----
+    The factor holds the observed values as the constant ``observed``.
+    Conditioning on other values (synthetic data) needs a factor made from
+    ``observation_vector.with_observed_values(...)``, or the covariance
+    follows the real data. A covariance built from the data makes the
+    evidence an empirical-Bayes quantity.
+    """
+
+# As built in P6: noise_factor takes one source, observation_source_name:
+# str (Andrew's decision, after the review): a sequence is a TypeError,
+# several sources waiting with GaussianSpec's several components. Of
+# the source's constants it holds those its covariance reads, so FactorSpec's
+# rule that every constant is read holds; a constant given that is named like
+# one of those is refused.</code></pre>
+<p>A covariance that reads the constant <code>observed</code>, such as an error
+proportional to the stock, makes the model's law of y depend on the data. The
+likelihood is unaffected, but <code>sample</code> of an observed component is
+then not a generative draw.</p>
+
+<h3>8.3 <code>forward</code></h3>
+<p>Today's <code>ForwardModel</code> is split into the runs, <code>SIPNETRuns</code>,
+and the simulator, <code>SIPNETSimulator</code>. Neither takes the vector, the
+derived parameters or theta, so F5's five objects become two, and F4's private
+merge becomes the public <code>SIPNETRuns.evaluate</code>. The new simulator has
+its own name, so that today's <code>ForwardModel</code> can delegate to
+<code>SIPNETRuns</code> unchanged until PR #69 migrates, and is then
+removed.</p>
+<pre><code class="language-python">class SIPNETRuns:
+    """SIPNET run once per sample and site for a batch of labeled values: the
+    SIPNET parameter map applied at the sites, the runs executed through
+    PyEns, each run reduced on the worker.
+
+    Parameters
+    ----------
+    sipnet_model : SIPNETModel
+        Positional-only.
+    sipnet_parameter_map : SIPNETParameterMap
+        Keyword-only.
+    site_dims : SiteDims
+        Keyword-only. The sites run.
+    climate : Mapping[int, ClimateDrivers]
+        Keyword-only. File-backed under any backend but ``SequentialBackend``.
+    backend : Backend
+        Keyword-only.
+    out_of_domain : {"raise", "fail_row"}
+        Keyword-only. As today.
+    """
+
+    def evaluate(self, values: LabeledValues, *,
+                 observation_vectors: Sequence[ObservationVector] = (),
+                 output_variable_names: Sequence[str] = (), freq: str | None = None,
+                 external_inputs: ExternalInputs | None = None) -&gt; ForwardEvaluation:
+        """Run SIPNET once per sample of *values* and site, and return each
+        requested reduction: predictions per observation vector, model output
+        for the named variables (aggregated to *freq*). One pass serves a
+        calibration vector, a validation vector and a daily figure (F6).
+        *external_inputs* may cross with the samples, as today. The
+        :class:`ForwardEvaluation` loses ``theta`` and holds predictions by
+        observation vector.
+
+        Raises
+        ------
+        SIPNETParametersOutOfDomainError, RuntimeError
+            As today's ``ForwardModel.evaluate``.
+        """
+
+
+class SIPNETSimulator(Simulator):
+    """The forward map :math:`G` as a simulator: SIPNET runs reduced to an
+    observation vector's predictions.
+
+    Parameters
+    ----------
+    runs : SIPNETRuns
+        Positional-only.
+    observation_vector : ObservationVector
+        Keyword-only. Its sites must be among those run.
+    name : str
+        Keyword-only. Default ``"sipnet"``.
+
+    Attributes
+    ----------
+    given : tuple of str
+        Every name the SIPNET parameter map reads.
+    outputs : tuple of ArraySpec
+        ``observation_vector.prediction_components``.
+    """
+
+    def __call__(self, given_values):
+        """``runs.evaluate(given_values, observation_vectors=[observation_vector])``,
+        as a :class:`SimulatorOutput`: one prediction per source, each valid
+        where every run of the sample succeeded at the source's sites, and the
+        :class:`ForwardEvaluation` as the record."""
+
+    def at(self, coords):
+        """Itself at its own sites and observations; at fewer, its runs and
+        observation vector restricted to them."""
+
+    def check_given(self, given_specs, corner_values):
+        """The map's fit to the given components' specs, so a rule's
+        ``ValueRequirement`` is checked against what the model declares
+        (F8); under ``out_of_domain="raise"``, its domains at
+        *corner_values*, as today's corner check."""</code></pre>
+<p><i>As built in P5:</i></p>
+<ul>
+  <li><code>SIPNETRuns.evaluate</code> returns a <code>SIPNETRunsEvaluation</code>:
+  <code>ForwardEvaluation</code>'s fields without <code>theta</code>, with
+  <code>predictions</code> a tuple, one <code>(R, N_k)</code> array per
+  observation vector, <code>in_domain</code> per row, and <code>valid</code>
+  meaning every run of the row succeeded in the domain. Today's
+  <code>ForwardEvaluation</code> keeps its name and fields, since
+  <code>ForwardModel</code> and PR #69 read them until R1. It also takes
+  <code>batch_dim=</code>, as <code>ForwardModel</code> does, and accepts an
+  <code>xr.Dataset</code> as well as labeled values.</li>
+  <li>A prediction's entries are <code>NaN</code> where its run failed, and in
+  every entry of a row out of the domain; <code>ForwardModel</code> keeps
+  its whole-row rule on top. <code>SIPNETSimulator</code> marks a source's
+  prediction valid at a sample in the domain whose every run at the
+  source's sites succeeded and whose prediction is finite.</li>
+  <li><code>SIPNETSimulator</code> runs SIPNET only at the sites its
+  observation vector observes, so a site no source observes costs nothing.
+  <code>at(coords, outputs)</code> takes the core's signature: it restricts
+  the vector to the sources of <em>outputs</em> at the sites their labels in
+  <em>coords</em> hold, refuses labels that are not the vector's
+  observations at those sites in its order, and refuses a site the vector
+  observes that <code>coords["site"]</code> lacks.
+  <code>SIPNETRuns.select(sites=)</code> is added for it.</li>
+  <li>A run plan (the partial spec, the per-run callable, the site segments)
+  is built once by <code>ForwardModel</code> and <code>SIPNETSimulator</code>
+  and per call by <code>SIPNETRuns.evaluate</code>. One pass reads the union
+  of every reduction's output variables, each checked finite, so a
+  non-finite value in any fails the run for all.</li>
+  <li>The corner points are the core's (<code>probability._probes.corner_points</code>
+  and <code>CORNERS</code>), which <code>ForwardModel</code>'s corner check
+  reads until R1.</li>
+</ul>
+<p>Three more seam fixes go in the same PR:</p>
+<ul>
+  <li><b>F7.</b> A calibrated initial state is declared by a factor, and an
+  external one is declared an input and bound at <code>bind</code>. Declaring
+  one name both ways is an error at <code>joint</code>, so no string list keeps
+  them apart.</li>
+  <li><b>F8.</b> A <code>ValueRequirement</code> may omit units and support,
+  which then default to the SIPNET spec's and are checked against the
+  <code>ArraySpec</code>. <code>Copy.same_names(names)</code> writes several
+  identical-name copies in one line. <i>As built in P4:</i> "the SIPNET
+  spec" is the spec of the SIPNET parameter the rule writes, which
+  <code>Compute</code> resolves when built (<code>ValueRequirement.resolved</code>);
+  an omitted field holds <code>FROM_SIPNET_SPEC</code> until then, and a map
+  refuses a rule that leaves one. A requirement that states its units and
+  omits its domain has none, as today, so
+  <code>ValueRequirement("degC")</code> keeps its meaning;
+  <code>ValueRequirement("degC", FROM_SIPNET_SPEC)</code> asks for the
+  SIPNET parameter's domain. F8 landed in P4,
+  with the map's fit check reading <code>ArraySpec</code>s; P5's
+  <code>check_given</code> calls it.</li>
+  <li><b>F9</b> needs no library change: a <code>Compute</code> rule can already
+  read fixed SIPNET parameters (<code>sipnet_parameter_names_read</code>), and the
+  experiment should use it.</li>
+</ul>
+<p><code>calibration.describe_calibration(posterior, sipnet_parameter_map)</code>
+replaces today's three-argument form.</p>
+</section>
+
+<section id="inference">
+<h2><span class="num">9</span>Inference adapters: <code>sipnet_calibration.inference</code></h2>
+<p>This package is generic like the core. It reads a <code>Posterior</code> and
+hands each algorithm what it takes, and it is the only place that imports an
+algorithm package. A second experiment uses it unchanged, which meets issue
+#63's condition for moving the adapters out of the experiment.</p>
+
+<h3>9.1 EnsKit</h3>
+<p>EnsKit's EKI driver, <code>enskit.algorithms.eki</code>, reads four things:</p>
+<ul>
+  <li>a forward map from the parameter blocks to <code>(J, N)</code>
+  predictions, with non-finite rows for failed samples: a simulator in the
+  sense of <code>enskit.maps.pushforward</code>, called once per step with
+  one <code>(J, d_b)</code> array per block, positionally;</li>
+  <li><var>y</var>;</li>
+  <li>the base noise covariance;</li>
+  <li>an initial ensemble, an unweighted <code>Ensemble</code> whose blocks
+  are the parameters, which an <code>EKIState</code> starts from.</li>
+</ul>
+<p>The ensemble has one block, <code>theta</code>, so the forward map takes
+theta <code>(J, D)</code> as its one argument (a state holding other blocks
+passes <code>inputs="theta"</code> to the driver). The covariance is already an
+<code>enskit.linalg</code> operator, so nothing is converted. Starting EKI
+needs no prior Gaussian: <code>EKIState.from_prior</code> takes one, and
+<code>initial_ensemble</code> replaces it with the prior's own draws. Issue
+#74 stays open only for <code>AdditiveInflation</code>, which needs the
+prior's covariance. The adapter imports EnsKit's <code>Ensemble</code> and
+nothing of its algorithms: the experiment imports the driver, the update
+rule and the schedule.</p>
+<pre><code class="language-python">class EKIProblem:
+    """What an EKI run reads, from a posterior whose likelihood is Gaussian.
+
+    Attributes
+    ----------
+    posterior : Posterior
+    likelihood : GaussianLikelihood
+    y : jax.Array
+        ``(N,)``.
+    noise_covariance : enskit.linalg.PSDLinOp
+        :math:`R`.
+    last_evaluation : PosteriorEvaluation or None
+        The last forward call's. In a run of EnsKit's driver, its last
+        step's: theta after any inflation, before any repair and the update.
+        A run that ends on one of EnsKit's schedules does not evaluate its
+        final ensemble, whose predictions are one more forward call, which
+        then replaces this.
+    """
+
+    def forward(self, theta: Array) -&gt; Array:
+        """``(J, D) -&gt; (J, N)``, ``NaN`` in an invalid sample: EnsKit's
+        simulator contract. Each call replaces ``last_evaluation``, so no
+        wrapper rebuilds the failure bookkeeping (F14)."""
+
+    def initial_ensemble(self, key: Array, n: int) -&gt; Ensemble:
+        """``n`` prior draws as an unweighted EnsKit ``Ensemble`` with one block,
+        ``theta``; ``n &gt;= 2``."""
+
+
+def eki_problem(posterior: Posterior) -&gt; EKIProblem:
+    """The EKI problem of *posterior*.
+
+    Raises
+    ------
+    ValueError
+        As :meth:`Posterior.gaussian_likelihood`; hold a noise
+        hyperparameter by observing it at a value first.
+    """</code></pre>
+<p>A run:</p>
+<pre><code class="language-python">from enskit import kalman
+from enskit.algorithms import eki
+
+problem = eki_problem(posterior)
+ensemble_key, run_key = jax.random.split(key)
+state = eki.EKIState(problem.initial_ensemble(ensemble_key, 100), key=run_key)
+result = eki.run(state, problem.forward, problem.y, problem.noise_covariance,
+                 update_rule=kalman.Matheron(), schedule=eki.AdaptiveESSSchedule(ess_fraction=0.5),
+                 on_failure="repair")
+problem.last_evaluation.valid                        # which samples of the last step ran
+posterior.to_labeled(result.ensemble["theta"])       # the final ensemble, labeled
+problem.forward(result.ensemble["theta"])            # its predictions: one more batch of
+                                                     # runs, replacing last_evaluation</code></pre>
+<p><i>As built in E2:</i> the section above, rewritten from the interim pyEKI
+text. <code>initial_ensemble</code> returns the <code>Ensemble</code>, where
+P7 returned theta <code>(n, D)</code>; nothing else in the adapter changed.
+<code>tests/test_package.py</code> checks that, of EnsKit, the
+<code>inference</code> package imports only <code>enskit.distribution</code>,
+and loads none of its algorithms.</p>
+
+<h3>9.2 SMC and importance sampling</h3>
+<pre><code class="language-python">class PriorBaseDensity:
+    """The posterior's prior as an ``smc.BaseDensity``: ``dimension``,
+    ``log_prob`` (normalized, of theta) and ``sample(rng, n)``, which draws a
+    JAX key from *rng*."""
+
+
+def tempering_problem(posterior: Posterior, *, base: smc.BaseDensity | None = None) -&gt; smc.TemperingProblem:
+    """``TemperingProblem(log_prior=posterior.log_prior, log_likelihood=...,
+    base=base or PriorBaseDensity(posterior))``.
+
+    The log likelihood returns an ``smc.LikelihoodEvaluation`` whose auxiliary
+    values are each sample's predictions. It is ``NaN`` where
+    ``simulator_valid`` is false, which ``smc`` counts as a failed run and
+    scores ``-inf``, and ``-inf`` where only the traced part failed. It is
+    normalized, as the evidence needs.
+    """</code></pre>
+
+<h3>9.3 Gradient-free MCMC</h3>
+<pre><code class="language-python">def batched_log_density(posterior: Posterior) -&gt; Callable[[np.ndarray], np.ndarray]:
+    """``(J, D) -&gt; (J,)``, ``-inf`` in an invalid sample, one simulator call
+    per batch. ``emcee``'s ``vectorize=True`` passes half the walkers per
+    call, so a step is two batches."""
+
+
+def log_density(posterior: Posterior) -&gt; Callable[[np.ndarray], float]:
+    """``(D,) -&gt; float``, for samplers that evaluate one point at a time."""
+
+
+def initial_points(posterior: Posterior, key: Array, n: int, *,
+                   max_draws: int | None = None) -&gt; tuple[np.ndarray, PosteriorEvaluation]:
+    """``n`` prior draws at which the posterior is finite, and their
+    evaluation, to start walkers where SIPNET runs (issue #63).
+
+    Raises
+    ------
+    RuntimeError
+        If fewer than ``n`` of ``max_draws`` (default ``4 n``) are valid.
+    """</code></pre>
+<p><i>As built in P7:</i></p>
+<ul>
+  <li>The package is three modules, <code>inference.eki</code>,
+  <code>inference.tempering</code> and <code>inference.mcmc</code>, re-exported
+  by <code>inference/__init__</code>. It imports <code>probability</code>,
+  <code>smc</code> and <code>validation</code> only, which
+  <code>tests/test_package.py</code> checks. It imports no algorithm package,
+  where the introduction above has it the one place that does: each adapter
+  returns plain functions, arrays and operators, and pyEKI's driver, like
+  emcee, is the experiment's import.</li>
+  <li><code>EKIProblem.initial_ensemble(key, n)</code> returns theta
+  <code>(n, D)</code>, the array pyEKI's <code>EKIState</code> took, until
+  EnsKit's <code>Ensemble</code> (E2, §9.1). <code>EKIProblem</code> also holds
+  <code>posterior</code> and <code>likelihood</code>, the
+  <code>GaussianLikelihood</code> it reads; <code>forward</code> is a method,
+  and <code>initial_ensemble</code> refuses fewer than two members.</li>
+  <li>The tempering log likelihood carries the predictions as auxiliary values
+  only when the likelihood is Gaussian, the one case with a defined
+  <i>G</i>(θ); otherwise it returns the log likelihood alone.</li>
+  <li><code>PriorBaseDensity.sample</code> seeds its JAX key with one integer
+  drawn from <i>rng</i>.</li>
+  <li><code>batched_log_density</code> refuses a <code>(D,)</code> theta and
+  <code>log_density</code> a batch, each naming the other.</li>
+  <li><code>initial_points</code> evaluates the draws in order, in batches the
+  size of the shortfall, so it runs no more samples than it needs and its
+  choice does not depend on the batches. A draw is kept where it is valid and
+  its log density finite. The evaluation it returns holds, per simulator, a
+  tuple of every batch's record.</li>
+</ul>
+
+<h3>9.4 Gradients</h3>
+<p>Everything but a simulator is traced JAX. <code>log_prior</code> has exact
+gradients. <code>log_density_given</code> has exact gradients in the entries of
+theta no simulator depends on, given a simulator evaluation: noise and GP hyperparameters, and
+coefficients that only enter priors. That serves HMC within Gibbs for the
+hyperparameter block, and maximum a posteriori fitting of discrepancy
+hyperparameters, as PR #69 does by hand by type-II maximum likelihood. Gradients through SIPNET would need a
+differentiable simulator. Its extension is one optional method on
+<code>Simulator</code>, not written until such a simulator exists.</p>
+</section>
+<section id="examples">
+<h2><span class="num">10</span>Worked examples</h2>
+<p>Each example is the code an experiment's <code>config.py</code> or
+<code>model/</code> modules would hold. The data loading uses today's loaders,
+or PR #69's own readers where marked. A placeholder value says so in its
+provenance.</p>
+
+<h3 id="ex1">10.1 A noise model block-diagonal by source and site</h3>
+<p>Four sources at four AmeriFlux tower sites:</p>
+<ul>
+  <li><b>NEE</b>, night-centered window means: a dense block per site,
+  correlated in time;</li>
+  <li><b>MODIS LAI</b>: a dense block per site, correlated within each
+  summer;</li>
+  <li><b>LandTrendr biomass</b> over 2012-2017: a dense block per site, with
+  errors shared across years;</li>
+  <li><b>SoilGrids carbon</b>, one value per site: diagonal.</li>
+</ul>
+<p>The block functions and their values are PR #69's (<code>model/noise.py</code>,
+<code>config.py</code>). What goes away is everything around them: the Flat
+positions, the contiguity assertions, the name-string dispatch, the re-read
+standard deviations, and the restriction to one site (F11).</p>
+<pre><code class="language-python">import jax.numpy as jnp
+
+from sipnet_calibration.constraints import constraint_fields, constraint_standard_deviations
+from sipnet_calibration.observation import DEFAULT_OBS_OPS, ObservationSource, ObservationVector, ReduceOverRun
+from sipnet_calibration.observation.model import noise_factor
+from sipnet_calibration.probability import BlockDiagonalSpec, DenseSpec, DiagonalSpec
+
+from .operators import AverageRateOverWindows, ComputeAbovegroundBiomass   # PR #69's operators
+
+#: Seconds in a day: constants are in seconds, timescales in days.
+DAY = 86_400.0
+#: US-Ho1, US-Bar, US-Ha1 and US-MMS, from the NEE tower table.
+SITES = [4480, 4705, 4977, 5529]
+#: The carbon fraction LandTrendr's dry biomass is compared at (PR #69's).
+WOOD_CARBON_FRACTION = 0.48
+
+constraints = ["modis_leaf_area_index", "soilgrids_soil_organic_carbon"]
+observed = constraint_fields(constraints, sites=SITES)
+standard_deviations = constraint_standard_deviations(constraints, sites=SITES)
+#: PR #69's readers, generalized to several sites: NEE window means and their
+#: standard deviations; LandTrendr as dry biomass, cut to 2012-2017.
+nee_night, nee_night_standard_deviation = observed_nee_windows("nee_night_centered", sites=SITES)
+biomass, biomass_standard_deviation = observed_aboveground_biomass(sites=SITES)
+
+observation_vector = ObservationVector(observation_sources=[
+    ObservationSource(
+        observation_source_name="nee_night_centered",
+        observed_values=nee_night, standard_deviation=nee_night_standard_deviation,
+        operator=AverageRateOverWindows("net_ecosystem_exchange"),
+    ),
+    ObservationSource(
+        observation_source_name="modis_leaf_area_index",
+        observed_values=observed["modis_leaf_area_index"],
+        standard_deviation=standard_deviations["modis_leaf_area_index"],
+        operator=DEFAULT_OBS_OPS["modis_leaf_area_index"],
+    ),
+    ObservationSource(
+        observation_source_name="landtrendr_aboveground_biomass",
+        observed_values=biomass, standard_deviation=biomass_standard_deviation,
+        operator=ComputeAbovegroundBiomass(WOOD_CARBON_FRACTION),
+    ),
+    ObservationSource(
+        observation_source_name="soilgrids_soil_organic_carbon",
+        observed_values=observed["soilgrids_soil_organic_carbon"],
+        standard_deviation=standard_deviations["soilgrids_soil_organic_carbon"],
+        operator=ReduceOverRun("soil_carbon", how="mean"),
+    ),
+])
+
+
+def nee_night_block(time_since_epoch, standard_deviation):
+    """One site's night NEE: measurement error, plus discrepancy at two timescales."""
+    lag = jnp.abs(time_since_epoch[:, None] - time_since_epoch[None, :]) / DAY
+    discrepancy = 0.603**2 * jnp.exp(-lag / 0.74) + 1.20**2 * jnp.exp(-lag / 57.2)
+    return jnp.diag(standard_deviation**2) + discrepancy
+
+
+def leaf_area_index_block(time_since_epoch, calendar_year, standard_deviation):
+    """One site's LAI: the floored measurement error, plus discrepancy within each summer."""
+    lag = jnp.abs(time_since_epoch[:, None] - time_since_epoch[None, :]) / DAY
+    same_summer = calendar_year[:, None] == calendar_year[None, :]
+    floored = jnp.maximum(standard_deviation, 0.66)
+    return jnp.diag(floored**2) + 0.5**2 * jnp.exp(-lag / 30.0) * same_summer
+
+
+def landtrendr_block(standard_deviation, observed):
+    """One site's biomass: LandTrendr's and the carbon fraction's errors, each
+    shared by every year, plus independent discrepancy."""
+    relative = 0.02 / WOOD_CARBON_FRACTION
+    return (jnp.outer(standard_deviation, standard_deviation)
+            + relative**2 * jnp.outer(observed, observed)
+            + 5.0**2 * jnp.eye(observed.shape[0]))
+
+
+def soil_carbon_variance(standard_deviation, observed):
+    """SoilGrids' error, plus discrepancy proportional to the stock."""
+    return standard_deviation**2 + (0.25 * observed)**2
+
+
+noise_specs = [
+    noise_factor(
+        observation_vector, "nee_night_centered",
+        covariance=BlockDiagonalSpec(DenseSpec(nee_night_block), by="site"),
+        provenance="AmeriFlux RANDUNC and JOINTUNC per window; discrepancy by type-II maximum "
+                   "likelihood on 2012-2020 residuals (fit_nee_discrepancy).",
+    ),
+    noise_factor(
+        observation_vector, "modis_leaf_area_index",
+        covariance=BlockDiagonalSpec(DenseSpec(leaf_area_index_block), by="site"),
+        provenance="MCD15A3H LAI_StdDev floored at 0.66; discrepancy 0.5, 30 d, within a summer (reasoned).",
+    ),
+    noise_factor(
+        observation_vector, "landtrendr_aboveground_biomass",
+        covariance=BlockDiagonalSpec(DenseSpec(landtrendr_block), by="site"),
+        provenance="LandTrendr's reported error; carbon fraction 0.48 +/- 0.02; discrepancy 5 Mg ha-1 (reasoned).",
+    ),
+    noise_factor(
+        observation_vector, "soilgrids_soil_organic_carbon",
+        covariance=DiagonalSpec(soil_carbon_variance),
+        provenance="SoilGrids' reported error plus 25% of the stock (reasoned).",
+    ),
+]</code></pre>
+<p>Bound and conditioned (§10.2 has the rest), the structure is visible.
+Nothing builds a dense <var>N</var> × <var>N</var> matrix:</p>
+<pre><code class="language-python">model = joint(*noise_specs, forward_model, *prior_specs(), inputs=initial_state_specs).bind(
+    coords={"site": SITES, **observation_vector.coords}, inputs=initial_states)
+prediction = observation_vector.prediction_name("modis_leaf_area_index")
+model.law("modis_leaf_area_index", given={prediction: m})
+# enskit Gaussian, one block: mean m, independent term PSDBlockDiag(DensePSD per site)
+
+posterior.gaussian_likelihood().noise_covariance
+# PSDBlockDiag(                                          one block per source, in y's order
+#   PSDBlockDiag(DensePSD, DensePSD, DensePSD, DensePSD), NEE, per site
+#   PSDBlockDiag(DensePSD, ...),                          LAI, per site
+#   PSDBlockDiag(DensePSD, ...),                          biomass, 6 x 6 per site
+#   PSDDiagonal)                                          soil carbon, 4 entries
+posterior.observations.positions(component=["modis_leaf_area_index"], site=[4977])   # one block's entries</code></pre>
+<p>Two variations:</p>
+<ul>
+  <li><b>Errors correlated across sites</b> (a regional product):
+  <code>DenseSpec(...)</code> without the <code>BlockDiagonalSpec</code>, reading
+  location constants.</li>
+  <li><b>Two sources with correlated errors:</b> one factor over both,
+  <code>noise_factor(observation_vector, ["a", "b"], ...)</code>.</li>
+</ul>
+
+<h3 id="ex2">10.2 The prior of <code>feat/single-site-mcmc-vs-eki</code></h3>
+<p>This is the experiment's thirteen-parameter prior (D = 15) at Harvard Forest,
+transcribed from <code>model/prior.py</code> at <code>7949640</code>. A
+<code>Parameter</code> and its <code>PriorTerm</code> become one
+<code>FactorSpec</code>, so each parameter's units, support and prior sit in one
+place. Theta's order and every prior draw are bit-identical to today's: theta
+follows declaration order, and each factor draws with
+<code>fold_in(key, crc32(name))</code>, as each term does now.</p>
+<pre><code class="language-python">import jax.numpy as jnp
+import numpy as np
+from tensorflow_probability.substrates import jax as tfp
+
+from sipnet_calibration.probability import (
+    OPEN_UNIT_INTERVAL, POSITIVE, SIMPLEX, ArraySpec, FactorSpec,
+    log_normal_from_interval, log_normal_from_samples, logit_normal_from_interval, softmax_normal,
+)
+
+ALLOCATION_PART = "allocation_part"
+ALLOCATION_PARTS = ("leaf", "wood", "fine_root", "coarse_root")
+# PROVENANCE: the experiment's provenance strings, unchanged.
+
+
+def prior_specs() -&gt; list[FactorSpec]:
+    """The thirteen latent factors; the allocation simplex has four parts."""
+    members = {
+        name: np.asarray(field).ravel().astype(float)
+        for name, field in inputs.initial_condition_fields().items()
+        if name in ("initial_wood_carbon", "initial_soil_organic_carbon")
+    }
+
+    def prior_factor(event, law):
+        return FactorSpec(event, law=law, provenance=PROVENANCE[event.name])
+
+    return [
+        prior_factor(ArraySpec("photosynthetic_capacity", units="nmol g-1 s-1", support=POSITIVE),
+                     log_normal_from_interval(lower=140.0, upper=450.0)),
+        prior_factor(ArraySpec("respiration_share", units="1", support=OPEN_UNIT_INTERVAL),
+                     logit_normal_from_interval(lower=0.04, upper=0.20)),
+        prior_factor(ArraySpec("optimum_photosynthesis_temperature", units="degC"),
+                     tfp.distributions.Normal(jnp.float64(22.0), jnp.float64(2.5))),
+        prior_factor(ArraySpec("half_saturation_light", units="mol m-2 d-1", support=POSITIVE),
+                     log_normal_from_interval(lower=4.6, upper=26.3)),
+        prior_factor(ArraySpec("soil_water_holding_capacity", units="cm", support=POSITIVE),
+                     log_normal_from_interval(lower=15.0, upper=150.0)),
+        prior_factor(ArraySpec("leaf_on_growth", units="g m-2", support=POSITIVE),
+                     log_normal_from_interval(lower=50.0, upper=180.0)),
+        prior_factor(ArraySpec("leaf_on_growing_degree_days", units="K d", support=POSITIVE),
+                     log_normal_from_interval(lower=500.0, upper=1100.0)),
+        prior_factor(ArraySpec("allocation", units="1", support=SIMPLEX,
+                               element_axes={ALLOCATION_PART: ALLOCATION_PARTS}),
+                     softmax_normal(center=jnp.array([0.18, 0.45, 0.065, 0.305]),
+                                    logit_sd=jnp.array([0.25, 0.30, 0.30]))),
+        prior_factor(ArraySpec("wood_respiration_rate_at_10c", units="yr-1", support=POSITIVE),
+                     log_normal_from_interval(lower=0.006, upper=0.04)),
+        prior_factor(ArraySpec("soil_respiration_flux_at_10c", units="g m-2 yr-1", support=POSITIVE),
+                     log_normal_from_interval(lower=200.0, upper=900.0)),
+        prior_factor(ArraySpec("soil_respiration_q10", units="1", support=POSITIVE),
+                     log_normal_from_interval(lower=1.3, upper=3.2)),
+        prior_factor(ArraySpec("initial_wood_carbon", units="kg m-2", support=POSITIVE),
+                     log_normal_from_samples(members["initial_wood_carbon"])),
+        prior_factor(ArraySpec("initial_soil_organic_carbon", units="kg m-2", support=POSITIVE),
+                     log_normal_from_samples(members["initial_soil_organic_carbon"])),
+    ]</code></pre>
+<p>The whole model then fits in one function. PR #69's <code>InverseProblem</code>
+held eight objects; the experiment holds one <code>Posterior</code>. The
+parameters are indexed by nothing, so the only coords are the observation
+dims. The names are the experiment's: <code>sipnet_parameter_map()</code> is
+today's private <code>_sipnet_parameter_map()</code>, and
+<code>noise.noise_specs</code> is §10.1's at one site.</p>
+<pre><code class="language-python">from pyens import LocalBackend
+from sipnet_calibration.forward import SIPNETRuns, SIPNETSimulator
+from sipnet_calibration.probability import (
+    NON_NEGATIVE, UNIT_INTERVAL, ArraySpec, Posterior, condition_on, joint,
+)
+
+
+def calibration_posterior() -&gt; Posterior:
+    """The calibration's posterior at the configured site."""
+    observation_vector = observations.calibration_observation_vector()
+    runs = SIPNETRuns(
+        sipnet.sipnet_model(), sipnet_parameter_map=sipnet_parameter_map(), site_dims=site_dims(),
+        climate={config.SITE: sipnet.climate_drivers()}, backend=LocalBackend(3),
+        out_of_domain="fail_row",
+    )
+    model_spec = joint(
+        *noise.noise_specs(observation_vector),
+        SIPNETSimulator(runs, observation_vector=observation_vector),
+        *prior_specs(),
+        inputs=[ArraySpec("initial_leaf_carbon", units="g m-2", support=NON_NEGATIVE, indexed_by=("site",)),
+                ArraySpec("initial_soil_moisture_saturation", units="1", support=UNIT_INTERVAL,
+                          indexed_by=("site",))],
+    )
+    initial_state = sipnet.initial_state()                  # medians on site
+    model = model_spec.bind(
+        coords={"site": [config.SITE], **observation_vector.coords},
+        inputs={name: initial_state[name] for name in EXTERNAL_STATE_NAMES},
+    )
+    return condition_on(model, observation_vector.observed_values_by_component())
+
+
+posterior = calibration_posterior()
+posterior.dimension                       # 15
+posterior.describe()                      # every component and input, and its role</code></pre>
+<p>What each algorithm reads from it:</p>
+<pre><code class="language-python">import emcee                                               # not yet a dependency
+import jax
+import numpy as np
+from enskit.algorithms import eki
+from enskit.kalman import Matheron
+
+from sipnet_calibration import io, smc
+from sipnet_calibration.inference import batched_log_density, eki_problem, initial_points, tempering_problem
+from sipnet_calibration.probability import encode_labeled_values
+
+ensemble_key, run_key, walker_key = jax.random.split(jax.random.key(config.EKI_SEED), 3)
+
+# EKI: replaces prior_gaussian, _RecordingForward and the y and R plumbing
+problem = eki_problem(posterior)
+state = eki.EKIState(problem.initial_ensemble(ensemble_key, 100), key=run_key)
+result = eki.run(state, problem.forward, problem.y, problem.noise_covariance,
+                 update_rule=Matheron(), schedule=eki.AdaptiveESSSchedule(ess_fraction=0.5),
+                 on_failure="repair")
+problem.last_evaluation.valid             # which samples of the last evaluated ensemble ran
+
+# SMC from a Student-t fitted to the final EKI ensemble
+base = smc.fit_student_t(np.asarray(result.ensemble["theta"]), degrees_of_freedom=5.0)
+tempering = tempering_problem(posterior, base=base)
+for smc_state in smc.run_smc(tempering, smc.initial_state(tempering, smc.SMCSettings(n_samples=400, seed=1))):
+    ...
+
+# emcee, vectorized, with at least 2 D walkers, started where SIPNET runs
+n_walkers = 2 * posterior.dimension
+start, _ = initial_points(posterior, walker_key, n_walkers)
+sampler = emcee.EnsembleSampler(n_walkers, posterior.dimension, batched_log_density(posterior), vectorize=True)
+
+# Labeled draws, theta included, saved once (F2, F3)
+labeled = encode_labeled_values(posterior.to_labeled(result.ensemble["theta"]))
+io.write_checked(OUTPUT / "eki_final.nc", labeled.to_netcdf, check=...)</code></pre>
+<div class="note"><b class="tag">Parity</b><p>PR A's migration test is this
+example's prior. <code>posterior.sample_prior(key, n)</code> must equal today's
+<code>prior.sample(key, n)</code> bit for bit, and
+<code>posterior.log_prior(theta)</code> must equal <code>prior.log_prob(theta)</code>,
+both against reference values written from today's code first.</p>
+<p>One thing changes. Today's EKI draws its initial ensemble from the hand-built
+<code>prior_gaussian</code>; the new one draws from the prior itself. For this
+prior, which is Gaussian in theta, that is the same distribution but a different
+random stream, so the same seed gives a different starting ensemble.</p></div>
+
+<h3 id="ex3">10.3 A covariate-dependent log-Gaussian field, a global parameter, and a per-site parameter</h3>
+<p>Three parameters over 200 sites:</p>
+<ul>
+  <li><code>photosynthetic_capacity</code>, log-Gaussian over sites, its mean
+  linear in two site covariates, whose intercept and slopes are themselves
+  parameters. It is shown three ways: independent sites, a Gaussian process
+  from GPJax, and a non-centered form written with the decorators.</li>
+  <li><code>soil_respiration_q10</code>, one value for every site.</li>
+  <li><code>initial_soil_organic_carbon</code>, independent per site, each with
+  its own median.</li>
+</ul>
+<p>No site covariate is ingested yet: <code>data/raw/covariates/</code> holds
+<code>MAT</code> and <code>MAP</code> keyed on <code>index</code>, with no
+loader. <code>with_site_covariates</code> is the helper an experiment would
+write until one exists. It joins them onto the pool's site table and
+standardizes each over the whole pool, once, before selection.</p>
+<pre><code class="language-python">import jax.numpy as jnp
+import pandas as pd
+import xarray as xr
+from tensorflow_probability.substrates import jax as tfp
+
+from sipnet_calibration.probability import (
+    POSITIVE, ArraySpec, FactorSpec, independent_over_dim, joint,
+    log_normal, log_normal_from_interval, normal, pushforward,
+)
+from sipnet_calibration.site_dims import SiteDims
+from sipnet_calibration.sites import EXTENTS, load_sites, select_sites
+
+tfd = tfp.distributions
+COVARIATE_NAMES = ("mean_annual_temperature", "mean_annual_precipitation")
+
+pool = with_site_covariates(load_sites(), {"MAT": "mean_annual_temperature", "MAP": "mean_annual_precipitation"})
+site_dims = SiteDims(site_table=select_sites(pool, bbox=EXTENTS["CONUS"], n_random=200, seed=1),
+                     covariate_names=COVARIATE_NAMES)
+#: (covariate, site), standardized over the pool.
+covariates = xr.concat([site_dims.covariate(name) for name in COVARIATE_NAMES],
+                       dim=pd.Index(COVARIATE_NAMES, name="covariate"))
+#: On site: each site's median over the initial-condition ensemble.
+soil_carbon_median = initial_condition_medians["initial_soil_organic_carbon"]
+
+
+def log_capacity_field(log_capacity_intercept, log_capacity_slopes, covariates):
+    """log P_s ~ N(beta_0 + w_s . beta, 0.4^2), independently over sites."""
+    log_median = log_capacity_intercept + covariates @ log_capacity_slopes      # (S, 2) @ (2,)
+    field = tfd.Independent(tfd.Normal(log_median, 0.4), reinterpreted_batch_ndims=1)
+    return pushforward(field, support=POSITIVE)                                   # evaluated by base density
+
+
+specs = [
+    FactorSpec(ArraySpec("log_capacity_intercept", units="1"),
+               law=normal(mean=jnp.log(250.0), standard_deviation=0.5),
+               provenance="Placeholder: 250 nmol g-1 s-1, a factor of 1.65 either way at 1 sd."),
+    FactorSpec(ArraySpec("log_capacity_slopes", units="1", element_axes={"covariate": COVARIATE_NAMES}),
+               law=tfd.Independent(tfd.Normal(jnp.zeros(2), 0.3), reinterpreted_batch_ndims=1),
+               provenance="Placeholder: a slope 1 sd from zero moves the median 35% per sd of its covariate."),
+    FactorSpec(ArraySpec("photosynthetic_capacity", units="nmol g-1 s-1", support=POSITIVE, indexed_by=("site",)),
+               law=log_capacity_field, constants={"covariates": covariates},
+               provenance="A log-linear regression on the site covariates (placeholder spread)."),
+    FactorSpec(ArraySpec("soil_respiration_q10", units="1", support=POSITIVE),
+               law=log_normal_from_interval(lower=1.3, upper=3.2),
+               provenance="Mahecha et al. 2010, Science 329:838; interval 1.3-3.2."),
+    FactorSpec(ArraySpec("initial_soil_organic_carbon", units="kg m-2", support=POSITIVE, indexed_by=("site",)),
+               law=independent_over_dim(log_normal, geometric_sd=2.0),
+               constants={"median": soil_carbon_median},
+               provenance="Each site's initial-condition ensemble median; geometric sd 2 (reasoned)."),
+]
+prior = joint(*specs).bind(coords=site_dims.coords)</code></pre>
+<p><code>covariates</code> is on <code>(covariate, site)</code>. Following §7.3, it
+arrives as <code>(S, 2)</code>: first the event's <code>indexed_by</code> dim,
+<code>site</code>, then its remaining dim, <code>covariate</code>, an element axis
+of the given slopes. So <code>covariates @ log_capacity_slopes</code> is the mean
+at each site.</p>
+<h4>With a Gaussian process from GPJax</h4>
+<p>Only the law changes. GPJax builds the Gaussian, and the core reads it through
+the numpyro adapter. The pushforward is evaluated by the base density, so
+theta's coordinates are the log field itself. The GPJax names were checked
+against GPJax 1.0's source.</p>
+<pre><code class="language-python">import gpjax as gpx
+import lineax as lx
+from gpjax.distributions import GaussianDistribution
+
+#: (site, coordinate): LAEA x and y in meters, from projection.SITE_PROJECTION.forward(lon, lat).
+site_locations = projected_site_locations(site_dims)
+
+
+def log_capacity_process(log_capacity_intercept, log_capacity_slopes, covariates, site_locations):
+    """log P ~ GP(beta_0 + w . beta, Matern-3/2, 200 km length scale, 0.4 sd)."""
+    mean = log_capacity_intercept + covariates @ log_capacity_slopes
+    kernel = gpx.kernels.Matern32(lengthscale=200e3, variance=0.4**2)
+    gram = kernel.gram(site_locations).as_matrix() + 1e-6 * jnp.eye(mean.shape[0])
+    field = GaussianDistribution(loc=mean, scale=lx.MatrixLinearOperator(gram, lx.positive_semidefinite_tag))
+    return pushforward(field, support=POSITIVE)
+
+
+capacity = FactorSpec(
+    ArraySpec("photosynthetic_capacity", units="nmol g-1 s-1", support=POSITIVE, indexed_by=("site",)),
+    law=log_capacity_process,
+    constants={"covariates": covariates, "site_locations": site_locations},
+    provenance="A log-Gaussian process about the regression; kernel fixed (placeholder).",
+)</code></pre>
+<p><code>site_locations</code>'s <code>coordinate</code> dim is the constant's own,
+passed whole. The same law in TFP alone needs no adapter: a
+<code>tfd.MultivariateNormalTriL</code> scaled by the Cholesky factor of a
+<code>tfp.math.psd_kernels.MaternThreeHalves</code> matrix.</p>
+<h4>Non-centered, with the decorators</h4>
+<p>The field is a deterministic function of standard normals, which often mixes
+better:</p>
+<pre><code class="language-python">from sipnet_calibration.probability import deterministic, iid_over_dim
+
+capacity_innovation = FactorSpec(
+    ArraySpec("capacity_innovation", units="1", indexed_by=("site",)),
+    law=iid_over_dim(normal(mean=0.0, standard_deviation=1.0)),
+    provenance="Standard normal innovations of the non-centered field.",
+)
+
+
+@deterministic(ArraySpec("photosynthetic_capacity", units="nmol g-1 s-1", support=POSITIVE, indexed_by=("site",)),
+               constants={"covariates": covariates})
+def photosynthetic_capacity(log_capacity_intercept, log_capacity_slopes, capacity_innovation, covariates):
+    return jnp.exp(log_capacity_intercept + covariates @ log_capacity_slopes + 0.4 * capacity_innovation)</code></pre>
+<p><code>photosynthetic_capacity</code> is then a computed component, not a
+parameter. The SIPNET map reads it by name either way.</p>
+
+<h3 id="ex4">10.4 Inverse gamma and inverse Wishart hyperpriors on blocks of the noise covariance</h3>
+<p>Two hyperparameters of §10.1's noise model become parameters:</p>
+<ul>
+  <li><b>LAI:</b> each site's block, measurement error and discrepancy alike,
+  is scaled by an inflation with an inverse gamma prior of mean 1.</li>
+  <li><b>LandTrendr biomass:</b> the error covariance over 2012-2017 gets an
+  inverse Wishart prior, shared by every site. Each site's block is its rows
+  and columns at the years it observes.</li>
+</ul>
+<pre><code class="language-python"># From 10.1 and 10.2: observation_vector, SITES, leaf_area_index_block,
+# nee_night_spec and soil_carbon_spec (two of the noise specs), forward_model,
+# prior_specs, and the initial states' specs and values.
+from sipnet_calibration.probability import (
+    POSITIVE, POSITIVE_DEFINITE, ArraySpec, BlockDiagonalSpec, DenseSpec, FactorSpec,
+    ScaledSpec, SubmatrixSpec, condition_on, iid_over_dim, inverse_gamma, inverse_wishart, joint,
+)
+
+YEARS = tuple(str(year) for year in range(2012, 2018))
+#: A prior guess at the biomass error covariance: sd 8 Mg ha-1, correlation 0.6.
+BIOMASS_ERROR_GUESS = 8.0**2 * (0.4 * jnp.eye(6) + 0.6 * jnp.ones((6, 6)))
+BIOMASS_DEGREES_OF_FREEDOM = len(YEARS) + 4                  # nu = p + 4: a mean, weakly held
+
+hyperprior_specs = [
+    FactorSpec(ArraySpec("leaf_area_index_error_scale", units="1", support=POSITIVE, indexed_by=("site",)),
+               law=iid_over_dim(inverse_gamma(shape=3.0, scale=2.0)),
+               provenance="Placeholder: an inflation of the LAI error, mean 1, shape 3."),
+    FactorSpec(ArraySpec("biomass_error_covariance", units="Mg2 ha-2", support=POSITIVE_DEFINITE,
+                         element_axes={"year": YEARS, "other_year": YEARS}),
+               law=inverse_wishart(degrees_of_freedom=BIOMASS_DEGREES_OF_FREEDOM,
+                                   scale=(BIOMASS_DEGREES_OF_FREEDOM - len(YEARS) - 1) * BIOMASS_ERROR_GUESS),
+               provenance="Placeholder: mean BIOMASS_ERROR_GUESS, nu = p + 4."),
+]
+leaf_area_index_spec = noise_factor(
+    observation_vector, "modis_leaf_area_index",
+    covariance=BlockDiagonalSpec(ScaledSpec(DenseSpec(leaf_area_index_block), scale="leaf_area_index_error_scale"),
+                                 by="site"),
+    provenance="PR #69's LAI block, inflated per site.",
+)
+biomass_spec = noise_factor(
+    observation_vector, "landtrendr_aboveground_biomass",
+    covariance=BlockDiagonalSpec(SubmatrixSpec("biomass_error_covariance", label_map="year"), by="site"),
+    label_maps={"year": observation_vector.year_label_map("landtrendr_aboveground_biomass")},
+    provenance="An inverse-Wishart covariance over the years, shared by the sites.",
+)
+model = joint(leaf_area_index_spec, biomass_spec, nee_night_spec, soil_carbon_spec, forward_model,
+              *prior_specs(), *hyperprior_specs, inputs=initial_state_specs,
+              ).bind(coords={"site": SITES, **observation_vector.coords}, inputs=initial_states)
+observed = observation_vector.observed_values_by_component()</code></pre>
+<p>Inside the LAI block, <code>leaf_area_index_error_scale</code> is indexed by
+<code>site</code>, the grouping level, so each site's block reads its own scale.
+Its base reads no parameter, as R1 requires; the biomass block is the bare
+submatrix, as R2 requires. The model admits four treatments:</p>
+<div class="grid2">
+<div class="card"><h4>(a) Joint sampling</h4>
+<pre><code class="language-python">posterior = condition_on(model, observed)
+# theta gains 4 log-scales and the
+# 21 Cholesky coordinates of the 6 x 6
+posterior.gaussian_likelihood()
+# ValueError: the covariance of
+# 'modis_leaf_area_index' reads the parameter
+# 'leaf_area_index_error_scale'; observe it at a
+# value to hold it for EKI</code></pre>
+<p>This always applies, ragged records included.</p></div>
+<div class="card"><h4>(b) Marginalized analytically</h4>
+<pre><code class="language-python">marginal = model.marginalize(["leaf_area_index_error_scale"])
+# the LAI factor: Student-t per site (R1)
+model.marginalize(["biomass_error_covariance"])
+# closed form when every site observes the same
+# years, as all four do here (R2); otherwise a
+# ValueError saying which sites differ</code></pre>
+<p>Integrated out, a hyperparameter leaves theta.</p></div>
+<div class="card"><h4>(c) Gibbs steps</h4>
+<pre><code class="language-python">scales = posterior.full_conditional("leaf_area_index_error_scale")
+evaluation = posterior.evaluate(theta)        # one SIPNET batch
+draw = scales.sample(key, evaluation)         # IG(a + n_s/2, b + q_s/2)
+theta = posterior.theta_with(theta, {"leaf_area_index_error_scale": draw})</code></pre>
+<p>The exact draw needs no new run; the residuals come from the last
+evaluation.</p></div>
+<div class="card"><h4>(d) Held at a value, for EKI</h4>
+<pre><code class="language-python">held = condition_on(model, {
+    **observed,
+    "leaf_area_index_error_scale": jnp.ones(len(SITES)),
+    "biomass_error_covariance": BIOMASS_ERROR_GUESS,
+})
+held.constant_names    # the two hyperparameters
+problem = eki_problem(held)</code></pre>
+<p>Both kernels read nothing, so both land in \(O_c\): the posterior is the
+model's at that point, and EKI's y and R exclude them. This is how an EKI run
+and an MCMC run of one model are compared.</p></div>
+</div>
+</section>
+<section id="migration">
+<h2><span class="num">11</span>Migration</h2>
+<div class="table-wrap"><table>
+<thead><tr><th>Today</th><th>Proposed</th></tr></thead>
+<tbody>
+<tr><td><code>Parameter(name=, support=, units=, shape=, element_labels=, indexed_by=, bijector=, long_name=)</code></td><td><code>ArraySpec(name, units=, support=, indexed_by=, element_axes=, bijector=)</code>; <code>long_name</code> to the plotting registry</td></tr>
+<tr><td><code>PriorTerm(parameter_names=, distribution=, given=, constants=, provenance=)</code></td><td><code>FactorSpec(ArraySpec(...), law=, constants=, provenance=)</code>, or <code>@factor</code>; <code>given</code> inferred from the law's keywords</td></tr>
+<tr><td><code>DerivedParameter(..., given=, function=, memberships=)</code></td><td><code>DeterministicSpec(ArraySpec(...), function=, label_maps=)</code>, or <code>@deterministic</code></td></tr>
+<tr><td><code>ParameterVector(parameters=, coords=, order=)</code>, <code>DerivedParameters</code>, <code>Prior</code></td><td><code>joint(*specs).bind(coords=)</code>; the layout is <code>posterior.parameters</code></td></tr>
+<tr><td><code>prior.sample(key, n)</code>, <code>prior.log_prob(theta)</code></td><td><code>posterior.sample_prior(key, n)</code>, <code>posterior.log_prior(theta)</code>, bit-identical</td></tr>
+<tr><td><code>prior.select(site=...)</code></td><td><code>model.select(site=...)</code>, which binds again</td></tr>
+<tr><td><code>ForwardModel(model, vector, map, site_dims=, derived_parameters=, climate=, backend=, external_inputs=, observation_vector=)</code></td><td><code>SIPNETSimulator(SIPNETRuns(sipnet_model, sipnet_parameter_map=, site_dims=, climate=, backend=), observation_vector=)</code>; external inputs declared in <code>joint(..., inputs=)</code> and bound by <code>bind(..., inputs=)</code>. Today's <code>ForwardModel</code> stays, delegating to <code>SIPNETRuns</code>, until PR #69 migrates.</td></tr>
+<tr><td><code>forward(theta)</code></td><td><code>posterior.gaussian_likelihood().forward(theta)</code></td></tr>
+<tr><td><code>observation_vector.y</code>, <code>.index</code>, <code>.positions</code>, <code>.flat</code>, <code>.fields</code></td><td><code>posterior.y</code>, <code>posterior.observations</code>, <code>observation_vector.to_fields</code></td></tr>
+<tr><td>the experiment's <code>noise_covariance</code>, <code>prior_gaussian</code>, <code>natural_table</code></td><td><code>noise_factor(observation_vector, ...)</code>; <code>problem.initial_ensemble</code>; <code>posterior.to_labeled</code></td></tr>
+<tr><td><code>describe_calibration(vector, prior, map)</code></td><td><code>describe_calibration(posterior, map)</code></td></tr>
+<tr><td><code>ValuesByParameter</code>, <code>ParameterDataset</code> (a Dataset) and their validators</td><td><code>ValuesByName</code>, <code>LabeledValues</code> (a dict of DataArrays) and theirs</td></tr>
+</tbody></table></div>
+</section>
+
+<section id="plan">
+<h2><span class="num">12</span>PR plan</h2>
+<p>Every PR is <b>additive</b>: the new layer and the new adapters are built
+beside today's, so <code>main</code> stays green and PR #69 keeps working. A
+single removal PR comes after #69 has migrated. Each PR fits one session; the
+handoff document records its status, and CLAUDE.md the workflow each session
+follows.</p>
+<div class="table-wrap"><table>
+<thead><tr><th>PR</th><th>Scope</th><th>Needs</th><th>Its tests prove</th></tr></thead>
+<tbody>
+<tr><td><b>P0</b> workflow</td><td>CLAUDE.md: the refactor workflow; <code>docs/probability-refactor/</code>: this design and the handoff document</td><td>—</td><td>review only</td></tr>
+<tr><td><b>P1</b> references</td><td>A script writing today's prior draws and densities (PR #69's prior transcribed, <code>example_calibration</code>, a hierarchy with given and derived parameters, a copula, a per-PFT simplex), and today's <code>ForwardModel</code> predictions on <code>test_forward</code>'s fake runners at fixed theta. Written through <code>io.write_checked</code>; no library change.</td><td>P0</td><td>the script reproduces its files byte for byte</td></tr>
+<tr><td><b>P2</b> foundations</td><td><code>probability</code>'s supports (with <code>PositiveDefinite</code>), <code>ArraySpec</code>, <code>labels</code> (MultiIndex coords, label maps into element axes, own dims, linear-time coverage checks), <code>Layout</code> with stacked dims and merged levels, <code>encode</code>/<code>decode</code>. Leaf modules move from <code>parameters</code>, with re-export shims left there. Split into P2a and P2b if large.</td><td>P0</td><td><code>Layout</code> equals <code>ParameterVector</code> on shared cases; netCDF round trip; an 80,000-label bind under a second; the import tests still pass</td></tr>
+<tr><td><b>P3</b> the prior model</td><td>Laws and <code>pushforward</code> (TFP only); families with <code>normal</code>, <code>inverse_gamma</code> and <code>InverseWishart</code>; builders' <code>.law</code> and <code>.reads</code>; <code>FactorSpec</code>, <code>DeterministicSpec</code> and the decorators; the keyword rule; <code>joint</code>, <code>bind</code>, <code>FactoredDistribution</code>; <code>condition_on</code> and <code>Posterior</code> without simulators</td><td>P1, P2</td><td>bit-identical to P1's references; families against SciPy; keyword-rule refusals; graph tests (barren nodes, O<sub>c</sub>, cycles, nothing observed)</td></tr>
+<tr><td><b>P4</b> adapter preparation</td><td>F8; the SIPNET map accepts a dict of DataArrays and fits against <code>ArraySpec</code>s; <code>ObservationSource.standard_deviation</code>; observation dims, constants, prediction names, <code>observed_values_by_component</code>, <code>with_observed_values</code>, <code>to_fields</code>; <code>observation.model</code>. The Flat API is kept.</td><td>P2</td><td>old tests unchanged; new tests of components and constants; <code>observation</code> still imports no TFP</td></tr>
+<tr><td><b>P5</b> the simulator seam</td><td>The core's <code>Simulator</code>, <code>SimulatorOutput</code>, <code>PosteriorEvaluation</code>, <code>evaluate</code>, <code>predict</code>, <code>replicate</code>, <code>simulator_inputs</code>, <code>log_density_given</code>, the corner points; <code>SIPNETRuns</code> extracted, with today's <code>ForwardModel</code> delegating to it; <code>SIPNETSimulator</code> with output pruning and per-output validity; F6 and F7</td><td>P3, P4</td><td>old <code>test_forward</code> unchanged; predictions bitwise equal to P1's; a failing-run test; one F6 pass equals three calls</td></tr>
+<tr><td><b>P6</b> the Gaussian observation model</td><td>Covariance specs, <code>GaussianSpec</code>, <code>noise_factor</code>, <code>gaussian_likelihood</code>, <code>model.law</code>, through one shim <code>probability/_linalg.py</code> over today's <code>pyeki.linalg</code> and <code>pyeki.gauss</code></td><td>P5</td><td>densities against SciPy on random block structures; structured equals dense; PR #69's one-site R equal to its hand assembly</td></tr>
+<tr><td><b>P7</b> inference adapters</td><td><code>eki_problem</code>, <code>tempering_problem</code>, <code>PriorBaseDensity</code>, <code>batched_log_density</code>, <code>log_density</code>, <code>initial_points</code>, on today's pyEKI</td><td>P6</td><td>a linear-Gaussian toy against its closed form: EKI and SMC moments, the SMC evidence; failed samples</td></tr>
+<tr><td>#69 migrates</td><td>In PR #69's branch, by its own session, onto EnsKit</td><td>P7, E2</td><td>prior draws bitwise; EKI and MCMC within Monte Carlo error</td></tr>
+<tr><td><b>P8</b> conjugacy</td><td><code>marginalize</code>, <code>full_conditional</code>, <code>theta_with</code> (R1, R2)</td><td>P6</td><td>marginals against quadrature; full conditionals against a long MH chain; the submatrix marginal against Monte Carlo</td></tr>
+<tr><td><b>P9</b> foreign laws</td><td>The numpyro and EnsKit <code>Gaussian</code> adapters; GPJax as an optional test group</td><td>P3</td><td>agreement with the TFP equivalent; skipped without GPJax</td></tr>
+<tr><td><b>R1</b> removal</td><td>Delete <code>parameters</code>, today's <code>ForwardModel</code>, the observation vector's Flat API and the three-argument <code>describe_calibration</code>; migrate the tests; move the design's vocabulary into CLAUDE.md's glossary</td><td>#69 migrated</td><td>suite green; no retired name left</td></tr>
+<tr><td><b>E1</b> re-pin to EnsKit</td><td>The project tracks EnsKit's <code>main</code> (<code>TARPS-group/EnsKit</code>, package <code>enskit</code>) in place of pyEKI, re-locked at its current commit, which moves JAX from 0.8 to 0.10 and TFP's nightly with it. The <code>_linalg</code> shim on <code>enskit.linalg</code> and <code>enskit.distribution</code>; <code>GaussianLaw</code> and <code>as_law</code> on EnsKit's block <code>Gaussian</code>; <code>test_inference</code> and <code>test_smc</code> off the deleted <code>pyeki.eki</code>; P1's references rewritten if the JAX or TFP move changes their bytes; CLAUDE.md's companion table, upgrade command and pyEKI facts</td><td>P9</td><td>P6's and P7's tests unchanged in substance; P1's byte test and P3's parity test pass</td></tr>
+<tr><td><b>E2</b> EnsKit's EKI driver</td><td><code>eki_problem</code> in the terms of <code>enskit.algorithms.eki</code>; <code>initial_ensemble</code> an EnsKit <code>Ensemble</code></td><td>E1</td><td>P7's EKI toy against its closed form through EnsKit's driver</td></tr>
+</tbody></table></div>
+<p>P2 and P4 can run in parallel, and P8 and P9 can run in any order once their
+dependencies are merged.</p>
+<p><i>Revised 2026-10-05, after P9:</i> EnsKit's rewrite is complete (its PRs
+1–12, release 0.1.0), so the three EnsKit PRs planned to follow it piece by
+piece become two, run next. EnsKit's <code>main</code> no longer has
+<code>pyeki.gauss</code> or <code>pyeki.eki</code>, so re-pinning to it cannot be
+split from the move of the shim and the two tests that import them: that is E1.
+E1 also brings JAX 0.10, which TFP's nightly, numpyro and GPJax resolve with
+(checked in a scratch environment). The EKI driver follows as E2. #69 migrates
+after E2, so it moves once, onto the probability layer and EnsKit together;
+its experiment imports <code>pyeki.gauss</code>, <code>pyeki.linalg</code> and
+<code>pyeki.eki</code>, all of which it must leave in either order.</p>
+</section>
+
+<section id="decisions">
+<h2><span class="num">13</span>Decisions</h2>
+<p>Settled in review are marked <span class="pill core">agreed</span>; the rest
+have a recommendation.</p>
+<div class="table-wrap"><table>
+<thead><tr><th></th><th>Decision</th><th>Status</th><th>Why</th></tr></thead>
+<tbody>
+<tr><td>D1</td><td>Package <code>sipnet_calibration.probability</code>, replacing <code>parameters</code></td><td>recommend</td><td>It holds every component of a model, not only parameters.</td></tr>
+<tr><td>D2</td><td>One <code>FactorSpec</code> class, unconditional when <code>given</code> is empty, rather than ProbPipe's <code>Distribution</code> and <code>ConditionalDistribution</code></td><td>recommend</td><td>A factor spec is evaluated only inside a bound model, never on its own. A split would encode a boolean as a type, twice over (also <code>FactoredConditionalDistribution</code>). Revisit if factors should become standalone.</td></tr>
+<tr><td>D3</td><td>Three stages, declare, bind, evaluate; the <code>Spec</code> suffix on declarations; <code>joint</code> and <code>bind</code> separate; <code>model.law(name, *, given=)</code></td><td><span class="pill core">agreed</span></td><td>Makes visible that most of the API describes distributions rather than being them.</td></tr>
+<tr><td>D4</td><td>User functions receive the keywords their signature names</td><td><span class="pill core">agreed</span></td><td>Covariance blocks read several constants each.</td></tr>
+<tr><td>D5</td><td>One stacked observation dim per source; predictions named <code>predicted_&lt;source&gt;</code></td><td>recommend</td><td>A ragged record becomes one dim, and blocks by site are contiguous within a source. The names are derived, never typed.</td></tr>
+<tr><td>D6</td><td><code>element_axes</code> replaces <code>shape</code> + <code>element_labels</code>; <code>long_name</code> removed; no <code>order</code> on <code>Layout</code></td><td><span class="pill core">agreed</span></td><td>Each axis stated once; no display-only argument; ProbPipe's canonical order.</td></tr>
+<tr><td>D7</td><td>Explicit keys, each factor keyed by <code>crc32(name)</code></td><td>recommend</td><td>Bit-identical to today, and structural, as ProbPipe's keys are.</td></tr>
+<tr><td>D8</td><td>One <code>FactoredDistribution</code> class, with or without inputs</td><td>recommend</td><td>As D2.</td></tr>
+<tr><td>D22</td><td>Additive PRs: new layer and adapters beside today's, one removal PR after PR #69 migrates; the new forward model named <code>SIPNETSimulator</code></td><td>recommend</td><td>main stays green and PR #69 keeps working; the old and new forward models coexist.</td></tr>
+<tr><td>D23</td><td>The probability-facing parts of <code>observation</code> live in <code>observation.model</code>, which <code>observation/__init__</code> does not import</td><td>recommend</td><td>The data sources and PyEns workers keep loading no TFP, and the existing import test holds.</td></tr>
+<tr><td>D24</td><td>No runtime law registry: <code>as_law</code> knows TFP, EnsKit and numpyro; anything else implements <code>Law</code></td><td>recommend</td><td>A mutable global registry is what CLAUDE.md's frozen-constants rule avoids.</td></tr>
+<tr><td>D9</td><td><code>condition_on(model, observed)</code>, Bayes' rule only; inputs bound at <code>bind</code> <span class="pill new">replaces revision 3</span></td><td>recommend</td><td>§4.5. Holding a value is observing it, exact when its kernel depends on no target node (Proposition 3). Inputs are fixed data like the labels. No argument needs a name from any application.</td></tr>
+<tr><td>D10</td><td>Barren nodes found from the graph, not named; no target node may have a simulator among its ancestors</td><td>recommend</td><td>Dropping barren nodes is exact (Proposition 2), so an argument naming them adds nothing. A source left out of <code>observed</code> is listed in <code>posterior.barren_names</code> and in <code>describe()</code>, rather than being an error. The restriction keeps the prior free of SIPNET runs.</td></tr>
+<tr><td>D11</td><td><code>ObservationSource.standard_deviation</code></td><td>recommend</td><td>F11; the constraint files hold it.</td></tr>
+<tr><td>D12</td><td>Provenance optional in the core; required by this project of every factor, noise factors included (<code>describe_calibration</code> refuses a missing one)</td><td>recommend</td><td>A noise model is a modeling claim, as a prior is; the requirement is this project's policy, not the core's.</td></tr>
+<tr><td>D13</td><td>Crossed external-input ensembles stay in <code>SIPNETRuns</code>, for prediction</td><td>recommend</td><td>Calibrating against an ensemble input is a modeling choice no experiment makes yet.</td></tr>
+<tr><td>D14</td><td>Algorithm adapters in <code>inference</code></td><td>recommend</td><td>Issue #63's condition, a second user, is met once the adapters read only a <code>Posterior</code>.</td></tr>
+<tr><td>D15</td><td>Covariance specs ours, evaluated to <code>enskit.linalg</code> operators; <code>GaussianSpec</code> evaluated to an EnsKit <code>Gaussian</code></td><td><span class="pill core">agreed</span></td><td>No Gaussian algebra of our own; the core depends only on EnsKit's two generic lower layers.</td></tr>
+<tr><td>D16</td><td><code>label_maps</code>, replacing "memberships"</td><td><span class="pill core">agreed</span></td><td>Says what it is.</td></tr>
+<tr><td>D17</td><td><code>DeterministicSpec</code> and <code>Simulator</code> callable; <code>@factor</code>, <code>@deterministic</code></td><td><span class="pill core">agreed</span></td><td>They are functions; the decorators read well.</td></tr>
+<tr><td>D18</td><td>A part's given components are inferred from the keywords its functions name; no <code>given=</code> <span class="pill new">changes PR #72</span></td><td>recommend</td><td>Given D4, <code>given=</code> would state each name twice, which is plumbing. With inputs declared (D19), a misspelled name is still an error at <code>joint</code>.</td></tr>
+<tr><td>D19</td><td>Inputs declared by <code>ArraySpec</code>s in <code>joint(..., inputs=)</code></td><td>recommend</td><td>An input is a node, so it has a shape, labels and units, and a typo cannot become one. Its value is bound with the labels, at <code>bind</code>.</td></tr>
+<tr><td>D20</td><td><code>LabeledValues</code> is a <code>dict[str, xr.DataArray]</code>, not a Dataset <span class="pill new">changes PR #72</span></td><td>recommend</td><td>Observation dims with a <code>site</code> level cannot share one Dataset (xarray refuses to align them). This is CLAUDE.md's own rule for variables on different grids.</td></tr>
+<tr><td>D21</td><td>"Depends on the target" means "has a target ancestor" (through any node) in every rule</td><td>recommend</td><td>Reading only direct links would let a covariance proportional to a prediction pass as fixed, giving EKI an R that varies with θ.</td></tr>
+</tbody></table></div>
+</section>
+
+<section id="open">
+<h2><span class="num">14</span>Open questions and risks</h2>
+<ul>
+  <li><b>EnsKit is being rewritten.</b> PRs C and D depend on its
+  <code>linalg</code>, <code>distribution</code> and EKI layers. The interims are
+  today's pyEKI classes, which keep their names through EnsKit's PR 1 rename.
+  The adapter's text is kept thin until EnsKit's driver lands.
+  <i>Resolved 2026-10-05:</i> the rewrite is complete; E1 and E2 move to it.</li>
+  <li><b>Correlated sources grouped by site.</b> A <code>GaussianSpec</code> over
+  two components grouped by site is not contiguous in y, and EnsKit has no
+  permutation operator. The core permutes the residual itself. The EKI view
+  must then hold that factor's block as one <code>DensePSD</code>, refused above
+  EnsKit's dense limit.</li>
+  <li><b>Sums of covariances.</b> <code>SumSpec</code> refuses a sum that would
+  need a dense matrix over a whole event. A discrepancy shared across sites,
+  added to per-site measurement error, would need EnsKit's
+  <code>LowRankUpdate</code>; the rule is written when that case arrives.</li>
+  <li><b>Compile time for many block shapes.</b> Each distinct block size compiles
+  once. Hundreds of sites call for grouping equal sizes and vmapping over each
+  group.</li>
+  <li><b>Dense block size.</b> A dense block costs
+  <var>n<sub>s</sub></var><sup>3</sup>, so hourly NEE over nine years at a site
+  (about 79,000 values) must be aggregated first, as PR #69 does.</li>
+  <li><b>Nested samplers</b> (nautilus) want a prior transform from the unit
+  cube, which only independent one-dimensional factors have.</li>
+  <li><b>Discrete unknowns</b>, such as an initial-condition member, lie outside
+  theta (D13).</li>
+  <li><b>ProbPipe's failure contract.</b> ProbPipe has no per-sample failure
+  semantics yet; ours is the part to propose upstream at migration.</li>
+  <li><b>The core's shared names.</b> The core cannot import
+  <code>conventions</code>, and <code>conventions</code> must not import the core,
+  which loads TFP. Both hold the literal <code>"sample"</code>, and a test checks
+  that they agree.</li>
+  <li><b>The pyEKI rename.</b> EnsKit's PR 1 renames <code>pyeki</code> to
+  <code>enskit</code>, and its PR 7 deletes today's <code>gauss</code> and
+  <code>eki</code>. The upgrade step CLAUDE.md asks of every session would then
+  break every import. The refactor's sessions upgrade pySIPNET and PyEns only,
+  and route pyEKI through one shim; pinning pyEKI's revision for everyone is a
+  question for Andrew (handoff document). <i>Decided 2026-10-05:</i> the
+  project tracks EnsKit's <code>main</code>, re-pinned by E1, after which
+  <code>enskit</code> is upgraded with the other companions.</li>
+  <li><b>Labels at scale.</b> Today's coverage check is quadratic, about 2 s for
+  2,000 labels against 20,000 and minutes at 80,000. <code>as_coords</code> refuses
+  a MultiIndex, and pandas gives <code>datetime64[us]</code> where the design says
+  <code>[ns]</code>. P2 rewrites these.</li>
+</ul>
+<hr>
+<p class="small">Sources:</p>
+<ul class="small">
+  <li><code>origin/main</code> at <code>ec21aa9</code>;</li>
+  <li><code>feat/single-site-mcmc-vs-eki</code> at <code>7949640</code>, read
+  only;</li>
+  <li>pyEKI <code>main</code> at <code>1fec3ee</code> and its EnsKit redesign at
+  <code>a9e2faf</code> (<code>docs/redesign</code>);</li>
+  <li>ProbPipe <code>design/</code> at PR #467;</li>
+  <li>GPJax 1.0.</li>
+</ul>
+</section>
+
+</div>
+</main>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script>
+  try { document.querySelectorAll("pre code[class^='language-']").forEach(function (el) { hljs.highlightElement(el); }); } catch (e) {}
+</script>

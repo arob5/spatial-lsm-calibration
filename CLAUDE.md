@@ -16,7 +16,7 @@ The long-term vision:
 |---------|--------|------|
 | `pySIPNET` | `TARPS-group/pySIPNET` | SIPNET model interface; `SIPNETModel(**overrides)` |
 | `PyEns` | `arob5/PyEns` | Parallel ensemble execution via `ProcessPoolExecutor`, and the xarray-to-Grid bridge (`pyens.xarray`) |
-| `pyEKI` | `TARPS-group/pyEKI` | Solving inverse problems with ensemble Kalman methods |
+| `EnsKit` | `TARPS-group/EnsKit` (package `enskit`; formerly pyEKI) | Ensemble Kalman methods: structured linear operators (`enskit.linalg`), Gaussians and ensembles over named blocks (`enskit.distribution`), and the EKI driver (`enskit.algorithms.eki`) |
 | `ProbPipe` | `TARPS-group/prob-pipe` (also on PyPI) | **Not currently a dependency** — API in flux; planned migration target for inference. See below. |
 
 The first three are dependencies, installed from git rather than from sibling
@@ -28,7 +28,7 @@ here. Never modify their source from here.
 
 The boundary between them: PyEns owns the shape of an ensemble and the
 translation of labeled data into and out of it; pySIPNET owns one SIPNET run's
-inputs and outputs; pyEKI owns the ensemble Kalman update; this repository owns
+inputs and outputs; EnsKit owns the ensemble Kalman update; this repository owns
 what varies and why. A function belongs in pySIPNET only if deleting SIPNET from
 it leaves nothing.
 
@@ -36,7 +36,7 @@ it leaves nothing.
 their current `main`:**
 
 ```bash
-uv lock --upgrade-package pysipnet --upgrade-package pyens --upgrade-package pyeki
+uv lock --upgrade-package pysipnet --upgrade-package pyens --upgrade-package enskit
 uv sync
 ```
 
@@ -218,7 +218,7 @@ one variable per parameter and derived parameter.
 | **parameter** | one unknown of the calibration, a `Parameter`: an array-valued quantity with a support, units, one value's `shape`, and the dims it is indexed by; always distinct from a **SIPNET parameter**, which is always called by its full name | "calibration parameter" |
 | **dim** / **dim label** | a dim a parameter is indexed by (`Parameter.indexed_by`), and one of its labels, in `ParameterVector.coords`; in the adapter layer a dim is `site` or a site-labels name, whose labels are the site ids or the classes some site carries (`SiteDims.coords`) | "group", "copy", `varies_by`, `group_dim`, `dim=`, `dim_index` |
 | **value** | a parameter's value at one tuple of labels of its dims, of shape `Parameter.shape`; `shape` is always one value's, never the block's | |
-| **element** / **element axes** / **element labels** | one number of one value; a value's axes are its element axes, named, with their labels (strings), by its element labels (`Parameter.element_labels`), which name the element axes of the labeled forms | "natural" / "unconstrained size and names", `k` and `e`, `natural_names`, "component" |
+| **element** / **element axes** / **element labels** | one number of one value; a value's axes are its element axes, named, with their labels (strings), by its element labels (`Parameter.element_labels`), which name the element axes of the labeled forms | "natural" / "unconstrained size and names", `k` and `e`, `natural_names`, "component" for an element |
 | **block** | all of a parameter's values, one at each tuple of labels of its dims: **block shape** `(*index shape, *shape)`, the **index shape** `[len(coords[d]) for d in indexed_by]`, the labels in use; values by parameter put the batch in front, `(*batch, *block shape)` | "block" for one value |
 | **event** | only TFP's sense: the axes one draw of a distribution covers. A prior term's event is its parameters' blocks; one value's distribution, which `iid_over_dim` repeats over a block, has the element axes as its event; a support's or bijector's `event_ndims` is how many trailing element axes it constrains jointly (0 on an interval, 1 on the simplex) | "event" for element axes |
 | **support** | a set of values, a `Support` (`Interval`, `Simplex`, ...): the set a parameter's values lie in, whose default bijector is `bijector_for(support)`; a rule's domain is one too (`ValueRequirement.domain`) | "the open set", `Bounds`, `OpenInterval` |
@@ -231,6 +231,41 @@ one variable per parameter and derived parameter.
 | **site covariate** | a `float64` column of the site table, named in `SiteDims(covariate_names=)`, read as a constant (`SiteDims.covariate`) | `site_covariate_names` |
 | **external input** | an uncertain value a SIPNET rule reads that is propagated, not calibrated, paired with theta by dim name (`sipnet_parameter_map.ExternalInputs`) | the `to_sipnet_parameter_fields` hook |
 | **role** | what a SIPNET parameter written depends on: `calibrated` (a parameter or derived parameter), `propagated` (external inputs only), `constant` (a rule of constants and fixed values), or `fixed` | |
+
+**The probability layer**, `sipnet_calibration.probability`, is replacing the
+parameter layer (CLAUDE.md's "The probability-layer refactor"). The words it
+has brought so far; the rest of its vocabulary is the design's §6 until a PR
+moves it here.
+
+| Word | Meaning | Retires / not to be confused with |
+|---|---|---|
+| **component** | a named array a draw of a model holds, declared by an `ArraySpec` (`probability.spec`): a parameter, a derived value, an observed value, a prediction | "component" for an element; not a **field** |
+| **stacked dim** | a dim whose labels are a `pandas.MultiIndex` with named levels (integers, strings or `datetime64[ns]`), how a ragged set of labels, such as the `(site, time)` pairs a source observes, becomes one dim; a level may be named wherever a dim may, and merges with a plain dim of its name in a layout's index | a batch dim |
+| **label map** | a one-dimensional `xr.DataArray` on a dim of the coords, named for its target (a dim or an element axis), whose values are the target's labels; a function receives it as `int64` positions (`probability.labels`) | "membership", once R1 removes the parameter layer |
+| **layout** | named arrays as one flat vector, a `Layout` (`probability.layout`): components in declaration order, each block in C order, with no `order` argument; theta's and y's | |
+| **values by name** / `ValuesByName` | a layout's structured, traceable form: `{name: (*batch, *block shape)}` | |
+| **labeled values** / `LabeledValues` | a layout's labeled form: a `dict` of one `xr.DataArray` per component on `(*batch dims, *indexed_by, *element axes)`, a dict because two stacked dims with a `site` level cannot share a Dataset; `encode_labeled_values` makes the Dataset netCDF holds | a `ParameterDataset` |
+| **own dim** | a dim of a constant that is neither a dim of the coords nor an element axis, passed whole, which its reader declares in `own_dims=` | |
+| **observation dim** | a source's stacked dim, `"<source>_observation"`, whose labels are the `(site, time)` pairs it observes (`(site,)` if static), sorted by site, then time: `ObservationVector.coords`, `ObservationSource.observation_labels`, `observation_dim_name()` | a batch dim |
+| **observed component** | a source's observed values as a component, named for the source, on its observation dim (`observation.model.observed_components`, values `observed_values_by_component()`) | |
+| **prediction** | the forward model's value of an observed quantity, on the source's observation dim and in its units: `predicted_<source>` (`ObservationVector.prediction_name`, `observation.model.prediction_components`) | "predictions", the Flat `(J, N)`, which keeps its meaning |
+| **spec** | a declaration, holding no labels and no numbers; its class ends in `Spec` (`ArraySpec`, `FactorSpec`, `DeterministicSpec`, `ModelSpec`) | the distribution it becomes once bound |
+| **law** | the concrete distribution a factor evaluates to for one draw of what it reads: a TFP distribution, or an object implementing `probability.laws.Law`, such as a `GaussianLaw`; an EnsKit `Gaussian` of one block or a numpyro distribution (GPJax's among them) is adapted to one by `as_law` (`GaussianLaw`, `NumpyroLaw`), and `pushforward` of a base that is not TFP's is a `PushforwardLaw` | a factor, which declares one |
+| **Gaussian factor** | a factor whose law is a `GaussianSpec` (`probability.parts`): its one component, on `REAL` and indexed by one dim at most, centered on a mean component, with a covariance declared by a **covariance spec** (`probability.covariance`); its law at a draw is a `GaussianLaw`, holding one of EnsKit's operators | a law function returning a Gaussian, which is opaque |
+| **covariance spec** / **scope** | a declaration of a covariance as structure over labels (`DiagonalSpec`, `DenseSpec`, `SumSpec`, `ScaledSpec`, `BlockDiagonalSpec`, `SubmatrixSpec`); its scope is the entries it covers, the event or one group of a `BlockDiagonalSpec`, whose groups are the entries sharing labels at a level (`by=`) | "cell" for a block |
+| **noise factor** | a source's Gaussian factor, its observed component centered on its prediction (`observation.model.noise_factor`), holding the source's constants its covariance reads | |
+| **held** (values) | what a posterior fixes whatever theta is: the observed values, the inputs, the constants, and the deterministics computed from them alone with no simulator; a Gaussian factor's covariance computable from held values is a **held covariance**, built and factored once at `condition_on` | |
+| **Gaussian likelihood** | the likelihood written as `y ~ N(G(theta), R)` when every `O_theta` factor is Gaussian with a covariance the held values fix (`Posterior.gaussian_likelihood() -> GaussianLikelihood`): `R` block-diagonal over the factors in y's order, `G` their means (`forward`) | |
+| **factor** / **deterministic** / **part** | a part is a factor (a conditional law over its **event**, the components it declares) or a deterministic (components computed by a pure function, or by a simulator); a factor replaces a prior term, a deterministic a derived parameter | |
+| **simulator** | a deterministic computed outside JAX for a whole batch of samples, which may fail at some of them: a `Simulator` (`probability.parts`), called once per batch with labeled values and returning a `SimulatorOutput` (its outputs, and at which samples each was computed); `SIPNETSimulator` is the forward map as one | the forward model's runs, `SIPNETRuns` |
+| **valid** (a sample) | every simulator output the likelihood reads was computed at it and every likelihood factor's density is finite there; an invalid sample's log likelihood is `-inf` (`PosteriorEvaluation.valid`) | `ForwardEvaluation.valid`, a row whose runs all succeeded |
+| **given** (probability layer) | the components and inputs a part's function reads, inferred from its keywords (the keyword rule), never stated | `given=` of the parameter layer |
+| **input** | a node with no parents and no law, declared by an `ArraySpec` in `joint(..., inputs=)` and bound by `bind(..., inputs=)` | an external input, the SIPNET adapter's word |
+| **bind** | give a model spec the labels of its dims and its inputs' values, making a `FactoredDistribution` | |
+| **target** / **barren** / **observed** | after `condition_on`: observed factors are conditioned on; barren ones are unobserved with no observed descendant, dropped; the rest are the target, whose components are theta's; an observed factor with no target ancestor is constant (`O_c`) | |
+| **draw** | one joint value of every component; a batch of draws has batch dim `sample` | |
+| **conjugate rule** / **marginal** | the scale rule or the block rule (`probability.conjugacy`, the design's §7.13 R1 and R2): a component whose inverse-gamma or inverse-Wishart prior is conjugate to the one Gaussian factor reading it; integrated out (`FactoredDistribution.marginalize`), that factor becomes its marginal, a Student-t or a matrix Student-t (`probability.scale_mixtures`) | |
+| **full conditional** | a parameter's closed-form law given every other component, by a conjugate rule (`Posterior.full_conditional -> FullConditional`), drawn from an evaluation's residuals with no new simulator run | |
 
 **Representations.**
 
@@ -318,6 +353,8 @@ form is stated in its home module's data model:
 | `SIPNETOverrides` | `fields` | `validate_sipnet_overrides` |
 | `ValuesByParameter` | `parameters.vector` | `validate_values_by_parameter` |
 | `ParameterDataset` | `parameters.vector` | `validate_parameter_dataset` |
+| `ValuesByName` | `probability.layout` | `validate_values_by_name` |
+| `LabeledValues` | `probability.layout` | `validate_labeled_values` |
 | `ExternalInputs` | `sipnet_parameter_map` | `validate_external_inputs` |
 
 The validators of the field forms are strict: each requires everything
@@ -378,7 +415,8 @@ coercion lives in `validation.py`.
   `DATA_ROOT_ENV_VAR`, `data_root()`, `tracked_data_root()`); and
   `read_only_copy` and `ReadOnlyCopies`, the read-only copies of xarray data a
   frozen class keeps and hands out, copied on assignment so nothing a caller
-  holds is frozen. Read-only mappings are `frozendict`s (the `frozendict`
+  holds is frozen (`ReadOnlyCopies(default=None)` for an optional
+  one). Read-only mappings are `frozendict`s (the `frozendict`
   package): a `dict` subclass, so pandas and `json` read one as a dict, and it
   pickles and hashes. Every module-level mapping constant of the package is
   one (the scripts' own tables are not the package's), and one is handed to
@@ -424,11 +462,25 @@ coercion lives in `validation.py`.
   sites are held to (`check_site_table_lists_the_sites`,
   `check_sites_are_the_site_table`), and `N_SITES`. No lookup is written as a
   hand `set_index("site_id")`; `site_lookup` is the keyed form.
-- **`parameters/`**, the parameter layer, imports nothing of the package
-  outside itself, which `tests/test_package.py` enforces: it keeps its own
-  private coercion helpers, and the reserved names, the site table and
-  SIPNET are the adapter layer's (`site_dims.py`, `sipnet_parameter_map.py`,
-  `forward.py`).
+- **`probability/`**, the probability layer, imports nothing of the package
+  outside itself, and **`parameters/`**, the parameter layer it is replacing,
+  nothing but it (its supports, private coercion and probe points, which
+  `parameters` re-exports); `tests/test_package.py` enforces both, and that
+  EnsKit is imported by `probability/_linalg.py` alone, the one shim over
+  its operators and `Gaussian`, and numpyro and GPJax by no file: the layer
+  adapts their distributions recognized by class name
+  (`probability/_numpyro.py`), and neither is a dependency (numpyro is in
+  the `dev` group, GPJax in the optional `gpjax` group). The
+  probability layer keeps its own private coercion helpers and its own
+  reserved names (`probability.names`, whose `SAMPLE` a test holds equal to
+  `conventions.SAMPLE`), and the project's reserved names, the site table
+  and SIPNET are the adapter layer's (`site_dims.py`,
+  `sipnet_parameter_map.py`, `forward.py`).
+- **`inference/`**, the inference adapters, imports `probability`, `smc` and
+  `validation` only, and no algorithm package (tested): of EnsKit, only
+  `inference/eki.py` imports anything, its `Ensemble`. It reads a
+  `Posterior` and nothing of SIPNET, so the experiment imports EnsKit's
+  driver or emcee and hands it what an adapter returns.
 - **`tests/conftest.py`** holds every fixture or builder more than one test
   file uses (some Niwot stacks and observation builders are still per file,
   until the module cleanups, PR 5).
@@ -777,7 +829,7 @@ everything stacked on it, and they will have to rebase too.
 its own, taking the companions' current `main` as above while you are there:
 
 ```bash
-uv lock --upgrade-package pysipnet --upgrade-package pyens --upgrade-package pyeki
+uv lock --upgrade-package pysipnet --upgrade-package pyens --upgrade-package enskit
 uv sync
 uv run pytest
 ```
@@ -792,6 +844,92 @@ checkout is on rather than your own. That failure is loud only when a module
 exists on your branch alone — `ModuleNotFoundError` for something you are
 looking at in your editor. For a module that exists on both, the tests pass
 while exercising the root's copy, which is the case worth remembering.
+
+## The probability-layer refactor
+
+`sipnet_calibration.parameters` is being replaced, PR by PR, by a generic
+probability layer, `sipnet_calibration.probability`, from which the prior and
+the observation model are both built. Three documents govern it:
+
+- `docs/probability-refactor/design.html`, the design (open it in a browser).
+  Its §12 is the PR plan and its §13 the decisions. Until a PR moves its words
+  into the glossary above, its §6 is the vocabulary of the new layer.
+- `docs/probability-refactor/HANDOFF.md`, the state of the refactor: which PRs
+  are merged, open or next, what each session learned, the deviations from the
+  design, and the questions waiting for Andrew. It is the source of truth for
+  what to do next.
+- This section, the workflow.
+
+**A session started to continue the refactor** (its prompt says so) follows
+these steps without asking. It stops only where a step says to.
+
+1. **Find the next PR.** `git fetch -q origin`, then read `HANDOFF.md` on
+   `origin/main` (`git show origin/main:docs/probability-refactor/HANDOFF.md`).
+   Statuses lag, since a PR's own row is written before it is merged: check
+   every `open #n` row with `gh pr view <n> --json state`, and treat a merged
+   one as merged (this session's PR updates its row). The next PR is the first
+   row whose status is neither merged nor open.
+2. **Check that what it needs is merged.** For each PR in its "needs" column,
+   `gh pr view <number> --json state,mergedAt`. If any is not `MERGED`, **stop**,
+   and tell Andrew which PR is waiting and on what. Do nothing else.
+3. **Clean up stale worktrees, and only those.** A worktree is stale when its
+   branch is this refactor's (`refactor/probability-*` or
+   `docs/probability-refactor-*`), its PR is merged or closed, and
+   `git -C <path> status --porcelain` prints nothing. For each one,
+   `git worktree remove <path>`, then `git branch -D <branch>`. Never touch any
+   other worktree or branch: they belong to other sessions. Report what was
+   removed.
+4. **Implement in a new worktree.**
+   - Create it:
+     `git worktree add -b refactor/probability-<id>-<topic> .claude/worktrees/probability-<id> origin/main`.
+   - Set up its environment:
+     `uv lock --upgrade-package pysipnet --upgrade-package pyens --upgrade-package enskit`,
+     then `uv sync`, then `uv run pytest` for the baseline count. EnsKit
+     is tracked like the other companions since E1 re-pinned the project to
+     its `main`.
+   - Implement the row's scope from the design, nothing more. Write reference
+     values from today's code before changing behavior that must be preserved.
+   - When implementation shows the design must change, make the smallest
+     change. Update `design.html` in the same PR, and record the change in
+     `HANDOFF.md`.
+   - Anything out of scope goes in `HANDOFF.md`'s open items, not in the PR.
+5. **Review once.** Run the `review-pr` skill on the branch, for one round:
+   - the Standard tier;
+   - the Deep tier only for a PR whose diff computes densities, likelihoods or
+     inference results (P3, P6, P8);
+   - Solo for P0, P1 and R1's deletions.
+
+   Fix what it finds. Judgment calls go in the report, not in more rounds.
+6. **Update `HANDOFF.md` in the PR.** Set the row's status to
+   `open #<number>`, and add a session entry: what was done, the deviations from
+   the design, the decisions taken, the open questions for Andrew, and what the
+   next session must know. Update CLAUDE.md's layout, alias and glossary entries
+   for what the PR adds.
+7. **Open the PR, never merge it.**
+   - Read `git status --short` and stage explicit paths.
+   - Commit, push the branch, then `gh pr create --base main`. The description
+     gives the scope, the deviations, the test counts before and after, and the
+     review's outcome.
+   - Only Andrew merges.
+8. **Report and hand off.**
+   - Tell Andrew:
+     - the PR's link;
+     - the important findings;
+     - any change to the design;
+     - the open questions.
+   - Then call the `spawn_task` tool (the session chip in the Claude desktop
+     app), so that one click starts the next session:
+     - title: "Probability refactor: next PR";
+     - prompt: "Continue the probability-layer refactor. Follow 'The
+       probability-layer refactor' in CLAUDE.md.";
+     - tldr: the PR just opened, and which PR the next session will take.
+   - The next session waits, at step 2, for this PR to be merged.
+
+The rules elsewhere in this file still hold. In particular:
+- stage explicit paths, and never switch the root checkout's branch;
+- the companion packages are read-only;
+- PR #69 (`feat/single-site-mcmc-vs-eki`) belongs to another session: read
+  it, never edit it.
 
 ## Running on the SCC
 
@@ -823,15 +961,16 @@ The layout below is the **agreed target**, specified in
 `logs/2026-08-28_Plotting Design Spec.md` in the Obsidian vault. The src-layout
 reorg has landed, so the paths below are the real ones; `sites.py`,
 `constraints.py`, `initial_conditions/`, `drivers.py`, `projection.py`, the
-`parameters/` package, `site_dims.py`, `sipnet_parameter_map.py`,
-`calibration.py`, `site_labels.py`, `forward.py`, `compute.py`, `smc.py` and
-the `observation/` package are implemented, `fields.py` has the model-output
+`parameters/` package, the first modules of the `probability/` package,
+`site_dims.py`, `sipnet_parameter_map.py`,
+`calibration.py`, `site_labels.py`, `forward.py`, `compute.py`, `smc.py`,
+the `inference/` package and the `observation/` package are implemented, `fields.py` has the model-output
 adapters, the plotting package has series, maps and grids, and the other
 modules carry the contract each is to satisfy.
 `initial_conditions` is a package rather than a module: it spans several
 artifacts, and giving each its own file keeps that artifact's schema, writer,
-reader and checks together. `parameters` is a package for another reason:
-it is the parameter layer, which imports nothing of the rest.
+reader and checks together. `parameters` and `probability` are packages for
+another reason: each is a layer, which imports nothing of the rest.
 
 ```
 pyproject.toml            # name = "sipnet-calibration"; src layout
@@ -905,12 +1044,92 @@ src/sipnet_calibration/
                           # processed file per source; read_raw(),
                           # build_site_labels(),
                           # load_site_labels(), site_labels_field() -> CF flags
+  probability/            # the probability layer, replacing parameters/:
+                          # imports nothing of the package outside itself
+                          # (tested); __init__ re-exports it
+    support.py            # Support (Interval, Simplex, PositiveDefinite:
+                          # contains, closure), REAL, POSITIVE, NON_NEGATIVE,
+                          # OPEN_UNIT_INTERVAL, UNIT_INTERVAL, SIMPLEX,
+                          # POSITIVE_DEFINITE; DEFAULT_BIJECTORS, bijector_for
+    names.py              # SAMPLE, COMPONENT_LEVEL, ELEMENT_LEVEL, THETA,
+                          # THETA_ENTRY, RESERVED_NAMES
+    labels.py             # coords (stacked dims), constants (own dims), label
+                          # maps (into dims or element axes): as_coords,
+                          # as_constants, as_label_maps, aligned_constants,
+                          # aligned_label_maps; indexer() by hashing
+    spec.py               # ArraySpec: name, units, support, indexed_by,
+                          # element_axes (labels or a length), bijector;
+                          # shape, unconstrained()
+    layout.py             # Layout: index (component, *dims, *levels,
+                          # element), select()/positions() by dim or level,
+                          # Flat, values by name and labeled values converted
+                          # by <source>_to_<target>, unconstrained,
+                          # to_natural(), to_unconstrained(), contains();
+                          # ValuesByName, LabeledValues;
+                          # encode_labeled_values/decode_labeled_values
+    laws.py               # Law (the protocol), as_law (TFP; an EnsKit
+                          # Gaussian, a numpyro distribution, GPJax's too),
+                          # pushforward (any base); GaussianLaw (a Gaussian
+                          # over a block holding a structured covariance),
+                          # NumpyroLaw, PushforwardLaw
+    covariance.py         # CovarianceSpec: DiagonalSpec, DenseSpec, SumSpec,
+                          # ScaledSpec, BlockDiagonalSpec (by= a level or the
+                          # dim; groups contiguous), SubmatrixSpec; each bound
+                          # to its scope at bind, building an EnsKit operator
+                          # per draw
+    families.py           # one value's law: log_normal, logit_normal
+                          # (support=), their _from_* forms, softmax_normal;
+                          # normal, inverse_gamma, InverseWishart/inverse_wishart
+    builders.py           # Builder (.law, .reads); iid_over_dim,
+                          # independent_over_dim, gaussian_copula
+    scale_mixtures.py     # StudentTSpec (a Student-t per group) and
+                          # MatrixStudentTSpec (an inverse Wishart block
+                          # integrated out), a factor's law as GaussianSpec
+                          # is; StudentTLaw, MatrixStudentTLaw;
+                          # inverse_wishart_log_prob, sample_inverse_wishart
+    parts.py              # FactorSpec (a conditional law over its event),
+                          # GaussianSpec (mean=, covariance=: a factor's
+                          # law), CENTERED_LAW_SPECS (it and the Student-t
+                          # forms), DeterministicSpec; @factor, @deterministic; given
+                          # read off the function's keywords (the keyword rule);
+                          # Simulator (name, given, outputs, __call__, at,
+                          # check_given) and SimulatorOutput
+    model.py              # joint -> ModelSpec (the graph, topological order);
+                          # bind -> FactoredDistribution: law(), select(),
+                          # marginalize(), sample() keyed by crc32(name), log_prob(),
+                          # simulators, describe(); block_at_labels; a
+                          # simulator runs once per batch, never at bind
+    posterior.py          # condition_on -> Posterior: target, barren and
+                          # O_c from the graph, each simulator pruned to the
+                          # outputs the likelihood reads and checked at the
+                          # corner points; sample_prior, log_prior, evaluate
+                          # -> PosteriorEvaluation, log_likelihood,
+                          # log_density, log_density_given, predict,
+                          # replicate, simulator_inputs, natural_values,
+                          # theta_with, to_labeled, gaussian_likelihood ->
+                          # GaussianLikelihood (y, noise_covariance R,
+                          # forward), full_conditional -> FullConditional
+                          # (law, sample from an evaluation), describe; a
+                          # Gaussian factor's covariance the held values fix
+                          # is built and factored once here
+    conjugacy.py          # the conjugate rules, the scale rule (an inverse
+                          # gamma on a covariance scale) and the block rule
+                          # (an inverse Wishart on a
+                          # covariance block): conjugate_rule ->
+                          # ConjugateRule, marginalize,
+                          # InverseWishartGivenRows
+    _bound.py, _keywords.py, _probes.py, _validation.py, _linalg.py,
+    _numpyro.py           # private: a part at the labels in use (its law,
+                          # density, draws, the bind checks, the log-Jacobian
+                          # against each support's reference measure); the
+                          # keyword rule; the probe and corner points;
+                          # coercion; the one shim over EnsKit's operators
+                          # and Gaussian; numpyro's distributions recognized
+                          # by class name, with no import
   parameters/             # the parameter layer: imports nothing of the package
-                          # outside itself (tested); __init__ re-exports it
-    support.py            # Support (Interval, Simplex: contains, closure),
-                          # REAL, POSITIVE, NON_NEGATIVE, OPEN_UNIT_INTERVAL,
-                          # UNIT_INTERVAL, SIMPLEX; DEFAULT_BIJECTORS and
-                          # bijector_for
+                          # outside itself but probability/ (tested);
+                          # __init__ re-exports it
+    support.py            # re-exports probability.support's supports
     parameter.py          # Parameter: support, units, shape, string element
                           # labels, indexed_by, T; unconstrained()
     vector.py             # ParameterVector: parameters, coords {dim: labels},
@@ -928,12 +1147,9 @@ src/sipnet_calibration/
     labels.py             # coords, constants and memberships: what a labeled
                           # value given to a function is, and how it is read
                           # at the labels in use (the contract's one home)
-    families.py           # one value's distribution: log_normal,
-                          # logit_normal (support=) and their _from_* forms,
-                          # softmax_normal
-    prior_functions.py    # PriorFunction; iid_over_dim (a distribution or a
-                          # function of what the term reads),
-                          # independent_over_dim, gaussian_copula
+    families.py           # re-exports probability.families' first seven
+    prior_functions.py    # PriorFunction; re-exports probability.builders'
+                          # iid_over_dim, independent_over_dim, gaussian_copula
     prior.py              # Prior: what is believed beforehand, over a sequence
                           # of PriorTerms, each naming its parameters, with
                           # given= and constants=, its distribution a TFP
@@ -944,30 +1160,37 @@ src/sipnet_calibration/
                           # describe()
     _description.py, _distributions.py, _probes.py, _validation.py
                           # private: the shared description checks and
-                          # labeled form, what the prior and its builders
-                          # share of TFP, the probe points and bijector
-                          # comparison, coercion
+                          # labeled form; the last three re-export what the
+                          # prior shares with probability's laws and builders,
+                          # its probe points and coercion
   site_dims.py            # SiteDims: the sites and the dims they define; coords,
                           # labels() (memberships), covariate(), at_sites(),
                           # site_fields(), select()
   sipnet_parameter_map.py # SIPNETParameterMap: how the values at a site become
-                          # SIPNET parameters, from labeled values and a
-                          # SiteDims. Rules (Copy, CopySimplex, Compute;
-                          # photosynthesis_rules, initial_condition_rules) reading
+                          # SIPNET parameters, from labeled values (a Dataset,
+                          # or the probability layer's dict) and a
+                          # SiteDims. Rules (Copy, Copy.same_names, CopySimplex,
+                          # Compute; photosynthesis_rules,
+                          # initial_condition_rules) reading
                           # values by name with a ValueRequirement (units, a
-                          # Support domain, shape) and constants; Fixed;
+                          # Support domain, shape; omitted, FROM_SIPNET_SPEC:
+                          # the written SIPNET parameter's) and constants; Fixed;
                           # dependencies(), sipnet_parameter_names_depending_on();
                           # ExternalInputs; sipnet_parameter_fields(),
                           # out_of_domain(); support_from_sipnet_domain; the fit
-                          # check
+                          # check, against parameters or ArraySpecs
   calibration.py          # describe_calibration() (two tables: per parameter,
                           # per SIPNET parameter with its role),
                           # example_calibration()
-  forward.py              # ForwardModel: theta (J, D) and external inputs ->
-                          # predictions (R, N), SIPNET once per run through
-                          # PyEns, the observation operators applied on the
-                          # worker; ForwardEvaluation with its run index; the
-                          # failure split; the composition and corner checks
+  forward.py              # SIPNETRuns: labeled values -> SIPNET once per run
+                          # through PyEns, the observation operators applied on
+                          # the worker, predictions per observation vector and
+                          # model output from one pass (SIPNETRunsEvaluation);
+                          # SIPNETSimulator, the forward map as a Simulator;
+                          # ForwardModel: theta (J, D) and external inputs ->
+                          # predictions (R, N) through SIPNETRuns, until R1;
+                          # ForwardEvaluation with its run index; the failure
+                          # split; the composition and corner checks
   compute.py              # scc_backend(): the SCC GridEngineBackend preset
   smc.py                  # tempered SMC from a base density q to the
                           # posterior, importance sampling its one-step case;
@@ -976,6 +1199,18 @@ src/sipnet_calibration/
                           # SMCSettings, SMCState; initial_state(), run_smc(),
                           # save_state()/load_state(); next_increment() (CESS),
                           # pareto_k() (ArviZ's PSIS), systematic_resample()
+  inference/              # a Posterior as each algorithm reads it; imports
+                          # probability, smc and validation only (tested), and
+                          # no algorithm package; __init__ re-exports it
+    eki.py                # EKIProblem (forward, y, noise_covariance,
+                          # last_evaluation, initial_ensemble -> an EnsKit
+                          # Ensemble of one block, theta), eki_problem(): what
+                          # enskit.algorithms.eki's driver reads
+    tempering.py          # PriorBaseDensity, tempering_problem() -> an
+                          # smc.TemperingProblem, predictions as auxiliary
+    mcmc.py               # batched_log_density(), log_density(),
+                          # initial_points()
+    _validation.py        # private: the checks the three share
   fields.py               # the field contract: validate_field(), batch_dims(),
                           # stack_batch_dims()/unstack_batch_dims(),
                           # batch_coordinate(), scalar_batch_labels(),
@@ -999,11 +1234,22 @@ src/sipnet_calibration/
                           # check_operator and the contract's checks the
                           # vector shares
     source.py             # ObservedValues + validate_observed_values();
-                          # ObservationSource, one source's fields and operator
+                          # ObservationSource, one source's fields, operator
+                          # and optional standard_deviation;
+                          # observation_labels
     vector.py             # ObservationVector: index (site,
                           # observation_source, time), y, flat()/fields(),
                           # positions(),
-                          # predict()
+                          # predict(); for the probability layer, coords (one
+                          # observation dim per source),
+                          # observation_dim_name(), constants(),
+                          # prediction_name(), year_label_map(),
+                          # observed_values_by_component(),
+                          # with_observed_values(), to_fields()
+    model.py              # observed_components(), prediction_components(),
+                          # noise_factor() (one source's Gaussian factor):
+                          # imports the probability layer, so __init__ does
+                          # not import it
   plotting/
     __init__.py           # curated exports
     style.py              # ROLES, rcParams
@@ -1114,10 +1360,18 @@ plotting code. The load-bearing rules:
   what it declares, the checks at the boundary, the verbs an operator is
   written with and the default binding. Which operator reads an observation
   source is a modeling decision an experiment writes in `config.py`.
-- **The forward model is one class over existing pieces.**
-  `forward.ForwardModel(model, parameter_vector, sipnet_parameter_map,
+- **The forward model is runs, a simulator and today's callable over
+  existing pieces.** `forward.SIPNETRuns(sipnet_model, sipnet_parameter_map=,
+  site_dims=, climate=, backend=, out_of_domain=)` runs SIPNET once per sample
+  and site for labeled values and returns, from one pass, predictions per
+  observation vector and model output (`evaluate`); `SIPNETSimulator(runs,
+  observation_vector=)` is the forward map as the probability layer's
+  `Simulator`, which never sees theta, runs only the sites its vector
+  observes, and marks a source's prediction invalid only where a run at one
+  of the source's sites failed. `forward.ForwardModel(model, parameter_vector, sipnet_parameter_map,
   site_dims=, derived_parameters=, climate=, backend=, external_inputs=,
-  out_of_domain=, observation_vector=)` is pyEKI's `(J, D) -> (J, N)`; its
+  out_of_domain=, observation_vector=)`, until R1, is EKI's `(J, D) -> (J, N)`
+  through `SIPNETRuns`; its
   module docstring says how the pieces compose: the labeled natural values
   (the parameter layer's seam) merged with the external inputs, read at the
   site dims' sites by the map. The rules a session can get wrong: the observation
@@ -1154,9 +1408,15 @@ plotting code. The load-bearing rules:
   observed, not-NaN values), sites ascending, then observation sources in
   declaration order, then times, with `NaT` for a static source; `y` is Flat in
   that order, `flat()`/`fields()` convert, and `positions()` finds a site's or
-  an observation source's segment. No standard deviation, covariance or
-  likelihood lives in the package; the inference layer builds those from `y`,
-  `index` and `positions`. A batch dim on an observation source's values is
+  an observation source's segment. A source may carry its measurement
+  standard deviations (`standard_deviation=`). Today's inference layer
+  builds its covariance and likelihood from `y`, `index` and `positions`;
+  the probability layer's noise factors (`observation.model.noise_factor`)
+  read the vector's observation dims and `constants()` instead, which are
+  each one source's, by site and then time, not Flat's order, and the
+  posterior's `y` and `gaussian_likelihood().noise_covariance` are in the
+  posterior's own order.
+  A batch dim on an observation source's values is
   refused: the experiment reduces an ensemble of observed values before it
   enters; a scalar batch label is metadata and is kept. An `ObservationSource`
   keeps only the sites and time labels it observes, so its operator never reads
@@ -1381,7 +1641,14 @@ plotting code. The load-bearing rules:
 - In float64, `Gamma(0.02)` draws exactly 0, whose log is `-inf`, about once in 10^4 draws,
   depending on TFP's batch shape; the prior's draw-based support check catches it.
 - Sampling takes `seed=` a `jax.random` key; `jax.random.fold_in(key, zlib.crc32(name))` is
-  how the prior keys a term by its name.
+  how the prior keys a term by its name, and the probability layer a factor.
+- `probability.families.InverseWishart` (a `TransformedDistribution` subclass over
+  `WishartTriL`) matches `scipy.stats.invwishart`, but its
+  `experimental_default_event_space_bijector()` refuses float64 input with the pinned build;
+  the bind check of a law's own bijector treats such a bijector as absent and relies on draws.
+  TFP's `Chain([CholeskyOuterProduct(), FillScaleTriL(diag_bijector=Exp(), diag_shift=None)])`
+  `forward_log_det_jacobian(theta, event_ndims=1)` equals the log-Jacobian against the lower
+  triangle that `probability._bound.log_jacobian` computes by autodiff.
 
 ### PyEns
 - `EnsembleRunner(model, LocalBackend(n_workers=N)).run(EnsembleSpec(inputs=...))` — `model` must be defined at module level (pickling)
@@ -1414,17 +1681,40 @@ plotting code. The load-bearing rules:
   `ForwardModel` builds its site axis once and passes it to every grid).
   `tests/test_fields.py` pins both halves of the rule against PyEns.
 
-### pyEKI
-- There is deliberately no log-likelihood helper (as of pyEKI PR #31).
-  `pyeki.gauss.Gaussian(y, noise_cov)`, with `noise_cov` a `PSDLinOp`, scores a batch of
-  predictions with `log_density(predictions)`, `(..., N) -> (...)`, by the symmetry of the
-  density in point and mean. It equals
-  `-pyeki.eki.misfits(y, predictions, noise_cov) - (logdet R + N log 2 pi) / 2` and requires
-  `noise_cov` to support `whiten` and `logdet`. Build `noise_cov` with `DensePSD(R)`, which
-  factorizes the matrix; a factor already computed is passed by keyword, `DensePSD(L=L)`,
-  and must be the **lower** Cholesky factor (`from_matrix` is gone). Outside debug mode (`pyeki.linalg.set_debug_checks(True)` turns it on), a row
-  holding a NaN or an inf scores NaN, and so does every row when `noise_cov` is singular or
-  holds a NaN; the caller maps that to `-inf`.
+### EnsKit
+- EnsKit is pyEKI rewritten and renamed (package `enskit`); `pyeki.gauss` and
+  `pyeki.eki` are gone. It requires `jax>=0.10.1`, and importing it turns on 64-bit JAX, as
+  importing this package does.
+- **Distributions are over named blocks**, each a 1-D vector. `Gaussian(means, *, factors=,
+  block_covs=, latent_dim=)` holds per block a mean, an optional row of a shared factor and an
+  optional independent term; `Gaussian.independent(y=(mean, cov))` is one block with
+  covariance `cov`. `log_density(y=values)` takes `(*batch, N)` values and returns `batch`;
+  `sample(key, n)` returns an `Ensemble` and refuses `n < 2`.
+  `Ensemble({"theta": array})` holds `(n_particles, d)` per block, read as `ensemble["theta"]`.
+- There is no log-likelihood helper: `Gaussian.independent(y=(y, noise_cov)).log_density(
+  y=predictions)` scores a batch of predictions by the symmetry of the density in point and
+  mean, and equals `-eki.misfits(y, predictions, noise_cov) - (logdet R + N log 2 pi) / 2`
+  (`from enskit.algorithms import eki`). Build `noise_cov` with `enskit.linalg.DensePSD(R)`,
+  which factorizes the symmetric part `(R + R^T) / 2`; a factor already computed is passed by
+  keyword, `DensePSD(L=L)`, and must be the **lower** Cholesky factor. Outside debug mode
+  (`enskit.linalg.set_debug_checks(True)` turns it on), a row holding a NaN scores NaN, a row
+  holding an inf scores `-inf`, and every row scores NaN when `noise_cov` is singular; the
+  caller maps NaN to `-inf`.
+- **The EKI driver** is `eki.run(eki.EKIState(ensemble, key=key), forward, y, noise_cov, *,
+  update_rule=, schedule=, on_failure="raise")`. The state's ensemble is an unweighted
+  `Ensemble` whose blocks are the parameters; `forward` receives one positional array per
+  block and returns `(J, N)`. `update_rule` is required: `enskit.kalman.SymmetricSquareRoot()`
+  (deterministic, exact in moments for the linear-Gaussian case) or `kalman.Matheron()`
+  (stochastic). `on_failure="repair"` moves a particle whose prediction is not finite to the
+  valid particles' center and warns once at the end of the run. A run that ends on one of
+  EnsKit's schedules never evaluates its final ensemble: `result.last_evaluation.ensemble`
+  holds the particles before the last update (after inflation and repair), and
+  `EKIProblem.last_evaluation` the theta its forward map was handed then (before repair). A
+  forward map returning a dtype wider than the ensemble's is refused, so a `float64` forward
+  map needs a `float64` ensemble.
+- `typing.get_type_hints` cannot resolve EnsKit's `Gaussian` (its `Array` annotation is
+  imported for type checking only), so `tests/test_package.py`'s hint check skips names
+  re-exported from another package.
 
 ### ProbPipe (deferred — not a current dependency)
 

@@ -54,11 +54,17 @@ The data sources, each a spec, a reader, a builder, a loader and a field view:
 
 The inverse problem:
 
+:mod:`~sipnet_calibration.probability`
+    The probability layer, independent of the rest of the package, which is
+    replacing the parameter layer: so far its supports, the declaration of a
+    component (``ArraySpec``), coords with stacked dims, constants and label
+    maps, and the layout of named arrays with its three forms.
 :mod:`~sipnet_calibration.parameters`
-    The parameter layer, independent of the rest of the package: what is
-    calibrated (supports, parameters, the vector and its three forms), what
-    is computed from it (derived parameters), and what is believed
-    beforehand (the prior).
+    The parameter layer, independent of the rest of the package but for the
+    probability layer it reads its supports from: what is calibrated
+    (supports, parameters, the vector and its three forms), what is computed
+    from it (derived parameters), and what is believed beforehand (the
+    prior).
 :mod:`~sipnet_calibration.site_dims`
     The sites and the dims they define: coords for a vector, constants and
     memberships for its functions, and values read at the sites.
@@ -69,7 +75,9 @@ The inverse problem:
     The objects together: the record of a calibration, and an example.
 :mod:`~sipnet_calibration.observation`
     The observation vector, the observation operators and the time
-    alignment they are written with.
+    alignment they are written with; its ``model`` module, which the
+    package does not import, makes the sources' components for the
+    probability layer.
 :mod:`~sipnet_calibration.forward`
     The forward model, unconstrained parameters to predictions, run through
     PyEns.
@@ -82,6 +90,10 @@ Sampling the posterior:
     Tempered sequential Monte Carlo from a base density to the posterior,
     and importance sampling as its one-step case, over any prior and
     batched log likelihood; it knows nothing of SIPNET.
+:mod:`~sipnet_calibration.inference`
+    A posterior as each algorithm reads it: EKI's forward map, y, noise
+    covariance and initial ensemble; ``smc``'s tempering problem; an MCMC
+    sampler's log density and starting points.
 
 :mod:`~sipnet_calibration.plotting`
     Figures of fields: series, maps and grids of either.
@@ -90,7 +102,8 @@ Dependencies
 ------------
 The dependency runs one way, from the foundations up::
 
-    parameters  (imports nothing of the package)
+    probability  (imports nothing of the package)  <-  parameters
+    probability, smc, validation  <-  inference
 
     conventions  <-  validation  <-  sites
         <-  fields, site_labels
@@ -99,8 +112,9 @@ The dependency runs one way, from the foundations up::
         <-  observation, sipnet_parameter_map
         <-  calibration, forward  <-  experiments
 
-:mod:`~sipnet_calibration.parameters` imports nothing of the package outside
-itself, which ``tests/test_package.py`` enforces; the adapter layer
+:mod:`~sipnet_calibration.probability` imports nothing of the package outside
+itself, and :mod:`~sipnet_calibration.parameters` nothing but it, which
+``tests/test_package.py`` enforces; the adapter layer
 (``site_dims``, ``sipnet_parameter_map``, ``forward``) imports it, and the
 seam between them is the labeled natural values.
 :mod:`~sipnet_calibration.io` depends on nothing here, and the data sources
@@ -111,8 +125,10 @@ reads ``site_labels``' column name and the site table through ``sites``.
 field contract, its batch dims, the window coordinates of the two
 observation data sources, and the SIPNET parameter fields alias and
 validator, which is why neither ``initial_conditions`` nor ``observation``
-imports the parameter layer). ``sipnet_parameter_map`` depends on
-``parameters``, ``site_dims``, ``fields`` and ``initial_conditions``, and is
+imports the parameter layer); ``observation.model`` alone of the observation
+package imports the probability layer. ``sipnet_parameter_map`` depends on
+``probability``, ``parameters``, ``site_dims``, ``fields`` and
+``initial_conditions``, and is
 the one that imports pySIPNET's parameter specs; ``calibration`` on it and
 the parameter layer; and ``forward`` on ``fields``, ``observation``,
 ``parameters``, ``site_dims`` and ``sipnet_parameter_map``.
@@ -121,13 +137,16 @@ only, and :mod:`~sipnet_calibration.plotting` on ``conventions``,
 ``validation``, ``fields``, the site table and the projection; nothing outside
 plotting imports it. :mod:`~sipnet_calibration.compute` depends on nothing here,
 and :mod:`~sipnet_calibration.smc` on ``io`` and ``validation`` only.
+:mod:`~sipnet_calibration.inference` depends on ``probability``, ``smc`` and
+``validation`` only, so it reads a posterior and nothing of SIPNET, and
+imports no algorithm package.
 
 Notes
 -----
 **The one import-time side effect.** Importing the package, and so any of its
 modules, turns on JAX's 64-bit mode (``jax_enable_x64``), so every JAX array
-the package makes is ``float64``, as pyEKI requires and an MCMC baseline
-that never imports pyEKI still gets. The setting is per process. A worker of
+the package makes is ``float64``, as EnsKit requires and an MCMC baseline
+that never imports EnsKit still gets. The setting is per process. A worker of
 a process pool that imports the package -- as unpickling any of its objects
 does -- gets it too; only a worker that computes with JAX without importing
 the package needs ``JAX_ENABLE_X64=1`` in its environment.

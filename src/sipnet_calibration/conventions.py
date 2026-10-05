@@ -336,13 +336,19 @@ def read_only_copy(data: xr.DataArray | xr.Dataset) -> xr.DataArray | xr.Dataset
     return copied
 
 
+# Defined before ReadOnlyCopies, whose argument's default it is.
+#: What :class:`ReadOnlyCopies` holds for "no default", so that ``None`` can be one.
+_NO_DEFAULT = object()
+
+
 class ReadOnlyCopies:
     """A dataclass attribute that keeps a copy of what it is given and hands out copies.
 
     Assigned a ``DataArray`` or ``Dataset``, it keeps a deep, in-memory,
     read-only copy, and every read returns :func:`read_only_copy` of that;
     assigned a ``DataFrame``, it keeps a copy, and every read returns a copy;
-    anything else is kept and returned as it is. It has no default.
+    anything else is kept and returned as it is. It has no default unless
+    one is given, as ``ReadOnlyCopies(default=None)``.
 
     Notes
     -----
@@ -353,13 +359,20 @@ class ReadOnlyCopies:
     writeable, still hands out read-only ones.
     """
 
+    def __init__(self, *, default: Any = _NO_DEFAULT) -> None:
+        """*default*: the attribute's dataclass default, kept as it is;
+        omitted, the attribute has none and must be given."""
+        self._default = default
+
     def __set_name__(self, owner: type, name: str) -> None:
         self._stored = f"_{name}"
 
     def __get__(self, instance: Any, owner: type | None = None) -> Any:
         if instance is None:
-            # What dataclasses reads for a default: none.
-            raise AttributeError(self._stored)
+            # What dataclasses reads for a default: none, unless one was given.
+            if self._default is _NO_DEFAULT:
+                raise AttributeError(self._stored)
+            return self._default
         value = instance.__dict__[self._stored]
         if isinstance(value, (xr.DataArray, xr.Dataset)):
             return read_only_copy(value)

@@ -215,7 +215,7 @@ def test_independent_over_dim_needs_one_distribution_per_label():
 
 
 def test_a_prior_over_the_index_dims_needs_an_indexed_parameter():
-    with pytest.raises(TypeError, match="prior over a parameter's index dims"):
+    with pytest.raises(TypeError, match="law over a component's index dims"):
         Prior(vector_of(RATE), [term("rate", iid_over_dim(log_normal(median=1.0, geometric_sd=2.0)))])
 
 

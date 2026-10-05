@@ -9,7 +9,7 @@ dependencies = [
     # The xarray extra provides pyens.xarray, which builds PyEns field specs
     # from xarray objects.
     "pyens[xarray]",
-    "pyeki",
+    "enskit",
     "numpy>=1.24",
     "pandas>=2.0",
     # Field container: xr.DataArray with dims subset of (member, site, time).
@@ -38,8 +38,8 @@ dependencies = [
     # tensorflow_probability.substrates.jax, never from in-house code. The
     # stable tensorflow-probability release lags JAX, so the nightly channel
     # is the right one; uv.lock pins the dated build. Verified on Python 3.14
-    # with jax 0.8.3 and no TensorFlow installed (the 2026-09-21 build in a
-    # scratch venv, the 2026-09-22 build that the lock pins).
+    # with jax 0.10.2 (EnsKit requires >= 0.10.1) and no TensorFlow installed
+    # (the 2026-10-05 build that the lock pins).
     "tfp-nightly",
     "jupyter",
     "ipykernel",
@@ -70,6 +70,15 @@ dependencies = [
 [dependency-groups]
 dev = [
     "pytest>=8.0",
+    # The probability layer adapts numpyro's distributions without importing
+    # numpyro, so the package does not depend on it; its tests do.
+    "numpyro>=0.18",
+]
+# Optional: the tests of a GPJax Gaussian process as a factor's law, skipped
+# without it. Install with `uv sync --group gpjax`; a plain `uv sync` removes
+# it again.
+gpjax = [
+    "gpjax>=1.0",
 ]
 
 # The three companion packages are developed alongside this project rather than
@@ -80,7 +89,7 @@ dev = [
 [tool.uv.sources]
 pysipnet = { git = "https://github.com/TARPS-group/pySIPNET.git", branch = "main" }
 pyens = { git = "https://github.com/arob5/PyEns.git", branch = "main" }
-pyeki = { git = "https://github.com/TARPS-group/pyEKI.git", branch = "main" }
+enskit = { git = "https://github.com/TARPS-group/EnsKit.git", branch = "main" }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/sipnet_calibration"]

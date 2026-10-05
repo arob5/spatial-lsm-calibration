@@ -36,15 +36,22 @@ observation ensemble leaves, is metadata and is kept; a batch dim is refused,
 since an observation ensemble is reduced to one value per ``(site[, time])``
 by the experiment before it enters a vector.
 
+A source's **standard deviation**, when given, is observed values too, each
+observation's measurement-error standard deviation: read at the observed
+values' labels, in units that convert to theirs by a factor of exactly 1,
+finite and non-negative at every observation, and stored on the observed
+values' grid, ``NaN`` exactly where they are.
+
 Functions
 ---------
 :func:`validate_observed_values`
     Check that an array is observed values, raising on the first rule it
     breaks.
 :class:`ObservationSource`
-    One observation source's name, observed values and operator; ``sites``,
-    ``is_static``, ``n_observations`` and ``observations()`` (its
-    observations as a table).
+    One observation source's name, observed values, standard deviation and
+    operator; ``sites``, ``is_static``, ``n_observations``,
+    ``observation_labels`` (its observations as ``(site[, time])`` pairs)
+    and ``observations()`` (its observations as a table).
 
 Notes
 -----
@@ -65,14 +72,17 @@ Usage
 -----
 ::
 
-    from sipnet_calibration.constraints import constraint_fields
+    from sipnet_calibration.constraints import constraint_fields, constraint_standard_deviations
     from sipnet_calibration.observation import DEFAULT_OBS_OPS, ObservationSource
 
     # Two sites MODIS observes; sites 1 and 27 have no MODIS LAI.
-    observed = constraint_fields(["modis_leaf_area_index"], sites=[3851, 3871])
+    sites = [3851, 3871]
     source = ObservationSource(
         observation_source_name="modis_leaf_area_index",
-        observed_values=observed["modis_leaf_area_index"],
+        observed_values=constraint_fields(["modis_leaf_area_index"], sites=sites)["modis_leaf_area_index"],
+        standard_deviation=constraint_standard_deviations(["modis_leaf_area_index"], sites=sites)[
+            "modis_leaf_area_index"
+        ],
         operator=DEFAULT_OBS_OPS["modis_leaf_area_index"],
     )
     source.n_observations, source.sites
@@ -86,12 +96,14 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import xarray as xr
+from pysipnet.units import conversion_factor
 
 from sipnet_calibration.conventions import (
     DATA_SOURCE_MEMBER_NAMES,
     NON_BATCH_DIM_NAMES,
     SAMPLE,
     SITE,
+    SITE_DTYPE,
     TIME,
     WINDOW_END,
     WINDOW_START,
@@ -103,6 +115,7 @@ from sipnet_calibration.fields import (
     message_name,
     validate_field,
 )
+from sipnet_calibration.validation import truncated
 
 # The module, not its names: the operators read ObservedValues and
 # validate_observed_values from here, and the package imports the operators
@@ -115,6 +128,7 @@ __all__ = [
     "ObservationSource",
     "ObservedValues",
     "check_observation_source_is_valid",
+    "check_standard_deviation_is_valid",
     "validate_observed_values",
 ]
 
@@ -185,20 +199,28 @@ class ObservationSource:
     operator:
         The :class:`~sipnet_calibration.observation.operators.ObservationOperator`
         that predicts the observation source.
+    standard_deviation:
+        Each observation's measurement-error standard deviation, as the
+        module docstring's data model has it; a gap at an observation is
+        filled before the source is built, and a zero is allowed. ``None``,
+        the default, when none is known.
 
     Raises
     ------
     TypeError
-        If *observation_source_name* is not a string, *observed_values* is
-        not a ``DataArray``, or *operator* is not callable or declares its
-        names other than as tuples of strings.
+        If *observation_source_name* is not a string, *observed_values* or
+        *standard_deviation* is not a ``DataArray``, or *operator* is not
+        callable or declares its names other than as tuples of strings.
     ValueError
         If *observation_source_name* is empty or reserved
         (:data:`RESERVED_OBSERVATION_SOURCE_NAMES`); if *observed_values* are not
-        observed values (:func:`validate_observed_values`), once sorted; or
-        if the operator declares an alias.
+        observed values (:func:`validate_observed_values`), once sorted; if
+        the operator declares an alias; or if *standard_deviation* is
+        otherwise not what the data model says
+        (:func:`check_standard_deviation_is_valid`).
     KeyError
-        If the operator declares a name pySIPNET does not know.
+        If the operator declares a name pySIPNET does not know, or
+        *standard_deviation* lacks a label of the observed values.
 
     Notes
     -----
@@ -210,12 +232,17 @@ class ObservationSource:
     observation_source_name: str
     observed_values: ObservedValues = ReadOnlyCopies()
     operator: operators.ObservationOperator
+    standard_deviation: ObservedValues | None = ReadOnlyCopies(default=None)
 
     def __post_init__(self) -> None:
         values = _sort_by_site_and_time(self.observed_values)
         check_observation_source_is_valid(self.observation_source_name, values, self.operator)
         stored = _observed_labels_only(values).rename(self.observation_source_name)
         object.__setattr__(self, "observed_values", stored)
+        if self.standard_deviation is not None:
+            standard_deviation = _sort_by_site_and_time(self.standard_deviation)
+            check_standard_deviation_is_valid(standard_deviation, stored, self.observation_source_name)
+            object.__setattr__(self, "standard_deviation", _on_the_observed_grid(standard_deviation, stored))
 
     # ── identity ──────────────────────────────────────────────────────────────
 
@@ -233,6 +260,18 @@ class ObservationSource:
     def n_observations(self) -> int:
         """The number of observed (finite) values."""
         return int(self.observed_values.notnull().sum())
+
+    @property
+    def observation_labels(self) -> pd.MultiIndex:
+        """The observations as labels: a ``MultiIndex`` with levels ``(site,
+        time)``, or ``(site,)`` for a static source, sorted by site, then
+        time; ``site`` ``int32``, ``time`` ``datetime64[ns]``."""
+        table = self.observations()
+        if self.is_static:
+            return pd.MultiIndex.from_arrays([table[SITE].to_numpy(SITE_DTYPE)], names=[SITE])
+        return pd.MultiIndex.from_arrays(
+            [table[SITE].to_numpy(SITE_DTYPE), table[TIME].to_numpy("datetime64[ns]")], names=[SITE, TIME]
+        )
 
     def __repr__(self) -> str:
         return (
@@ -295,6 +334,33 @@ def _observed_labels_only(values: xr.DataArray) -> xr.DataArray:
         values = values.isel({TIME: np.flatnonzero(observed.any(SITE).values)})
         return values
     return values.isel({SITE: np.flatnonzero(observed.values)})
+
+
+def _on_the_observed_grid(standard_deviation: xr.DataArray, observed: xr.DataArray) -> xr.DataArray:
+    """*standard_deviation* read at *observed*'s labels, on its grid and
+    coordinates, ``NaN`` where it is, with its own attributes."""
+    at_labels = _at_the_observed_labels(standard_deviation, observed)
+    out = observed.copy(data=np.where(observed.notnull().values, at_labels, np.nan))
+    out.attrs = dict(standard_deviation.attrs)
+    return out
+
+
+def _at_the_observed_labels(standard_deviation: xr.DataArray, observed: xr.DataArray) -> np.ndarray:
+    """*standard_deviation*'s values at *observed*'s labels, ``float64``."""
+    selected = standard_deviation.sel({dim: observed.indexes[dim] for dim in observed.dims})
+    return np.asarray(selected.values, dtype=np.float64)
+
+
+def _units_convert_by_one(units: Any, constituent: Any, to_units: Any, to_constituent: Any) -> bool:
+    """Whether *units* of *constituent* convert to *to_units* of
+    *to_constituent* by exactly 1."""
+    try:
+        factor = conversion_factor(
+            units=units, constituent=constituent or "", to_units=to_units, to_constituent=to_constituent or ""
+        )
+    except (ValueError, KeyError, TypeError):
+        return False
+    return factor == 1.0
 
 
 # ── checks ────────────────────────────────────────────────────────────────────
@@ -372,4 +438,90 @@ def check_observed_values_are_finite_or_nan(values: xr.DataArray, message_name: 
         raise ValueError(
             f"{message_name}: an observed value is infinite; an observation is finite or "
             "NaN, so replace it with NaN or drop it."
+        )
+
+
+def check_standard_deviation_is_valid(
+    standard_deviation: Any, observed_values: xr.DataArray, observation_source_name: str
+) -> None:
+    """A source's standard deviation is what the module's data model says
+    of one, against its sorted, trimmed observed values."""
+    name = f"{observation_source_name}: the standard deviation"
+    check_standard_deviation_is_a_dataarray(standard_deviation, name)
+    validate_observed_values(standard_deviation, message_name=name)
+    check_standard_deviation_is_on_the_observed_dims(standard_deviation, observed_values, name)
+    check_standard_deviation_is_in_the_observed_units(standard_deviation, observed_values, name)
+    check_standard_deviation_covers_the_observed_labels(standard_deviation, observed_values, name)
+    check_standard_deviation_is_known_and_non_negative(standard_deviation, observed_values, name)
+
+
+def check_standard_deviation_is_a_dataarray(standard_deviation: Any, message_name: str) -> None:
+    """A standard deviation is an ``xr.DataArray``, read by label."""
+    if not isinstance(standard_deviation, xr.DataArray):
+        raise TypeError(
+            f"{message_name} is a {type(standard_deviation).__name__}; give a DataArray on the "
+            "observed values' dims, as constraint_standard_deviations() returns one."
+        )
+
+
+def check_standard_deviation_is_on_the_observed_dims(
+    standard_deviation: xr.DataArray, observed_values: xr.DataArray, message_name: str
+) -> None:
+    """A standard deviation is on the observed values' dims: static for a
+    static source, dated for a dated one."""
+    if standard_deviation.dims != observed_values.dims:
+        raise ValueError(
+            f"{message_name} is on {standard_deviation.dims}, the observed values on "
+            f"{observed_values.dims}; give one standard deviation per observation."
+        )
+
+
+def check_standard_deviation_is_in_the_observed_units(
+    standard_deviation: xr.DataArray, observed_values: xr.DataArray, message_name: str
+) -> None:
+    """A standard deviation's units convert to the observed values' by a
+    factor of exactly 1, since nothing converts it."""
+    held, observed = standard_deviation.attrs, observed_values.attrs
+    if not _units_convert_by_one(
+        held.get("units"), held.get("constituent"), observed.get("units"), observed.get("constituent")
+    ):
+        raise ValueError(
+            f"{message_name} is in {held.get('units')!r} (constituent "
+            f"{held.get('constituent', '')!r}), the observed values in {observed.get('units')!r} "
+            f"(constituent {observed.get('constituent', '')!r}); convert it to the observed "
+            "values' units first."
+        )
+
+
+def check_standard_deviation_covers_the_observed_labels(
+    standard_deviation: xr.DataArray, observed_values: xr.DataArray, message_name: str
+) -> None:
+    """A standard deviation holds every site and time label of the observed
+    values, since it is read at them by label."""
+    for dim in observed_values.dims:
+        held = standard_deviation.indexes[dim]
+        wanted = observed_values.indexes[dim]
+        missing = wanted[held.get_indexer(wanted) < 0]
+        if len(missing):
+            raise KeyError(
+                f"{message_name} lacks the {dim} label(s) {truncated([str(m) for m in missing])} of "
+                "the observed values; give it at every observed label."
+            )
+
+
+def check_standard_deviation_is_known_and_non_negative(
+    standard_deviation: xr.DataArray, observed_values: xr.DataArray, message_name: str
+) -> None:
+    """A standard deviation is finite and non-negative at every observation,
+    since a covariance built from it would carry a gap into the likelihood."""
+    values = _at_the_observed_labels(standard_deviation, observed_values)[observed_values.notnull().values]
+    if np.isnan(values).any():
+        raise ValueError(
+            f"{message_name} is missing at {int(np.isnan(values).sum())} observation(s); fill it "
+            "there, or drop those observations, before building the source."
+        )
+    if (values < 0).any():
+        raise ValueError(
+            f"{message_name} is negative at {int((values < 0).sum())} observation(s); a standard "
+            "deviation is non-negative."
         )
