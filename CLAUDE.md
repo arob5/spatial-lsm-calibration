@@ -1679,7 +1679,7 @@ plotting code. The load-bearing rules:
   `tests/test_fields.py` pins both halves of the rule against PyEns.
 
 ### EnsKit
-- EnsKit is pyEKI rewritten and renamed (package `enskit`, release 0.1.0); `pyeki.gauss` and
+- EnsKit is pyEKI rewritten and renamed (package `enskit`); `pyeki.gauss` and
   `pyeki.eki` are gone. It requires `jax>=0.10.1`, and importing it turns on 64-bit JAX, as
   importing this package does.
 - **Distributions are over named blocks**, each a 1-D vector. `Gaussian(means, *, factors=,
@@ -1694,8 +1694,9 @@ plotting code. The load-bearing rules:
   (`from enskit.algorithms import eki`). Build `noise_cov` with `enskit.linalg.DensePSD(R)`,
   which factorizes the symmetric part `(R + R^T) / 2`; a factor already computed is passed by
   keyword, `DensePSD(L=L)`, and must be the **lower** Cholesky factor. Outside debug mode
-  (`enskit.linalg.set_debug_checks(True)` turns it on), a row holding a NaN scores NaN, and so
-  does every row when `noise_cov` is singular; the caller maps that to `-inf`.
+  (`enskit.linalg.set_debug_checks(True)` turns it on), a row holding a NaN scores NaN, a row
+  holding an inf scores `-inf`, and every row scores NaN when `noise_cov` is singular; the
+  caller maps NaN to `-inf`.
 - **The EKI driver** is `eki.run(eki.EKIState(ensemble, key=key), forward, y, noise_cov, *,
   update_rule=, schedule=, on_failure="raise")`. The state's ensemble is an unweighted
   `Ensemble` whose blocks are the parameters; `forward` receives one positional array per

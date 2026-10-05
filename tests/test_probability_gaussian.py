@@ -498,9 +498,10 @@ def test_an_enskit_gaussian_is_a_law():
 
 def test_a_gaussian_law_over_a_matrix_block_is_over_its_entries_in_c_order():
     covariance = _by_site(_correlated)[:6, :6]
-    law = GaussianLaw(jnp.zeros((2, 3)), _linalg.DensePSD(jnp.asarray(covariance)))
+    mean = np.arange(6.0).reshape(2, 3)
+    law = GaussianLaw(jnp.asarray(mean), _linalg.DensePSD(jnp.asarray(covariance)))
     points = RNG.normal(size=(4, 2, 3))
-    expected = st.multivariate_normal(np.zeros(6), covariance).logpdf(points.reshape(4, 6))
+    expected = st.multivariate_normal(mean.reshape(6), covariance).logpdf(points.reshape(4, 6))
     np.testing.assert_allclose(np.asarray(law.log_prob(points)), expected, rtol=1e-12)
     assert jnp.shape(law.log_prob(points[0])) == ()
     assert law.sample((5,), seed=KEY).shape == (5, 2, 3)

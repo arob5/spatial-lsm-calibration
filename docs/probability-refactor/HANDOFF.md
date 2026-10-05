@@ -73,6 +73,22 @@ Decided by Andrew:
 
 - **The recommended decisions** (§13): D1, D2, D5, D7, D8, D9, D10, D11, D12,
   D13, D14, D18–D24.
+- **TFP's Gamma sampling under JAX 0.10 (E1, found in review).** TFP's
+  nightly calls a JAX shape function with `None`, which JAX 0.10 deprecates
+  ("will be an error"); `bind`'s support check samples every Gamma-family
+  and Dirichlet law, so a future JAX that makes it an error breaks `bind`
+  for those laws until TFP fixes it. The lock pins JAX, so nothing breaks
+  today. Recommended: leave it, and check the warning (the E1 entry says
+  how) before any JAX upgrade; the alternative is a `filterwarnings` entry
+  that would hide it.
+- **An EnsKit Gaussian with a factor row and no independent term (E1).**
+  `as_law` refuses it, since a `GaussianLaw` whitens its covariance and
+  EnsKit holds `F F^T` as the factor alone. When the factor has at least as
+  many columns as the block has entries, as an `Ensemble.project()` with
+  more particles than dimensions does, the law has a density, which EnsKit
+  scores by a QR of the factor. Recommended: keep the refusal until a factor
+  needs such a law; adapting it means a `GaussianLaw` that scores through
+  EnsKit's `log_density` for every case, and draws from the factor.
 - **An observation's calendar year (P4).** `calendar_year` and
   `year_label_map` take the year of the `time` label. For a source labeled
   at its window's end, such as observed NEE, the step ending
@@ -1137,3 +1153,89 @@ fixed law over its block, not one centered on another component.
 - E1 is next, once this PR merges: the re-pin to EnsKit's `main` (see
   "Decided by Andrew"). Then E2, then #69's migration in its own session,
   then R1.
+
+### 2026-10-05: E1, the re-pin to EnsKit
+
+**Done.** The project tracks EnsKit's `main` (`TARPS-group/EnsKit`, package
+`enskit`) in place of pyEKI.
+
+- `pyproject.toml`: the dependency `pyeki` is `enskit`. `uv.lock` adds
+  EnsKit 0.1.0 at 38df902, moves JAX 0.8.3 to 0.10.2 (EnsKit requires
+  `>= 0.10.1`) and `tfp-nightly` to its 2026-10-05 build, the one the plan's
+  scratch check used, and removes pyEKI. Nothing else moves: NumPy stays
+  2.4.6, the scratch check's 2.5 having come from a fresh lock.
+- `probability/_linalg.py` imports the same names from `enskit.linalg` and
+  `enskit.distribution`; the operators' constructors are unchanged.
+- `GaussianLaw` holds an EnsKit `Gaussian` of one block, its covariance the
+  block's independent term, and scores through its `log_density`; it still
+  draws `m + L z` itself. `as_law` adapts an EnsKit `Gaussian` of one block
+  through `Gaussian.cov`, a factor row included, and refuses one of several
+  blocks and a block with no independent term (two new checks).
+- Tests: `test_inference`, `test_smc` and `test_forward`'s EKI test run
+  EnsKit's driver with `kalman.SymmetricSquareRoot()`, the counterpart of
+  pyEKI's default `TransformUpdate`; the tests that built pyEKI's
+  `Gaussian(mean, cov)` build `Gaussian.independent(name=(mean, cov))`;
+  `test_package` names `enskit`, and its type-hint check skips names
+  re-exported from another package.
+- P1's references: JAX 0.10 and the TFP build moved five of the six files by
+  round-off (at most 1e-15 relative: draws, `log_prob`, allocations;
+  `forward_example`'s predictions did not move, only its theta). They were
+  rewritten from P4's merge (dd396fd, before P5) in this environment, and
+  today's code writes the same bytes, so P1's rule for `forward_example`
+  holds. `copula` did not move.
+- Docs: CLAUDE.md's companion table, upgrade command, workflow step 4,
+  glossary rows, layout and an "EnsKit" section of facts (each checked
+  against the installed package) replacing the pyEKI facts; the README;
+  every docstring naming pyEKI; `design.html` "As built in E1" and the
+  sections that described pyEKI as current.
+
+Tests: 3100 passed and 96 skipped before; 3102 and 96 after (the two new
+`as_law` tests). The GPJax test passes under JAX 0.10 after
+`uv sync --group gpjax`. EKI from prior draws through EnsKit's driver, over
+eight seeds: at most 0.028 posterior sds in the mean and 0.5% in an sd, so
+the tolerances (0.06, 1.5%) keep their margin.
+
+**Review.** One Standard round: code, mutation testing, docs. No bug in the
+changed mathematics or control flow. Fixed:
+
+- the refusal of a block with no independent term said its covariance has
+  no density, which is false when the factor has at least as many columns as
+  the block has entries (an `Ensemble.project()` with `J > d`); it now says
+  a `GaussianLaw` cannot whiten the factor alone;
+- the private block name, which EnsKit's debug messages print, is
+  `"GaussianLaw event"` rather than `"block"`;
+- a mutant flattening a matrix block's mean in Fortran order survived; the
+  matrix-block test now has a nonzero mean;
+- docs: the design's stale present-tense pyEKI passages, a circular phrase,
+  "particle" for a sample, a `#:` comment, the JAX requirement's wording,
+  what an inf row scores, a release number that would go stale.
+
+Not acted on (nits): a vmapped EnsKit family is refused by EnsKit's guard
+rather than ours; `log_density` formats `repr(self)` per call, negligible
+under `jit`; no test passes `float32` values to `GaussianLaw.log_prob`
+(pre-existing).
+
+**Deviations from the design.** None. Choices the design left open: the
+EKI tests use the deterministic rule; `as_law` refuses rather than reads a
+multi-block Gaussian, as P6 refused correlated sources.
+
+**What the next sessions must know.**
+
+- Run CLAUDE.md's standard companion upgrade now: `enskit` is upgraded with
+  pySIPNET and PyEns.
+- JAX 0.10 makes TFP's Gamma sampler, which `Dirichlet` uses, emit
+  "shape requires ndarray or scalar arguments, got NoneType ... will be an
+  error" from `bind`'s support check (`_bound._draws_lie_in_the_support`).
+  It is TFP's code; a JAX bump that makes it an error breaks `bind` for any
+  Gamma-family or Dirichlet law until TFP's nightly fixes it. Run
+  `pytest tests/test_probability_law_adapters.py -W "error:shape requires
+  ndarray:DeprecationWarning"` to see whether it has.
+- `typing.get_type_hints` cannot resolve EnsKit's `Gaussian` (`Array` is
+  imported for type checking only); EnsKit's to fix, if anyone reports it.
+- Under `enskit.linalg.set_debug_checks(True)`, a `GaussianLaw` with a
+  non-finite mean raises at construction, where pyEKI's scored NaN. Debug
+  mode is opt-in and the layer never turns it on.
+- E2 is next: `eki_problem` in the terms of `enskit.algorithms.eki`, with
+  `initial_ensemble` an `Ensemble`, and §9.1 of the design rewritten. Then
+  #69's migration in its own session, then R1. #69's branch breaks on
+  rebasing or re-locking until it ports its `pyeki` imports.

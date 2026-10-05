@@ -118,7 +118,7 @@ class EKIProblem:
 
     def forward(self, theta: Any) -> Array:
         """:math:`G(\\theta)`, ``(J, D) -> (J, N)`` in y's order, ``NaN`` in an
-        invalid sample, as EnsKit's driver reads a failed particle; one
+        invalid sample, as EnsKit's driver reads a failed sample; one
         :meth:`Posterior.evaluate`, which replaces :attr:`last_evaluation`.
 
         Raises

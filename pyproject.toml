@@ -38,8 +38,8 @@ dependencies = [
     # tensorflow_probability.substrates.jax, never from in-house code. The
     # stable tensorflow-probability release lags JAX, so the nightly channel
     # is the right one; uv.lock pins the dated build. Verified on Python 3.14
-    # with jax 0.10.2, which EnsKit requires, and no TensorFlow installed (the
-    # 2026-10-05 build that the lock pins).
+    # with jax 0.10.2 (EnsKit requires >= 0.10.1) and no TensorFlow installed
+    # (the 2026-10-05 build that the lock pins).
     "tfp-nightly",
     "jupyter",
     "ipykernel",

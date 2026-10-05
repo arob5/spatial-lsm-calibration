@@ -84,8 +84,9 @@ tfb = tfp.bijectors
 
 Array = jax.Array
 
-# The name of the one block of the EnsKit Gaussian a GaussianLaw holds.
-_BLOCK_NAME = "block"
+#: The name of the one block of the EnsKit Gaussian a GaussianLaw holds, which
+#: EnsKit's own messages name.
+_BLOCK_NAME = "GaussianLaw event"
 
 #: TFP's classes whose ``.distribution`` and ``.bijector`` are a base in theta
 #: and a map from it. Subclasses such as ``MultivariateNormalTriL`` and
@@ -579,11 +580,13 @@ def check_gaussian_has_one_block(gaussian: Any) -> None:
 
 def check_gaussian_block_has_an_independent_term(gaussian: Any, name: str) -> None:
     """An EnsKit ``Gaussian`` adapted to a law has an independent term on its
-    block, without which its covariance is the low-rank :math:`F F^\\top`."""
+    block, without which its covariance :math:`F F^\\top` is held as the
+    factor alone, an operator a :class:`GaussianLaw` cannot whiten."""
     if gaussian.block_cov(name) is None:
         raise ValueError(
-            f"the EnsKit Gaussian's block {name!r} has no independent term, so its covariance is the low-rank "
-            "F F^T, with no density over the block; add one with gaussian.add_noise(...)."
+            f"the EnsKit Gaussian's block {name!r} has no independent term, so its covariance F F^T is held as "
+            "the factor alone, which a GaussianLaw cannot whiten (and which is singular when the factor has fewer "
+            "columns than the block has entries); add one with gaussian.add_noise(...)."
         )
 
 
