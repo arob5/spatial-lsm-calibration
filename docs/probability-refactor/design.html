@@ -1182,6 +1182,36 @@ class GaussianSpec:
     but is opaque to both. A covariance that does not depend on theta is
     built and factored once, at :func:`condition_on`.
     """</code></pre>
+<p><i>As built in P6:</i></p>
+<ul>
+  <li>A <code>GaussianSpec</code> has <b>one mean</b>, and its factor's event is
+  <b>one component on <code>REAL</code>, indexed by one dim at most, with no
+  element axes</b>, so its entries are its labels in order. A Gaussian over
+  several components on different dims (correlated sources) is refused, at
+  <code>GaussianSpec</code> and at <code>noise_factor</code>: it needs
+  <code>FactorSpec</code>'s joint-factor rule relaxed, per-component index
+  shapes in the bound factor, a rule for constants read on several dims, and
+  the permuted residual of §14, and no experiment asks for it yet. The handoff
+  document lists it as an open item.</li>
+  <li>Evaluated, it is a <code>probability.laws.GaussianLaw</code>: a
+  <code>Law</code> over the event's block holding one of pyEKI's operators
+  (through <code>probability/_linalg.py</code>) and the
+  <code>pyeki.gauss.Gaussian</code> of its flattened block
+  (<code>.gaussian</code>). Its draws are <code>m + L z</code>, made by the
+  law itself. <code>as_law</code> turns a <code>pyeki.gauss.Gaussian</code>
+  into one.</li>
+  <li>A Gaussian factor is not given the probe-point checks, its support
+  being <code>REAL</code>; at bind it is checked for its event shape and, when
+  its covariance reads nothing that varies by draw (no parameter, no simulator
+  output), for a positive-definite covariance. One that does is checked per
+  sample, which it makes invalid where it fails, so a prior putting some mass
+  on covariances that are not positive definite still binds.</li>
+  <li>"Depends on theta" is read as "is not computable from the held values"
+  (observed values, inputs, constants, and the deterministics of them alone,
+  no simulator). A covariance reading an observed value that itself has a
+  target ancestor is then held, which is exact: the value is held in the
+  conditional.</li>
+</ul>
 
 <h3 id="core-covariance">7.7 Covariance specs</h3>
 <p>A covariance spec declares structure over labels: which entries form blocks,
@@ -1312,6 +1342,31 @@ class SubmatrixSpec(CovarianceSpec):
     ValueError
         If two entries in the scope map to one label.
     """</code></pre>
+<p><i>As built in P6:</i></p>
+<ul>
+  <li>Each spec is bound to its scope with the factor, at <code>bind</code>
+  (which entries form which group is fixed then), and builds its operator at
+  each draw from what the factor reads, sliced to the scope.</li>
+  <li>A <code>BlockDiagonalSpec</code>'s groups must be <b>contiguous</b> in the
+  event, so that the operator is the covariance in the event's order; one that
+  is not is refused at bind. An observation dim grouped by <code>site</code>,
+  sorted by site, always is. Groups are in order of first appearance;
+  <code>by</code> may be several levels, or the dim itself (one entry per
+  group); groupings nest.</li>
+  <li><code>SumSpec</code> adds its terms as dense matrices and factors the sum
+  once, since a term may be only semi-definite (an <code>outer</code> product of
+  standard deviations). Its table's second row reads "no block-diagonal term:
+  <code>DensePSD</code> over the scope", inside a block or not;
+  blockwise sums are rewritten as <code>BlockDiagonalSpec(SumSpec(...))</code>.</li>
+  <li><code>DiagonalSpec</code>'s name may be a scalar's, which every entry
+  takes; <code>ScaledSpec</code>'s scale may be a constant as well as a
+  component, and a component's support must keep it positive.</li>
+  <li>A value precondition (a positive variance, a positive-definite block) is
+  not checked when an operator is built, as pyEKI does outside its debug mode:
+  one that fails gives a density that is not finite. A covariance the held
+  values fix is checked once at <code>condition_on</code>, one read at a draw
+  makes that sample invalid.</li>
+</ul>
 
 <h3 id="core-deterministic">7.8 <code>DeterministicSpec</code></h3>
 <pre><code class="language-python">@dataclass(frozen=True, eq=False)
@@ -1923,6 +1978,11 @@ class GaussianLikelihood:
         theta in ``observations``' order: ``(predictions (J, N), valid (J,),
         evaluation)``, ``NaN`` in an invalid sample."""
 
+    # As built in P6: GaussianLikelihood also holds ``posterior`` and
+    # ``mean_names``; ``noise_covariance`` over one factor is that factor's
+    # operator itself (pyEKI's ``block_diag`` of one block), over several a
+    # ``PSDBlockDiag`` of them.
+
 
 @dataclass(frozen=True, eq=False)
 class FullConditional:
@@ -2197,7 +2257,14 @@ def noise_factor(observation_vector: ObservationVector,
     ``observation_vector.with_observed_values(...)``, or the covariance
     follows the real data. A covariance built from the data makes the
     evidence an empirical-Bayes quantity.
-    """</code></pre>
+    """
+
+# As built in P6: noise_factor takes one source, observation_source_name:
+# str (Andrew's decision, after the review): a sequence is a TypeError,
+# several sources waiting with GaussianSpec's several components. Of
+# the source's constants it holds those its covariance reads, so FactorSpec's
+# rule that every constant is read holds; a constant given that is named like
+# one of those is refused.</code></pre>
 <p>A covariance that reads the constant <code>observed</code>, such as an error
 proportional to the stock, makes the model's law of y depend on the data. The
 likelihood is unaffected, but <code>sample</code> of an observed component is

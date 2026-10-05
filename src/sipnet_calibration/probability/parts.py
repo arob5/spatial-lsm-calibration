@@ -33,6 +33,9 @@ Classes and functions
 ---------------------
 :class:`FactorSpec`, :func:`factor`
     A conditional law over one component or several indexed alike.
+:class:`GaussianSpec`
+    A factor's law as a Gaussian centered on a component, its covariance
+    declared by a covariance spec (:mod:`~sipnet_calibration.probability.covariance`).
 :class:`DeterministicSpec`, :func:`deterministic`
     Components computed by a pure JAX function.
 :class:`Simulator`, :class:`SimulatorOutput`
@@ -63,14 +66,17 @@ from sipnet_calibration.probability._validation import (
     truncated,
 )
 from sipnet_calibration.probability.builders import Builder
+from sipnet_calibration.probability.covariance import CovarianceSpec
 from sipnet_calibration.probability.labels import as_constants, as_label_maps
 from sipnet_calibration.probability.laws import Law, distribution_name, is_law
 from sipnet_calibration.probability.layout import LabeledValues
 from sipnet_calibration.probability.spec import ArraySpec
+from sipnet_calibration.probability.support import REAL
 
 __all__ = [
     "DeterministicSpec",
     "FactorSpec",
+    "GaussianSpec",
     "Simulator",
     "SimulatorOutput",
     "deterministic",
@@ -97,7 +103,7 @@ class FactorSpec:
     event : ArraySpec or Sequence[ArraySpec]
         Positional-only. One component, or several indexed by the same dims
         (a **joint factor**), in the order of their entries in theta.
-    law : Law, callable or Builder
+    law : Law, callable, Builder or GaussianSpec
         Keyword-only. The law, or how to build it per draw:
 
         - a law (a TFP distribution, or an object implementing
@@ -108,7 +114,10 @@ class FactorSpec:
           event's names for a joint factor; traced, and vmapped over draws
           when it reads a component;
         - a builder's result (:func:`~sipnet_calibration.probability.builders.iid_over_dim`
-          and the others), which the model also gives the index shape.
+          and the others), which the model also gives the index shape;
+        - a :class:`GaussianSpec`, over one component on
+          :data:`~sipnet_calibration.probability.support.REAL` indexed by one
+          dim at most, with no element axes.
     constants, label_maps : Mapping[str, xr.DataArray], optional
         Keyword-only. Fixed data the law reads
         (:mod:`~sipnet_calibration.probability.labels`). Each must be read.
@@ -135,7 +144,7 @@ class FactorSpec:
     ------
     TypeError
         If *event* is not one or more :class:`ArraySpec`; *law* is none of
-        the three forms, or a function breaking the keyword rule; a bare
+        the four forms, or a function breaking the keyword rule; a bare
         law is given to a factor that is indexed, joint, or holds constants;
         a constant or label map is not a DataArray; or *provenance* is not a
         string.
@@ -143,7 +152,9 @@ class FactorSpec:
         If the event is empty; a joint factor's components are indexed
         differently; a name repeats across the event, the constants and the
         label maps; the law reads a component of its own event; a constant
-        or label map is never read; or *provenance* is empty.
+        or label map is never read; *provenance* is empty; or a Gaussian's
+        event is not one component on ``REAL`` indexed by one dim at most
+        with no element axes.
 
     Notes
     -----
@@ -200,8 +211,10 @@ class FactorSpec:
 
     @property
     def law_name(self) -> str:
-        """A short name for the law: a builder's or family's name, a
-        function's ``__name__``, or the law's class."""
+        """A short name for the law: ``"Gaussian"``, a builder's or family's
+        name, a function's ``__name__``, or the law's class."""
+        if isinstance(self.law, GaussianSpec):
+            return "Gaussian"
         if isinstance(self.law, Builder):
             return self.law.name
         if is_law(self.law):
@@ -242,6 +255,79 @@ def factor(
         )
 
     return decorate
+
+
+class GaussianSpec:
+    """A Gaussian law centered on a component, for a :class:`FactorSpec`'s
+    ``law``:
+
+    .. math::
+
+        z \\mid m, \\phi \\sim \\mathcal N\\big(m,\\ \\Sigma(\\phi)\\big).
+
+    Evaluated at one draw it is a
+    :class:`~sipnet_calibration.probability.laws.GaussianLaw` over the
+    event's block: mean :math:`m`, the component *mean* names, and
+    covariance :math:`\\Sigma` built by *covariance*.
+
+    Parameters
+    ----------
+    mean : str or Sequence[str]
+        Keyword-only. The component or input the event is centered on, of
+        the event's layout and units, which
+        :func:`~sipnet_calibration.probability.model.joint` checks; one, for
+        an event of one component.
+    covariance : CovarianceSpec
+        Keyword-only. :math:`\\Sigma` over the event's entries.
+
+    Attributes
+    ----------
+    mean : tuple of str
+    covariance : CovarianceSpec
+    reads : tuple of str
+        The mean, then what the covariance reads.
+
+    Raises
+    ------
+    TypeError
+        If *mean* is not one or more names, or *covariance* not a
+        covariance spec.
+    ValueError
+        If *mean* names more than one component.
+
+    Notes
+    -----
+    The model reads the declaration without evaluating it, to tell whether
+    :math:`\\Sigma` depends on the parameters
+    (:meth:`Posterior.gaussian_likelihood <sipnet_calibration.probability.posterior.Posterior.gaussian_likelihood>`).
+    A covariance that does not is built and factored once, when the model is
+    conditioned. A law function returning a
+    :class:`~sipnet_calibration.probability.laws.GaussianLaw` evaluates to
+    the same law but is opaque to both.
+    """
+
+    __slots__ = ("mean", "covariance")
+
+    mean: tuple[str, ...]
+    covariance: CovarianceSpec
+
+    def __init__(self, *, mean: str | Sequence[str], covariance: CovarianceSpec) -> None:
+        mean = (mean,) if isinstance(mean, str) else as_names(mean, message_name="GaussianSpec's mean")
+        check_gaussian_has_one_mean(mean)
+        check_covariance_is_a_covariance_spec(covariance)
+        _set(self, "mean", mean)
+        _set(self, "covariance", covariance)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        raise AttributeError(f"a GaussianSpec is frozen; build another rather than setting {name!r}.")
+
+    @property
+    def reads(self) -> tuple[str, ...]:
+        """The mean, then what the covariance reads."""
+        return tuple(dict.fromkeys((*self.mean, *self.covariance.reads)))
+
+    def __repr__(self) -> str:
+        return f"GaussianSpec(mean={self.mean[0]!r}, covariance={self.covariance!r})"
 
 
 class DeterministicSpec:
@@ -505,10 +591,11 @@ def _as_specs(specs: Any, *, what: str) -> tuple[ArraySpec, ...]:
 
 def _law_reads(name: str, law: Any) -> tuple[str, ...]:
     """What a factor's law reads: nothing for a law, a builder's
-    :attr:`~Builder.reads`, a function's keywords."""
+    :attr:`~Builder.reads`, a Gaussian's mean and covariance's, a
+    function's keywords."""
     if is_law(law):
         return ()
-    if isinstance(law, Builder):
+    if isinstance(law, (Builder, GaussianSpec)):
         return law.reads
     check_law_is_one_of_the_forms(name, law)
     return function_reads(law, message_name=f"the law of {name!r}")
@@ -527,6 +614,7 @@ def check_factor_spec_is_valid(spec: FactorSpec) -> None:
     check_part_reads_what_it_holds(spec, kind="factor")
     check_law_does_not_read_its_own_event(spec)
     check_provenance_is_a_string_or_none(spec)
+    check_gaussian_event_is_one_vector_on_the_reals(spec)
 
 
 def check_deterministic_spec_is_valid(spec: DeterministicSpec) -> None:
@@ -656,6 +744,40 @@ def check_bare_law_needs_nothing_bound(spec: FactorSpec) -> None:
         raise TypeError(
             f"the factor {spec.name!r} holds {sorted([*spec.constants, *spec.label_maps])} but is given a "
             "bare law; give a function of them that returns one."
+        )
+
+
+def check_gaussian_has_one_mean(mean: tuple[str, ...]) -> None:
+    """A Gaussian is centered on one component: a Gaussian whose event spans
+    several components, each on its own dim, is not built."""
+    if len(mean) != 1:
+        raise ValueError(
+            f"a GaussianSpec is centered on {list(mean)}; center it on one component. A Gaussian whose event "
+            "spans several components is not supported: give each its own factor."
+        )
+
+
+def check_covariance_is_a_covariance_spec(covariance: Any) -> None:
+    """A Gaussian's covariance is declared by a covariance spec."""
+    if not isinstance(covariance, CovarianceSpec):
+        raise TypeError(
+            f"a GaussianSpec's covariance is a {type(covariance).__name__}; give a covariance spec, such as "
+            "DiagonalSpec(...) or BlockDiagonalSpec(DenseSpec(...), by='site')."
+        )
+
+
+def check_gaussian_event_is_one_vector_on_the_reals(spec: FactorSpec) -> None:
+    """A Gaussian factor's event is one component on ``REAL``, indexed by one
+    dim at most and with no element axes, so its entries are its labels."""
+    if not isinstance(spec.law, GaussianSpec):
+        return
+    component, *rest = spec.event
+    if rest or component.support != REAL or len(component.indexed_by) > 1 or component.element_axes:
+        raise ValueError(
+            f"the factor {spec.name!r} is Gaussian, so its event is one component on REAL, indexed by one dim "
+            f"at most and with no element axes; it declares {[c.name for c in spec.event]}, the first on "
+            f"{component.support.name!r}, indexed by {component.indexed_by}, with element axes "
+            f"{list(component.element_axes)}."
         )
 
 

@@ -36,11 +36,12 @@ from conftest import (
 from sipnet_calibration.calibration import example_calibration
 from sipnet_calibration.forward import SIPNETRuns, SIPNETRunsEvaluation, SIPNETSimulator
 from sipnet_calibration.observation import ObservationVector
-from sipnet_calibration.observation.model import observed_components
+from sipnet_calibration.observation.model import noise_factor, observed_components
 from sipnet_calibration.probability import (
     POSITIVE,
     REAL,
     ArraySpec,
+    DiagonalSpec,
     FactorSpec,
     condition_on,
     iid_over_dim,
@@ -152,6 +153,32 @@ def test_predictions_are_todays_bit_for_bit(posterior, reference):
         )
         expected = reference["predictions"].values[:, stored.get_indexer(keys)]
         np.testing.assert_array_equal(np.asarray(evaluation.values[vector.prediction_name(source)]), expected)
+
+
+def test_the_gaussian_likelihoods_forward_map_is_todays_predictions_in_ys_order(reference):
+    vector = two_source_observation_vector(SITE_TABLE)
+    noise = [
+        noise_factor(vector, name, covariance=DiagonalSpec(lambda observed: (0.1 * observed) ** 2 + 1.0),
+                     provenance="Test noise.")
+        for name in vector.observation_source_names
+    ]
+    simulator = SIPNETSimulator(_runs(), observation_vector=vector)
+    model = joint(*noise, simulator, *example_calibration_factors()).bind(coords={**SITE_DIMS.coords, **vector.coords})
+    likelihood = condition_on(model, vector.observed_values_by_component()).gaussian_likelihood()
+    predictions, valid, _ = likelihood.forward(reference["theta"].values)
+    stored = pd.MultiIndex.from_arrays(
+        [reference["observation_source"].values, reference["observation_site"].values,
+         pd.DatetimeIndex(reference["observation_time"].values)],
+    )
+    in_y = pd.MultiIndex.from_tuples([
+        (source, site, time)
+        for source in vector.observation_source_names
+        for site, time in vector.coords[vector.observation_dim_name(source)]
+    ])
+    assert valid.tolist() == reference["valid"].values.tolist()
+    np.testing.assert_array_equal(np.asarray(predictions), reference["predictions"].values[:, stored.get_indexer(in_y)])
+    observed = np.concatenate([np.asarray(v) for v in vector.observed_values_by_component().values()])
+    np.testing.assert_allclose(np.asarray(likelihood.noise_covariance.diag()), (0.1 * observed) ** 2 + 1.0)
 
 
 def test_the_record_is_the_runs_evaluation(posterior, reference):

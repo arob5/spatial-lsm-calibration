@@ -49,6 +49,17 @@ truncation :math:`p(z_T \\mid y) \\propto \\pi(z_T) L(z_T) \\mathbf 1\\{z_T
 and every :math:`O_\\theta` factor's density is finite there, and its log
 likelihood is :math:`-\\infty` otherwise.
 
+**Gaussian factors.** A factor whose law is a
+:class:`~sipnet_calibration.probability.parts.GaussianSpec`, and whose
+covariance is computable from the held values alone (observed values,
+inputs, constants, and what is computed from them), has its covariance
+built and factored once, here, and refused if it is not positive definite.
+When every :math:`O_\\theta` factor is such a factor, the likelihood is
+:math:`y \\sim \\mathcal N(G(\\theta), R)`, :math:`G` their means and :math:`R`
+their covariances, block-diagonal in y's order
+(:meth:`Posterior.gaussian_likelihood`), which an ensemble Kalman method
+reads.
+
 Data model
 ----------
 Theta is Flat, ``(..., D)``, laid out by ``posterior.parameters.unconstrained``;
@@ -65,9 +76,12 @@ Functions and classes
 :class:`Posterior`
     ``sample_prior``, ``log_prior``, ``evaluate``, ``log_likelihood``,
     ``log_density``, ``log_density_given``, ``predict``, ``replicate``,
-    ``simulator_inputs``, ``natural_values``, ``to_labeled``, ``describe``.
+    ``simulator_inputs``, ``natural_values``, ``to_labeled``,
+    ``gaussian_likelihood``, ``describe``.
 :class:`PosteriorEvaluation`
     One batch of theta, evaluated.
+:class:`GaussianLikelihood`
+    The likelihood as :math:`y \\sim \\mathcal N(G(\\theta), R)`.
 
 Usage
 -----
@@ -81,6 +95,7 @@ Usage
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -92,8 +107,10 @@ import pandas as pd
 import xarray as xr
 from frozendict import frozendict
 
+from sipnet_calibration.probability import _linalg
 from sipnet_calibration.probability._bound import (
     BoundFactor,
+    check_gaussian_covariance_is_positive_definite,
     coords_of,
     deterministics_behind,
     finite_or_minus_infinity,
@@ -114,6 +131,7 @@ from sipnet_calibration.probability.names import SAMPLE, THETA, THETA_ENTRY
 from sipnet_calibration.probability.parts import DeterministicSpec, FactorSpec, Simulator, SimulatorOutput
 
 __all__ = [
+    "GaussianLikelihood",
     "Posterior",
     "PosteriorEvaluation",
     "condition_on",
@@ -160,8 +178,9 @@ def condition_on(model: FactoredDistribution, observed: Mapping[str, Any]) -> Po
         lies outside its support; nothing is left to infer; a target factor,
         or an observed one with no target ancestor, has a simulator among
         its ancestors; a target or constant observed factor has no finite
-        density at the observed values; or a simulator's ``check_given``
-        fails.
+        density at the observed values; a Gaussian factor's covariance that
+        the held values fix is not positive definite; or a simulator's
+        ``check_given`` fails.
     """
     return Posterior(model, observed)
 
@@ -258,6 +277,8 @@ class Posterior:
             if self.observations is not None else jnp.zeros((0,), dtype=jnp.float64)
         ))
         _set(self, "_fixed", frozendict({**model._fixed, **values}))
+        _set(self, "_target", tuple(_with_held_covariance(self, bound) for bound in self._target))
+        _set(self, "_likelihood", tuple(_with_held_covariance(self, bound) for bound in self._likelihood))
         _set(self, "_slices", tuple(_slice_of(self.parameters.unconstrained, bound) for bound in self._target))
         _set(self, "simulators", frozendict(_simulators_read(model, self._likelihood)))
         _set(self, "simulator_free_positions", _simulator_free_positions(self))
@@ -573,6 +594,30 @@ class Posterior:
         )
         return labeled
 
+    def gaussian_likelihood(self) -> GaussianLikelihood:
+        """The likelihood as :math:`y \\sim \\mathcal N(G(\\theta), R)`: every
+        :math:`O_\\theta` factor Gaussian, its covariance held.
+
+        Raises
+        ------
+        ValueError
+            If nothing observed depends on the parameters, or an
+            :math:`O_\\theta` factor's law is not a ``GaussianSpec``, or its
+            covariance reads what the parameters decide; the message names
+            the factor and those parameters, and suggests observing them at
+            values to hold them.
+        """
+        check_something_observed_depends_on_the_parameters(self)
+        for bound in self._likelihood:
+            check_likelihood_factor_is_gaussian_with_a_held_covariance(self, bound)
+        operators = [bound.held_covariance for bound in self._likelihood]
+        return GaussianLikelihood(
+            posterior=self,
+            y=self.y,
+            noise_covariance=_linalg.block_diag(*operators),
+            mean_names=tuple(bound.spec.law.mean[0] for bound in self._likelihood),
+        )
+
     # ── supporting methods ────────────────────────────────────────────────────
 
     def _theta(self, theta: Any) -> tuple[Array, tuple[int, ...]]:
@@ -724,6 +769,65 @@ class PosteriorEvaluation:
     simulator_records: Mapping[str, Any]
 
 
+@dataclass(frozen=True, eq=False, kw_only=True)
+class GaussianLikelihood:
+    """The likelihood :math:`y \\sim \\mathcal N(G(\\theta), R)` over
+    :math:`O_\\theta`: :math:`G(\\theta)` the Gaussian factors' means and
+    :math:`R` their covariances, which depend on no parameter. Made by
+    :meth:`Posterior.gaussian_likelihood`. Compared and hashed by identity.
+
+    Attributes
+    ----------
+    posterior : Posterior
+    y : jax.Array
+        ``(N,)``, ``posterior.y``.
+    noise_covariance : PSDLinOp
+        :math:`R`, one of pyEKI's positive-definite operators: block-diagonal
+        over the observed factors, in ``posterior.observations``' order, each
+        block its factor's covariance.
+    mean_names : tuple of str
+        Each factor's mean component, in that order.
+    """
+
+    posterior: Posterior
+    y: Array
+    noise_covariance: Any
+    mean_names: tuple[str, ...]
+
+    def forward(self, theta: Any) -> tuple[Array, Array, PosteriorEvaluation]:
+        """:math:`G(\\theta)`, each factor's mean at a batch of theta in
+        ``posterior.observations``' order, from one
+        :meth:`Posterior.evaluate`.
+
+        Returns
+        -------
+        (jax.Array, jax.Array, PosteriorEvaluation)
+            The predictions ``(J, N)``, ``NaN`` in an invalid sample; the
+            evaluation's ``valid``, ``(J,)``; and the evaluation.
+
+        Raises
+        ------
+        ValueError, TypeError, Exception
+            As :meth:`Posterior.evaluate`.
+        """
+        evaluation = self.posterior.evaluate(theta)
+        n = evaluation.theta.shape[0]
+        natural = self.posterior._parameter_values(evaluation.theta)
+        held = self.posterior._fixed
+        blocks = []
+        for name in self.mean_names:
+            if name in evaluation.values:
+                value = evaluation.values[name]
+            elif name in natural:
+                value = natural[name]
+            else:
+                value = jnp.broadcast_to(held[name], (n, *jnp.shape(held[name])))
+            blocks.append(jnp.reshape(value, (n, -1)))
+        predictions = jnp.concatenate(blocks, axis=1)
+        predictions = jnp.where(evaluation.valid[:, None], predictions, jnp.nan)
+        return predictions, evaluation.valid, evaluation
+
+
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 
@@ -749,6 +853,33 @@ def _roles(model: FactoredDistribution, observed_parts: set[str]) -> dict[str, t
         "likelihood": tuple(likelihood),
         "constant": tuple(f for f in factors if f in observed_parts and f not in likelihood),
     }
+
+
+def _with_held_covariance(posterior: Posterior, bound: BoundFactor) -> BoundFactor:
+    """A Gaussian factor with its covariance built and factored once, when
+    the held values (observed values, inputs, constants, and what is
+    computed from them with no simulator) fix it; any other factor as it
+    is."""
+    if not bound.gaussian:
+        return bound
+    names = [n for n in bound.spec.law.covariance.reads if n not in bound.fixed_reads]
+    if simulator_outputs_behind(posterior.model.spec, names):
+        return bound
+    _, fixed = posterior.model._computed({}, posterior._fixed, (), names)
+    if not all(name in fixed for name in names):
+        return bound
+    operator = bound.covariance.operator(bound.covariance_reads(fixed))
+    check_gaussian_covariance_is_positive_definite(bound.name, operator)
+    return dataclasses.replace(bound, held_covariance=operator)
+
+
+def _parameters_read_by_the_covariance(posterior: Posterior, bound: BoundFactor) -> list[str]:
+    """The parameters a Gaussian factor's covariance depends on, through any
+    part."""
+    spec = posterior.model.spec
+    owners = [spec._owner[n].name for n in bound.spec.law.covariance.reads if n in spec._owner]
+    ancestors = spec._ancestors(owners)
+    return [name for name in posterior.parameter_names if spec._owner[name].name in ancestors]
 
 
 def _layout_of(model: FactoredDistribution, names: Sequence[str]) -> Layout:
@@ -908,6 +1039,32 @@ def check_simulators_take_the_corner_points(posterior: Posterior) -> None:
             continue
         given_specs = {g: spec.component_spec(g) for g in simulator.given}
         simulator.check_given(given_specs, posterior._simulator_inputs_at(theta, name))
+
+
+def check_something_observed_depends_on_the_parameters(posterior: Posterior) -> None:
+    """A likelihood has a factor: something observed depends on the
+    parameters."""
+    if posterior.observations is None:
+        raise ValueError(
+            "nothing observed depends on the parameters, so there is no likelihood to write as a Gaussian; "
+            "observe a factor the parameters reach."
+        )
+
+
+def check_likelihood_factor_is_gaussian_with_a_held_covariance(posterior: Posterior, bound: BoundFactor) -> None:
+    """An :math:`O_\\theta` factor of a Gaussian likelihood has a
+    ``GaussianSpec`` law whose covariance the held values fix."""
+    if not bound.gaussian:
+        raise ValueError(
+            f"the observed factor {bound.name!r} depends on the parameters, but its law is "
+            f"{bound.spec.law_name!r}, not a GaussianSpec; a Gaussian likelihood needs every such factor Gaussian."
+        )
+    if bound.held_covariance is None:
+        parameters = _parameters_read_by_the_covariance(posterior, bound)
+        raise ValueError(
+            f"the covariance of {bound.name!r} depends on the parameter(s) {truncated(parameters)}; a Gaussian "
+            "likelihood's covariance is fixed, so observe them at values to hold them."
+        )
 
 
 def check_theta_is_a_batch(shape: tuple[int, ...], dimension: int) -> None:
