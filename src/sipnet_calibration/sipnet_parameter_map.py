@@ -19,12 +19,15 @@ grid or BETY's medians as readily as a draw.
 
 What it reads
 -------------
-One labeled Dataset of the values its rules read, by name: the parameters'
+The values its rules read, by name: one labeled Dataset, the parameters'
 and derived parameters' labeled forms
 (:mod:`sipnet_calibration.parameters.vector`'s data model) merged with any
 :data:`ExternalInputs`, uncertain values that are propagated rather than
-calibrated; and a :class:`~sipnet_calibration.site_dims.SiteDims`, which
-reads them at the sites.
+calibrated; or the probability layer's labeled values
+(:data:`~sipnet_calibration.probability.layout.LabeledValues`, a dict of
+DataArrays), of which it reads only what its rules name. And a
+:class:`~sipnet_calibration.site_dims.SiteDims`, which reads them at the
+sites.
 
 The map
 -------
@@ -78,8 +81,10 @@ dim, site)``, a fixed value on ``(site,)``. Each carries pySIPNET's
 
 **What is checked when.** Before anything runs,
 :func:`check_sipnet_parameter_map_fits` checks that every value read exists,
-in the units and shape its rule requires, and that every constant and fixed
-value covers the labels the sites carry. Domains are checked on values
+in the units and shape its rule requires, against the values' declarations
+(today's parameters and derived parameters, or the probability layer's
+``ArraySpec``\\ s), and that every constant and fixed value covers the labels
+the sites carry. Domains are checked on values
 only, by :meth:`SIPNETParameterMap.out_of_domain`: each rule input against
 its requirement's domain, each SIPNET parameter against pySIPNET's.
 
@@ -89,11 +94,14 @@ Functions and classes
     ``sipnet_parameter_fields``, ``out_of_domain``, ``dependencies``,
     ``sipnet_parameter_names_depending_on``, ``describe``.
 :class:`SIPNETRule`, :class:`ValueRequirement`, :func:`support_from_sipnet_domain`
-    The rule protocol, what a rule requires of a value it reads, and
-    pySIPNET's domains as supports.
+    The rule protocol, what a rule requires of a value it reads (by default
+    the units and domain of the SIPNET parameter written,
+    :data:`FROM_SIPNET_SPEC`), and pySIPNET's domains as supports.
 :class:`Copy`, :class:`CopySimplex`, :class:`Compute`
-    The rules; :func:`photosynthesis_rules` and :func:`initial_condition_rules`
-    make the ``Compute`` rules of two derivations.
+    The rules; :meth:`Copy.same_names` copies several values to the SIPNET
+    parameters of their names, and :func:`photosynthesis_rules` and
+    :func:`initial_condition_rules` make the ``Compute`` rules of two
+    derivations.
 :class:`Fixed`
     A SIPNET parameter held at a value, shared or per label.
 :data:`ExternalInputs`, :func:`validate_external_inputs`
@@ -121,6 +129,11 @@ Usage
             CopySimplex(value_name="allocation", sipnet_parameter_names=(
                 "leaf_allocation", "wood_allocation", "fine_root_allocation")),
             Copy(value_name="initial_soil_carbon", sipnet_parameter_name="soil_carbon"),
+            *Copy.same_names(["half_saturation_light", "soil_respiration_q10"]),
+            Compute(sipnet_parameter_name="min_photosynthesis_temperature",
+                    values_read={"optimum_photosynthesis_temperature": ValueRequirement()},  # degC, REAL
+                    function=lambda optimum_photosynthesis_temperature: optimum_photosynthesis_temperature - 10.0,
+                    provenance="psnTMin = psnTOpt - 10"),
         ],
         fixed=[
             Fixed(sipnet_parameter_name="daily_mean_photosynthesis_fraction", value=0.76,
@@ -133,10 +146,14 @@ Usage
     values = vector.flat_to_dataset(vector.to_natural(theta), batch_dims=("sample",))
     sipnet_parameter_fields = sipnet_map.sipnet_parameter_fields(values, site_dims=site_dims)
     sipnet_map.out_of_domain(sipnet_parameter_fields, values, site_dims=site_dims)   # empty: in domain
+
+    # The probability layer's labeled values, a dict of DataArrays, read alike.
+    sipnet_map.sipnet_parameter_fields(posterior.to_labeled(theta), site_dims=site_dims)
 """
 
 from __future__ import annotations
 
+import enum
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, Protocol, runtime_checkable
@@ -163,15 +180,15 @@ from sipnet_calibration.fields import (
     check_sipnet_parameter_name_is_a_flat_name,
 )
 from sipnet_calibration.initial_conditions.specs import resolve_initial_condition
-from sipnet_calibration.parameters import (
+from sipnet_calibration.parameters import DerivedParameter, Parameter
+from sipnet_calibration.probability.spec import ArraySpec
+from sipnet_calibration.probability.support import (
     NON_NEGATIVE,
     OPEN_UNIT_INTERVAL,
     POSITIVE,
     REAL,
     UNIT_INTERVAL,
-    DerivedParameter,
     Interval,
-    Parameter,
     Simplex,
     Support,
 )
@@ -180,6 +197,7 @@ from sipnet_calibration.sites import site_coordinates
 from sipnet_calibration.validation import as_frozen_mapping, as_names, truncated
 
 __all__ = [
+    "FROM_SIPNET_SPEC",
     "INITIAL_STATE_NAMES",
     "REQUIRED_SIPNET_PARAMETER_NAMES",
     "Compute",
@@ -313,7 +331,9 @@ class SIPNETParameterMap:
 
     # ── evaluation ────────────────────────────────────────────────────────────
 
-    def sipnet_parameter_fields(self, values: xr.Dataset, *, site_dims: SiteDims) -> SIPNETParameterFields:
+    def sipnet_parameter_fields(
+        self, values: xr.Dataset | Mapping[str, xr.DataArray], *, site_dims: SiteDims
+    ) -> SIPNETParameterFields:
         """Values to SIPNET parameter fields.
 
         Every value a rule reads, the rules' constants and the fixed values
@@ -328,8 +348,10 @@ class SIPNETParameterMap:
         values:
             Every value a rule reads, ``float64``, on any of: the dims of
             ``site_dims.coords``, batch dims (integer labels), and element
-            axes (string labels). Variables no rule reads (a
-            hyperparameter, say) are ignored.
+            axes (string labels); an ``xr.Dataset``, or a mapping of
+            DataArrays by name, such as labeled values, whose arrays the
+            rules read must share their labels. Variables no rule reads (a
+            hyperparameter, an observed component, say) are ignored.
         site_dims:
             The sites, which the fields are over.
 
@@ -341,14 +363,16 @@ class SIPNETParameterMap:
         Raises
         ------
         TypeError
-            If *values* is not an ``xr.Dataset``.
+            If *values* is neither an ``xr.Dataset`` nor a mapping of
+            DataArrays.
         KeyError
             For a value a rule reads that *values* lacks, or a label a site
             carries that a value lacks.
         ValueError
-            For a value whose element axes are not its requirement's shape.
+            For a value whose element axes are not its requirement's shape,
+            or values in a mapping that label one dim differently.
         """
-        check_values_are_a_dataset(values)
+        values = self._values_as_a_dataset(values)
         read = self._values_at_sites(values, site_dims)
         order = _batch_dims_in_order(read.values())
         labeled = {
@@ -377,7 +401,11 @@ class SIPNETParameterMap:
         return _sipnet_parameter_fields(written, site_dims)
 
     def out_of_domain(
-        self, sipnet_parameter_fields: SIPNETParameterFields, values: xr.Dataset, *, site_dims: SiteDims
+        self,
+        sipnet_parameter_fields: SIPNETParameterFields,
+        values: xr.Dataset | Mapping[str, xr.DataArray],
+        *,
+        site_dims: SiteDims,
     ) -> pd.DataFrame:
         """Every value outside its domain: a rule input outside its
         requirement's domain, or a SIPNET parameter outside pySIPNET's.
@@ -400,6 +428,7 @@ class SIPNETParameterMap:
             1 or more, whose element the row does not name). Empty when
             every value is in its domain.
         """
+        values = self._values_as_a_dataset(values)
         rows = []
         for name, variable in sipnet_parameter_fields.data_vars.items():
             array = np.asarray(variable.values, dtype=np.float64)
@@ -421,6 +450,16 @@ class SIPNETParameterMap:
         for rule in self.rules:
             writers.update(dict.fromkeys(rule.sipnet_parameter_names_written, rule))
         return writers
+
+    def _values_as_a_dataset(self, values: Any) -> xr.Dataset:
+        """*values* as a Dataset: as given, or the arrays of a mapping that
+        a rule reads, merged on exactly the same labels."""
+        if isinstance(values, xr.Dataset):
+            return values
+        check_values_are_a_dataset_or_a_mapping(values)
+        read = {str(name): array.rename(str(name)) for name, array in values.items() if name in self.values_read}
+        check_values_share_their_labels(read)
+        return xr.Dataset(read)
 
     def _values_at_sites(self, values: xr.Dataset, site_dims: SiteDims) -> dict[str, xr.DataArray]:
         """Every value a rule reads, at the sites, in the order of *values*,
@@ -446,6 +485,21 @@ class SIPNETParameterMap:
 # ── what a rule requires, and fixed values ────────────────────────────────────
 
 
+# Defined before ValueRequirement, whose defaults they are.
+class _Omitted(enum.Enum):
+    """A field of a :class:`ValueRequirement` left to its rule; an enum, so
+    it pickles to itself."""
+
+    FROM_SIPNET_SPEC = "from the spec of the SIPNET parameter written"
+    #: The domain's default, which follows whether the units were stated.
+    DOMAIN_DEFAULT = "the domain's default"
+
+
+#: What an omitted field of a :class:`ValueRequirement` holds until its rule
+#: resolves it: the units or domain of the SIPNET parameter the rule writes.
+FROM_SIPNET_SPEC = _Omitted.FROM_SIPNET_SPEC
+
+
 @dataclass(frozen=True)
 class ValueRequirement:
     """What a rule requires of a value it reads.
@@ -458,20 +512,56 @@ class ValueRequirement:
         (``pysipnet.units.conversion_factor``), so ``"g/m2"`` meets
         ``"g m-2"`` and ``"kg m-2"`` does not: the rule never converts.
         ``None`` means no physical units, read as ``"1"``. Checked before
-        anything runs.
+        anything runs. Omitted (:data:`FROM_SIPNET_SPEC`): the units of the
+        SIPNET parameter the rule writes.
     domain:
         The set the rule's formula is defined on for this value, checked on
         the values: at the corners of theta when the forward model is
         built, and at every evaluation (:meth:`SIPNETParameterMap.out_of_domain`).
-        ``None``: no requirement.
+        ``None``: no requirement. :data:`FROM_SIPNET_SPEC`: the domain of
+        the SIPNET parameter written. Omitted: that when *units* are
+        omitted too, and ``None`` when they are stated.
     shape:
         One site's value's shape: ``()`` for a scalar, ``(k,)`` for a
         vector. Checked before anything runs.
+
+    Notes
+    -----
+    A field left to the SIPNET parameter is resolved by the rule, which
+    knows the parameter it writes (:meth:`resolved`): :class:`Compute` does
+    so when built, and a map refuses a rule that leaves one. So a reference
+    rule, ``psnTMin = psnTOpt - 10``, reads its value with
+    ``ValueRequirement()``, in ``degC`` on the real line.
     """
 
-    units: str | None
-    domain: Support | None = None
+    units: str | None | _Omitted = FROM_SIPNET_SPEC
+    domain: Support | None | _Omitted = _Omitted.DOMAIN_DEFAULT
     shape: tuple[int, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.domain is _Omitted.DOMAIN_DEFAULT:
+            # A requirement that states its units has no domain unless it gives one.
+            object.__setattr__(self, "domain", FROM_SIPNET_SPEC if self.units is FROM_SIPNET_SPEC else None)
+
+    @property
+    def is_resolved(self) -> bool:
+        """Whether neither field is left to the SIPNET parameter written."""
+        return self.units is not FROM_SIPNET_SPEC and self.domain is not FROM_SIPNET_SPEC
+
+    def resolved(self, sipnet_parameter_name: str) -> ValueRequirement:
+        """This requirement with each omitted field the SIPNET parameter
+        *sipnet_parameter_name*'s: its ``ParameterSpec.units``, and its
+        domain as a support (:func:`support_from_sipnet_domain`).
+
+        Raises
+        ------
+        KeyError
+            If pySIPNET has no SIPNET parameter of that flat name.
+        """
+        spec = _spec(sipnet_parameter_name)
+        units = spec.units if self.units is FROM_SIPNET_SPEC else self.units
+        domain = support_from_sipnet_domain(spec.domain) if self.domain is FROM_SIPNET_SPEC else self.domain
+        return ValueRequirement(units, domain, self.shape)
 
 
 def support_from_sipnet_domain(domain: ParameterDomain) -> Support:
@@ -584,14 +674,25 @@ class Copy:
     constants: ClassVar[Mapping[str, xr.DataArray]] = frozendict()
     sipnet_parameter_names_read: ClassVar[tuple[str, ...]] = ()
 
+    @classmethod
+    def same_names(cls, names: Sequence[str]) -> tuple[Copy, ...]:
+        """One ``Copy`` per name, each value to the SIPNET parameter of its
+        name, in the order given.
+
+        Raises
+        ------
+        TypeError
+            If *names* is one string rather than a sequence.
+        """
+        return tuple(cls(value_name=name, sipnet_parameter_name=name) for name in as_names(names, message_name="names"))
+
     @property
     def sipnet_parameter_names_written(self) -> tuple[str, ...]:
         return (self.sipnet_parameter_name,)
 
     @property
     def values_read(self) -> Mapping[str, ValueRequirement]:
-        spec = _spec(self.sipnet_parameter_name)
-        return {self.value_name: ValueRequirement(spec.units, support_from_sipnet_domain(spec.domain))}
+        return {self.value_name: ValueRequirement().resolved(self.sipnet_parameter_name)}
 
     def __call__(self, values, sipnet_parameter_values) -> dict[str, Array]:
         return {self.sipnet_parameter_name: values[self.value_name]}
@@ -645,7 +746,8 @@ class Compute:
         sites; traceable by JAX.
     values_read:
         ``{name: ValueRequirement}``: the values it reads, each with what
-        the function assumes.
+        the function assumes; a field a requirement omits is resolved to
+        the written SIPNET parameter's (:meth:`ValueRequirement.resolved`).
     constants:
         ``{name: xr.DataArray}``: constants it reads, a scalar or keyed by
         label on ``site`` or a site-labels dim; a boolean one stays boolean.
@@ -662,6 +764,9 @@ class Compute:
         If one keyword names two things (a value and a SIPNET parameter of
         one name, as ``soil_respiration_q10`` is both: rename in a wrapper),
         or *provenance* is empty.
+    KeyError
+        If a requirement omits a field and *sipnet_parameter_name* is not a
+        pySIPNET flat name (``TypeError`` if it is not a string).
 
     Notes
     -----
@@ -697,6 +802,15 @@ class Compute:
         object.__setattr__(
             self, "constants", frozendict({name: read_only_copy(c.copy(deep=True)) for name, c in self.constants.items()})
         )
+        if not all(requirement.is_resolved for requirement in self.values_read.values()):
+            check_sipnet_parameter_name_is_a_flat_name(
+                self.sipnet_parameter_name, f"Compute {self.sipnet_parameter_name!r} omits a requirement's field and must"
+            )
+            object.__setattr__(
+                self,
+                "values_read",
+                frozendict({n: r.resolved(self.sipnet_parameter_name) for n, r in self.values_read.items()}),
+            )
 
     @property
     def sipnet_parameter_names_written(self) -> tuple[str, ...]:
@@ -1095,17 +1209,20 @@ def check_sipnet_parameter_map_is_valid(sipnet_parameter_map: SIPNETParameterMap
         for name in rule.sipnet_parameter_names_written:
             check_sipnet_parameter_name_is_a_flat_name(name, f"{_set_by(rule)} writes, whose names")
             check_sipnet_parameter_has_one_writer(name, _set_by(rule), writers)
+        check_rule_requirements_are_resolved(rule)
 
 
 def check_sipnet_parameter_map_fits(
     sipnet_parameter_map: SIPNETParameterMap,
-    descriptions: Mapping[str, Parameter | DerivedParameter],
+    descriptions: Mapping[str, Parameter | DerivedParameter | ArraySpec],
     external_inputs: ExternalInputs | None = None,
     site_dims: SiteDims | None = None,
 ) -> None:
-    """The map reads what the parameters, derived parameters and external
-    inputs hold, in the units and shapes its rules require, and its
-    constants and fixed values cover the labels the sites carry."""
+    """The map reads what the values' declarations (parameters and derived
+    parameters, or the probability layer's ``ArraySpec``\\ s of components
+    and inputs) and the external inputs hold, in the units and shapes its
+    rules require, and its constants and fixed values cover the labels the
+    sites carry."""
     external_names = () if external_inputs is None else tuple(map(str, external_inputs.data_vars))
     check_external_inputs_share_no_name_with_the_values(external_names, descriptions)
     for name, requirements in sipnet_parameter_map.values_read.items():
@@ -1131,6 +1248,22 @@ def check_rule_is_a_rule(rule: Any) -> None:
         raise TypeError(
             f"{type(rule).__name__} is not a SIPNET rule: a rule has values_read, constants, "
             "sipnet_parameter_names_read, sipnet_parameter_names_written and a call."
+        )
+
+
+def check_rule_requirements_are_resolved(rule: Any) -> None:
+    """Every requirement a rule places on a value is a ``ValueRequirement``
+    stating its units and domain, an omitted field having been resolved by
+    the rule."""
+    for name, requirement in rule.values_read.items():
+        if not isinstance(requirement, ValueRequirement):
+            raise TypeError(f"{_set_by(rule)} reads {name!r} without a ValueRequirement; give it one.")
+    unresolved = [name for name, requirement in rule.values_read.items() if not requirement.is_resolved]
+    if unresolved:
+        raise ValueError(
+            f"{_set_by(rule)} reads {truncated(unresolved)} with requirements that omit their units or "
+            "domain; resolve them against the SIPNET parameter written (ValueRequirement.resolved) when "
+            "the rule is built, or state them."
         )
 
 
@@ -1202,10 +1335,30 @@ def check_sipnet_parameter_read_is_set_earlier(name: str, rule: Any, writers: Ma
         )
 
 
-def check_values_are_a_dataset(values: Any) -> None:
-    """Values are a labeled ``xr.Dataset``, read by name."""
-    if not isinstance(values, xr.Dataset):
-        raise TypeError(f"the map reads values from an xarray Dataset, got {type(values).__name__}.")
+def check_values_are_a_dataset_or_a_mapping(values: Any) -> None:
+    """Values are a labeled ``xr.Dataset`` or a mapping of DataArrays, read
+    by name."""
+    is_mapping = isinstance(values, Mapping) and all(
+        isinstance(name, str) and isinstance(array, xr.DataArray) for name, array in values.items()
+    )
+    if not isinstance(values, xr.Dataset) and not is_mapping:
+        raise TypeError(
+            f"the map reads values from an xarray Dataset or a mapping of DataArrays by name, got "
+            f"{type(values).__name__}."
+        )
+
+
+def check_values_share_their_labels(values: Mapping[str, xr.DataArray]) -> None:
+    """Values given as a mapping label each dim they share alike, and agree
+    on the coordinates they share, so that a batch dim zips and a site is
+    one site."""
+    try:
+        xr.merge(list(values.values()), join="exact", compat="no_conflicts")
+    except ValueError:  # xarray's AlignmentError and MergeError among them
+        raise ValueError(
+            "the values the map reads label a shared dim differently, or disagree on a shared "
+            "coordinate; give them on the same labels, as one posterior's labeled values are."
+        ) from None
 
 
 def check_values_hold_what_the_rules_read(names: Sequence[str], values: xr.Dataset) -> None:
@@ -1253,10 +1406,10 @@ def check_value_is_held(name: str, descriptions: Mapping[str, Any], external_nam
 
 
 def check_description_meets_the_requirement(
-    description: Parameter | DerivedParameter, requirement: ValueRequirement
+    description: Parameter | DerivedParameter | ArraySpec, requirement: ValueRequirement
 ) -> None:
-    """A parameter or derived parameter read by a rule is in the units and
-    shape the rule requires."""
+    """A parameter, derived parameter or component read by a rule is in the
+    units and shape the rule requires."""
     if not _units_match(description.units, requirement.units):
         raise ValueError(
             f"{description.name!r} is in {description.units!r}, but the rule reading it requires "

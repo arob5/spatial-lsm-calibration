@@ -75,7 +75,9 @@ The inverse problem:
     The objects together: the record of a calibration, and an example.
 :mod:`~sipnet_calibration.observation`
     The observation vector, the observation operators and the time
-    alignment they are written with.
+    alignment they are written with; its ``model`` module, which the
+    package does not import, makes the sources' components for the
+    probability layer.
 :mod:`~sipnet_calibration.forward`
     The forward model, unconstrained parameters to predictions, run through
     PyEns.
@@ -118,8 +120,10 @@ reads ``site_labels``' column name and the site table through ``sites``.
 field contract, its batch dims, the window coordinates of the two
 observation data sources, and the SIPNET parameter fields alias and
 validator, which is why neither ``initial_conditions`` nor ``observation``
-imports the parameter layer). ``sipnet_parameter_map`` depends on
-``parameters``, ``site_dims``, ``fields`` and ``initial_conditions``, and is
+imports the parameter layer); ``observation.model`` alone of the observation
+package imports the probability layer. ``sipnet_parameter_map`` depends on
+``probability``, ``parameters``, ``site_dims``, ``fields`` and
+``initial_conditions``, and is
 the one that imports pySIPNET's parameter specs; ``calibration`` on it and
 the parameter layer; and ``forward`` on ``fields``, ``observation``,
 ``parameters``, ``site_dims`` and ``sipnet_parameter_map``.

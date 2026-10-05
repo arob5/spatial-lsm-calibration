@@ -2053,7 +2053,8 @@ class ObservationVector:
       whose labels are the ``(site, time)`` pairs the source observes (a
       one-level ``(site,)`` MultiIndex if static), sorted by site, then time;
     - its **observed component**, named for the source, on that dim, on
-      :data:`REAL`, in the observed values' units;
+      :data:`REAL`, in the observed values' units (not their constituent,
+      which an ArraySpec does not hold: P4);
     - its **prediction**, ``predicted_&lt;source&gt;``, of the same layout: the
       forward model's value of the observed quantity;
     - its **constants**, on that dim: ``observed``, ``standard_deviation``
@@ -2115,6 +2116,15 @@ class ObservationVector:
     def to_fields(self, labeled: LabeledValues) -&gt; dict[str, Field]:
         """Each source's variable of *labeled* (observed, predicted or a
         residual), unstacked to a field on ``(*batch, site[, time])``."""
+
+    # Added in P4, where the design named no method:
+    def observation_dim_name(self, observation_source_name: str) -&gt; str: ...
+    def constants(self, observation_source_name: str) -&gt; dict[str, xr.DataArray]:
+        """The constants listed above, float64 on the observation dim."""
+    # and ObservationSource.observation_labels, the MultiIndex of the source's
+    # observations, which coords holds per source. A standard deviation
+    # lacking an observed label is a KeyError, CLAUDE.md's rule for a label
+    # the data lacks, rather than the ValueError written above.
 
 
 # sipnet_calibration.observation.model: imports probability; not imported by
@@ -2275,7 +2285,17 @@ class SIPNETSimulator(Simulator):
   <li><b>F8.</b> A <code>ValueRequirement</code> may omit units and support,
   which then default to the SIPNET spec's and are checked against the
   <code>ArraySpec</code>. <code>Copy.same_names(names)</code> writes several
-  identical-name copies in one line.</li>
+  identical-name copies in one line. <i>As built in P4:</i> "the SIPNET
+  spec" is the spec of the SIPNET parameter the rule writes, which
+  <code>Compute</code> resolves when built (<code>ValueRequirement.resolved</code>);
+  an omitted field holds <code>FROM_SIPNET_SPEC</code> until then, and a map
+  refuses a rule that leaves one. A requirement that states its units and
+  omits its domain has none, as today, so
+  <code>ValueRequirement("degC")</code> keeps its meaning;
+  <code>ValueRequirement("degC", FROM_SIPNET_SPEC)</code> asks for the
+  SIPNET parameter's domain. F8 landed in P4,
+  with the map's fit check reading <code>ArraySpec</code>s; P5's
+  <code>check_given</code> calls it.</li>
   <li><b>F9</b> needs no library change: a <code>Compute</code> rule can already
   read fixed SIPNET parameters (<code>sipnet_parameter_names_read</code>), and the
   experiment should use it.</li>

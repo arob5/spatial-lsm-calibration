@@ -246,6 +246,9 @@ moves it here.
 | **values by name** / `ValuesByName` | a layout's structured, traceable form: `{name: (*batch, *block shape)}` | |
 | **labeled values** / `LabeledValues` | a layout's labeled form: a `dict` of one `xr.DataArray` per component on `(*batch dims, *indexed_by, *element axes)`, a dict because two stacked dims with a `site` level cannot share a Dataset; `encode_labeled_values` makes the Dataset netCDF holds | a `ParameterDataset` |
 | **own dim** | a dim of a constant that is neither a dim of the coords nor an element axis, passed whole, which its reader declares in `own_dims=` | |
+| **observation dim** | a source's stacked dim, `"<source>_observation"`, whose labels are the `(site, time)` pairs it observes (`(site,)` if static), sorted by site, then time: `ObservationVector.coords`, `ObservationSource.observation_labels`, `observation_dim_name()` | a batch dim |
+| **observed component** | a source's observed values as a component, named for the source, on its observation dim (`observation.model.observed_components`, values `observed_values_by_component()`) | |
+| **prediction** | the forward model's value of an observed quantity, on the source's observation dim and in its units: `predicted_<source>` (`ObservationVector.prediction_name`, `observation.model.prediction_components`) | "predictions", the Flat `(J, N)`, which keeps its meaning |
 | **spec** | a declaration, holding no labels and no numbers; its class ends in `Spec` (`ArraySpec`, `FactorSpec`, `DeterministicSpec`, `ModelSpec`) | the distribution it becomes once bound |
 | **law** | the concrete distribution a factor evaluates to for one draw of what it reads: a TFP distribution, or an object implementing `probability.laws.Law` | a factor, which declares one |
 | **factor** / **deterministic** / **part** | a part is a factor (a conditional law over its **event**, the components it declares) or a deterministic (components computed by a pure function); a factor replaces a prior term, a deterministic a derived parameter | |
@@ -403,7 +406,8 @@ coercion lives in `validation.py`.
   `DATA_ROOT_ENV_VAR`, `data_root()`, `tracked_data_root()`); and
   `read_only_copy` and `ReadOnlyCopies`, the read-only copies of xarray data a
   frozen class keeps and hands out, copied on assignment so nothing a caller
-  holds is frozen. Read-only mappings are `frozendict`s (the `frozendict`
+  holds is frozen (`ReadOnlyCopies(default=None)` for an optional
+  one). Read-only mappings are `frozendict`s (the `frozendict`
   package): a `dict` subclass, so pandas and `json` read one as a dict, and it
   pickles and hashes. Every module-level mapping constant of the package is
   one (the scripts' own tables are not the package's), and one is handed to
@@ -1107,15 +1111,18 @@ src/sipnet_calibration/
                           # labels() (memberships), covariate(), at_sites(),
                           # site_fields(), select()
   sipnet_parameter_map.py # SIPNETParameterMap: how the values at a site become
-                          # SIPNET parameters, from labeled values and a
-                          # SiteDims. Rules (Copy, CopySimplex, Compute;
-                          # photosynthesis_rules, initial_condition_rules) reading
+                          # SIPNET parameters, from labeled values (a Dataset,
+                          # or the probability layer's dict) and a
+                          # SiteDims. Rules (Copy, Copy.same_names, CopySimplex,
+                          # Compute; photosynthesis_rules,
+                          # initial_condition_rules) reading
                           # values by name with a ValueRequirement (units, a
-                          # Support domain, shape) and constants; Fixed;
+                          # Support domain, shape; omitted, FROM_SIPNET_SPEC:
+                          # the written SIPNET parameter's) and constants; Fixed;
                           # dependencies(), sipnet_parameter_names_depending_on();
                           # ExternalInputs; sipnet_parameter_fields(),
                           # out_of_domain(); support_from_sipnet_domain; the fit
-                          # check
+                          # check, against parameters or ArraySpecs
   calibration.py          # describe_calibration() (two tables: per parameter,
                           # per SIPNET parameter with its role),
                           # example_calibration()
@@ -1155,11 +1162,21 @@ src/sipnet_calibration/
                           # check_operator and the contract's checks the
                           # vector shares
     source.py             # ObservedValues + validate_observed_values();
-                          # ObservationSource, one source's fields and operator
+                          # ObservationSource, one source's fields, operator
+                          # and optional standard_deviation;
+                          # observation_labels
     vector.py             # ObservationVector: index (site,
                           # observation_source, time), y, flat()/fields(),
                           # positions(),
-                          # predict()
+                          # predict(); for the probability layer, coords (one
+                          # observation dim per source),
+                          # observation_dim_name(), constants(),
+                          # prediction_name(), year_label_map(),
+                          # observed_values_by_component(),
+                          # with_observed_values(), to_fields()
+    model.py              # observed_components(), prediction_components():
+                          # imports the probability layer, so __init__ does
+                          # not import it
   plotting/
     __init__.py           # curated exports
     style.py              # ROLES, rcParams
@@ -1310,9 +1327,13 @@ plotting code. The load-bearing rules:
   observed, not-NaN values), sites ascending, then observation sources in
   declaration order, then times, with `NaT` for a static source; `y` is Flat in
   that order, `flat()`/`fields()` convert, and `positions()` finds a site's or
-  an observation source's segment. No standard deviation, covariance or
-  likelihood lives in the package; the inference layer builds those from `y`,
-  `index` and `positions`. A batch dim on an observation source's values is
+  an observation source's segment. A source may carry its measurement
+  standard deviations (`standard_deviation=`), but no covariance or
+  likelihood lives in the package yet; today's inference layer builds those
+  from `y`, `index` and `positions`, and the probability layer's noise
+  factors (P6) will read the vector's observation dims and `constants()`,
+  which are each one source's, by site and then time, not Flat's order.
+  A batch dim on an observation source's values is
   refused: the experiment reduces an ensemble of observed values before it
   enters; a scalar batch label is metadata and is kept. An `ObservationSource`
   keeps only the sites and time labels it observes, so its operator never reads
