@@ -48,9 +48,6 @@ recommendations included, and reports any recommendation it finds doubtful.
   that runs CLAUDE.md's standard companion upgrade would then break every pyEKI
   import, PR #69's included. The refactor's sessions do not upgrade pyEKI.
   Pinning its revision in `[tool.uv.sources]` would protect everyone.
-- **Singular and discrete laws (P3).** Binding accepts a law with no
-  density on the declared support, `tfd.LKJ` on a positive-definite
-  component for one; see P3's session entry for the recommendation.
 - **The recommended decisions** (§13): D1, D2, D5, D7, D8, D9, D10, D11, D12,
   D13, D14, D18–D24.
 
@@ -276,7 +273,7 @@ specs and shows bit-identical theta order, draws, `log_prior` and natural
 values, the hierarchy's deterministic included. The families are checked
 against SciPy, `InverseWishart` among them. Graph tests cover barren nodes,
 `O_c`, cycles and nothing observed. Tests: 2651 passed and 94 skipped at
-P2's merge; 2788 and 94 after. One test checks that observing a
+P2's merge; 2795 and 94 after. One test checks that observing a
 hyperparameter equals declaring it an input (Proposition 3.3): the same
 draws and densities, and a different `log_constant`.
 
@@ -366,16 +363,14 @@ factor's guard has no test, since no TFP bijector at hand reaches it.
 - `parameters.prior` still runs on its own copy of the logic; only the
   families and builders are shared. R1 deletes it.
 
-**Open question for Andrew.**
-
-- **Laws with no density on the declared support.** Binding checks a law
-  only at probe points and draws. It therefore accepts a law that is
-  singular or discrete on its support and evaluates it as a density:
-  `tfd.LKJ` on a positive-definite component, whose draws have unit
-  diagonal, or `tfd.Poisson` on `POSITIVE`. The interval case is as old as
-  PR #72; the positive-definite support is new here, which makes LKJ the
-  likely trap. Recommendation: refuse by class the TFP laws known to be
-  singular or discrete on these supports (LKJ, CholeskyLKJ, and laws with
-  an integer event); the alternative is to document that this is the
-  user's responsibility.
-
+**Decided by Andrew after the review: laws with no density on their
+support are refused.** Binding checks a law only at probe points and
+draws, so it accepted a law singular or discrete on its support and
+evaluated it as a density: `tfd.LKJ` on a positive-definite component, or
+`tfd.Poisson` on `POSITIVE`. `_bound.check_law_has_a_density` now refuses,
+by class, discrete laws, point masses and the LKJ laws. It looks inside
+`Sample`, `Independent`, a pushforward's base, mixtures' components and
+joint laws' parts, but not at a mixture's choice of component. The list is
+`_bound._LAWS_WITHOUT_A_DENSITY`, by name. A law from another package that
+is singular is not caught; when the foreign-law adapters arrive (P9),
+theirs need the same check.

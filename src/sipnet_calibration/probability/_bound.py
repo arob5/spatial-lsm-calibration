@@ -76,6 +76,24 @@ _SUPPORT_DRAWS, _SUPPORT_DRAW_BATCH = 10_000, 1_000
 #: The seed of the draw-based support check.
 _SUPPORT_SEED = 20260927
 
+#: TFP's laws with no density against the reference measure of any support a
+#: component may declare: discrete laws and point masses, whose mass sits on
+#: a null set of an interval, and the LKJ laws, whose draws (correlation
+#: matrices, or their Cholesky factors) are a null set of the
+#: positive-definite matrices. By name, so a class a TFP version lacks is
+#: skipped.
+_LAWS_WITHOUT_A_DENSITY = tuple(
+    getattr(tfd, name)
+    for name in (
+        "Bernoulli", "BetaBinomial", "Binomial", "Categorical", "CholeskyLKJ", "Deterministic",
+        "DirichletMultinomial", "Empirical", "FiniteDiscrete", "Geometric", "LKJ", "Multinomial",
+        "NegativeBinomial", "OneHotCategorical", "PlackettLuce", "Poisson",
+        "PoissonLogNormalQuadratureCompound", "QuantizedDistribution", "Skellam", "VectorDeterministic",
+        "ZeroInflatedNegativeBinomial", "Zipf",
+    )
+    if hasattr(tfd, name)
+)
+
 #: The magnitude of theta beyond which a probe is an outer one, where a
 #: computed value may round onto its support's boundary or overflow: every
 #: probe but theta = 0 and +-3 * 1.
@@ -492,6 +510,28 @@ def _invertible(component: ArraySpec, probes: Array) -> np.ndarray:
     return np.all(close, axis=tuple(range(1, close.ndim)))
 
 
+def _laws_within(law: Any) -> list[Any]:
+    """*law* and every law it wraps whose values are its values, or parts of
+    them: the base of a ``Sample``, an ``Independent``, a
+    ``TransformedDistribution``, a ``BatchBroadcast``, a ``BatchReshape`` or
+    a ``Masked``; a mixture's components, not the law choosing among them;
+    a joint law's parts where they are laws rather than functions."""
+    found, pending = [], [law]
+    while pending:
+        current = pending.pop()
+        found.append(current)
+        if isinstance(current, tfd.MixtureSameFamily):
+            pending.append(current.components_distribution)
+        elif isinstance(current, tfd.Mixture):
+            pending.extend(current.components)
+        elif isinstance(current, (tfd.JointDistributionNamed, tfd.JointDistributionSequential)):
+            parts = current.model.values() if isinstance(current.model, Mapping) else current.model
+            pending.extend(part for part in parts if isinstance(part, tfd.Distribution))
+        elif isinstance(getattr(current, "distribution", None), tfd.Distribution):
+            pending.append(current.distribution)
+    return found
+
+
 def _structure_of(law: Any) -> Any:
     """A law's pytree structure: its class, its parts' classes and its
     static parameters; its class alone where it has no pytree structure, as
@@ -622,6 +662,7 @@ def _lies_in_the_support_or_overflows(support: Support, values: Array) -> Array:
 def check_factor_law_is_valid(bound: BoundFactor) -> None:
     """A factor's law has the supports its components declare, and a
     density a model can evaluate."""
+    check_law_has_a_density(bound)
     check_change_of_variables_has_a_measure(bound)
     check_simplex_density_is_a_dirichlet(bound)
     check_declared_support_lies_in_the_laws(bound)
@@ -663,6 +704,20 @@ def check_factor_keeps_its_structure(variants: Sequence[BoundFactor]) -> None:
                 "its parts, or whether it is a pushforward through the components' own bijectors; let "
                 "the values enter only through the law's parameters."
             )
+
+
+def check_law_has_a_density(bound: BoundFactor) -> None:
+    """A factor's law, and every law it wraps, has a density against its
+    support's reference measure: no discrete law, point mass or LKJ law,
+    which probe points and draws cannot tell from one that has."""
+    singular = [type(law).__name__ for law in _laws_within(bound.law) if isinstance(law, _LAWS_WITHOUT_A_DENSITY)]
+    if singular:
+        raise ValueError(
+            f"the law of {bound.name!r} is or wraps {sorted(set(singular))}, which has no density against "
+            "the reference measure of its components' supports (a discrete law or point mass on an "
+            "interval, an LKJ law on the positive-definite matrices); give a law with a density, such as "
+            "an InverseWishart for a covariance."
+        )
 
 
 def check_change_of_variables_has_a_measure(bound: BoundFactor) -> None:

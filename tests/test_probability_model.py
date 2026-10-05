@@ -19,6 +19,7 @@ from tensorflow_probability.substrates import jax as tfp
 
 from sipnet_calibration.probability import (
     POSITIVE,
+    POSITIVE_DEFINITE,
     SIMPLEX,
     ArraySpec,
     DeterministicSpec,
@@ -328,3 +329,36 @@ def test_a_transformed_law_whose_base_is_not_thetas_block_is_a_change_of_variabl
     assert model.describe().loc["pair", "evaluated_by"] == "change of variables"
     x = jnp.array([[0.5, 2.0]])
     np.testing.assert_allclose(model.log_prob({"pair": x}), st.lognorm(1.0).logpdf(np.asarray(x)).sum(-1), rtol=1e-10)
+
+
+_RATE = jnp.float64(3.0)
+
+
+@pytest.mark.parametrize(
+    "part",
+    [
+        FactorSpec(ArraySpec("correlation", units="1", support=POSITIVE_DEFINITE,
+                             element_axes={"row": ("a", "b"), "column": ("a", "b")}),
+                   law=tfd.LKJ(2, jnp.float64(2.0))),
+        FactorSpec(ArraySpec("count", units="1", support=POSITIVE), law=tfd.Poisson(_RATE)),
+        FactorSpec(ArraySpec("point", units="1"), law=tfd.Deterministic(jnp.float64(1.0))),
+        FactorSpec(ArraySpec("counts", units="1", support=POSITIVE, indexed_by=("site",)),
+                   law=iid_over_dim(tfd.Poisson(_RATE))),
+        FactorSpec(ArraySpec("shifted", units="1"),
+                   law=tfd.TransformedDistribution(tfd.Poisson(_RATE), tfb.Shift(jnp.float64(0.5)))),
+        FactorSpec([ArraySpec("a", units="1"), ArraySpec("b", units="1", support=POSITIVE)],
+                   law=lambda: tfd.JointDistributionNamed({"a": tfd.Normal(jnp.float64(0.0), 1.0),
+                                                           "b": tfd.Poisson(_RATE)})),
+    ],
+    ids=["LKJ", "Poisson", "point mass", "iid Poisson", "shifted Poisson", "joint with a Poisson"],
+)
+def test_a_law_with_no_density_on_its_support_is_refused(part):
+    with pytest.raises(ValueError, match="has no density against the reference measure"):
+        joint(part).bind(coords={"site": SITES})
+
+
+def test_a_mixture_of_densities_is_a_density():
+    mixture = tfd.MixtureSameFamily(tfd.Categorical(probs=jnp.array([0.3, 0.7])),
+                                    tfd.Normal(jnp.array([-1.0, 2.0]), jnp.float64(1.0)))
+    model = joint(FactorSpec(ArraySpec("mixed", units="1"), law=mixture)).bind(coords={})
+    assert model.describe().loc["mixed", "evaluated_by"] == "change of variables"
