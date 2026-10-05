@@ -18,7 +18,9 @@ A Gaussian factor (a :class:`~sipnet_calibration.probability.parts.GaussianSpec`
 holds its covariance spec bound to the labels in use, which builds the
 covariance's operator at each draw; or, once a posterior finds that the
 covariance depends on no parameter, the operator itself, built and
-factored once (``held_covariance``).
+factored once (``held_covariance``). A Student-t factor
+(:mod:`~sipnet_calibration.probability.scale_mixtures`) holds its spec
+bound to the labels in use, which builds its law at each draw.
 """
 
 from __future__ import annotations
@@ -39,7 +41,13 @@ from tensorflow_probability.substrates import jax as tfp
 from sipnet_calibration.probability._probes import bijectors_agree, joint_probe_points
 from sipnet_calibration.probability.builders import Builder
 from sipnet_calibration.probability.laws import CARRIES_ITS_BIJECTOR, GaussianLaw, is_law
-from sipnet_calibration.probability.parts import DeterministicSpec, FactorSpec, GaussianSpec, Simulator
+from sipnet_calibration.probability.parts import (
+    CENTERED_LAW_SPECS,
+    DeterministicSpec,
+    FactorSpec,
+    GaussianSpec,
+    Simulator,
+)
 from sipnet_calibration.probability.spec import ArraySpec
 from sipnet_calibration.probability.support import (
     REAL,
@@ -189,7 +197,8 @@ class BoundFactor:
     pushforward through its components' own bijectors. A Gaussian factor's
     ``covariance`` is its covariance spec at the labels in use, and
     ``held_covariance`` the operator it is evaluated with in every draw,
-    when its covariance depends on nothing that varies by draw.
+    when its covariance depends on nothing that varies by draw; a
+    Student-t factor's ``covariance`` is its spec at the labels in use.
     """
 
     spec: FactorSpec
@@ -221,11 +230,11 @@ class BoundFactor:
         simulator outputs, so only the law's form is checked: its event,
         TFP batch shape and dtype, and that it has a density a model can
         evaluate; its support is not, since that would be checked at values
-        no simulation gave. A Gaussian factor, given its bound *covariance*,
-        is checked for its event, and its covariance for being positive
-        definite unless *covariance_is_checked* is false, for a covariance
-        that reads something varying by draw, which a sample at which it is
-        not positive definite makes invalid instead."""
+        no simulation gave. A Gaussian or Student-t factor, given its bound
+        *covariance*, is checked for its event, and its covariances for being
+        positive definite unless *covariance_is_checked* is false, for a
+        covariance that reads something varying by draw, which a sample at
+        which it is not positive definite makes invalid instead."""
         unbuilt = cls(
             spec=spec,
             index_shape=index_shape,
@@ -233,8 +242,8 @@ class BoundFactor:
             fixed_reads=fixed_reads,
             covariance=covariance,
         )
-        if isinstance(spec.law, GaussianSpec):
-            return unbuilt._built_gaussian(per_draw_values, fixed_values, covariance_is_checked=covariance_is_checked)
+        if isinstance(spec.law, CENTERED_LAW_SPECS):
+            return unbuilt._built_centered(per_draw_values, fixed_values, covariance_is_checked=covariance_is_checked)
         probes = unbuilt.probes()
         variants = [unbuilt._at(unbuilt.law_at({**values, **fixed_values}), probes) for values in per_draw_values]
         check_factor_keeps_its_structure(variants)
@@ -277,9 +286,16 @@ class BoundFactor:
         return isinstance(self.spec.law, GaussianSpec)
 
     @property
+    def centered(self) -> bool:
+        """Whether its law is centered on a mean, a :data:`CENTERED_LAW_SPECS`:
+        on ``REAL``, its draws not finite only where its covariance is not
+        positive definite."""
+        return isinstance(self.spec.law, CENTERED_LAW_SPECS)
+
+    @property
     def evaluated_by(self) -> str:
-        if self.gaussian:
-            return "Gaussian"
+        if self.centered:
+            return self.spec.law_name
         return "base density" if self.by_base_density else "change of variables"
 
     # ── the law ───────────────────────────────────────────────────────────────
@@ -293,6 +309,11 @@ class BoundFactor:
             check_gaussian_mean_has_its_events_shape(self.name, law.mean[0], jnp.shape(mean), self.natural_shapes[self.names[0]])
             covariance = self.held_covariance if self.held_covariance is not None else self.covariance.operator(reads)
             return GaussianLaw(mean, covariance)
+        if isinstance(law, CENTERED_LAW_SPECS):
+            reads = self._reads(given)
+            mean = reads[law.mean[0]]
+            check_gaussian_mean_has_its_events_shape(self.name, law.mean[0], jnp.shape(mean), self.natural_shapes[self.names[0]])
+            return self.covariance.law(mean, reads)
         if isinstance(law, Builder):
             return law(self.index_shape, **self._reads(given))
         if is_law(law):
@@ -385,18 +406,19 @@ class BoundFactor:
         """What its law reads: the given values it names, and its fixed reads."""
         return {**{name: given[name] for name in self.spec.given}, **self.fixed_reads}
 
-    def _built_gaussian(
+    def _built_centered(
         self, per_draw_values: Sequence[Mapping[str, Array]], fixed_values: Mapping[str, Array], *, covariance_is_checked: bool
     ) -> BoundFactor:
-        """A Gaussian factor at its first draw, checked at each to be over its
-        event and, when *covariance_is_checked*, to have a positive-definite
-        covariance."""
+        """A Gaussian or Student-t factor at its first draw, checked at each
+        to be over its event and, when *covariance_is_checked*, to have
+        positive-definite covariances."""
         expected = self.natural_shapes[self.names[0]]
         variants = [dataclasses.replace(self, law=self.law_at({**values, **fixed_values})) for values in per_draw_values]
         for variant in variants:
             check_factor_law_is_over_its_event(self.name, variant.law, expected)
             if covariance_is_checked:
-                check_gaussian_covariance_is_positive_definite(self.name, variant.law.covariance)
+                for covariance in _covariances_of(variant.law):
+                    check_gaussian_covariance_is_positive_definite(self.name, covariance)
         return variants[0]
 
     def _at(self, law: Any, probes: Array) -> BoundFactor:
@@ -583,6 +605,12 @@ def log_jacobian(support: Support, bijector: tfb.Bijector, theta: Array) -> Arra
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
+
+
+def _covariances_of(law: Any) -> tuple[Any, ...]:
+    """The operators a centered law holds: a Gaussian's covariance, a
+    Student-t's per group."""
+    return (law.covariance,) if isinstance(law, GaussianLaw) else law.covariances
 
 
 def _flattened(values: Mapping[str, Array], lead_ndim: int) -> dict[str, Array]:
@@ -895,11 +923,11 @@ def check_simulator_at_keeps_its_parts(simulator: Simulator, bound: Any, outputs
 
 
 def check_gaussian_mean_has_its_events_shape(name: str, mean_name: str, shape: tuple[int, ...], expected: tuple[int, ...]) -> None:
-    """A Gaussian factor's mean has its event's block shape at the labels in
-    use."""
+    """A centered factor's mean has its event's block shape at the labels
+    in use."""
     if tuple(shape) != tuple(expected):
         raise ValueError(
-            f"the Gaussian factor {name!r} is centered on {mean_name!r} of shape {tuple(shape)}, but its event's "
+            f"the factor {name!r} is centered on {mean_name!r} of shape {tuple(shape)}, but its event's "
             f"block is {tuple(expected)}; compute the mean at the labels in use."
         )
 

@@ -76,12 +76,15 @@ Functions and classes
 :class:`Posterior`
     ``sample_prior``, ``log_prior``, ``evaluate``, ``log_likelihood``,
     ``log_density``, ``log_density_given``, ``predict``, ``replicate``,
-    ``simulator_inputs``, ``natural_values``, ``to_labeled``,
-    ``gaussian_likelihood``, ``describe``.
+    ``simulator_inputs``, ``natural_values``, ``theta_with``,
+    ``to_labeled``, ``gaussian_likelihood``, ``full_conditional``,
+    ``describe``.
 :class:`PosteriorEvaluation`
     One batch of theta, evaluated.
 :class:`GaussianLikelihood`
     The likelihood as :math:`y \\sim \\mathcal N(G(\\theta), R)`.
+:class:`FullConditional`
+    One parameter's closed-form law given every other component.
 
 Usage
 -----
@@ -97,7 +100,7 @@ from __future__ import annotations
 
 import dataclasses
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import jax
@@ -120,17 +123,19 @@ from sipnet_calibration.probability._bound import (
 )
 from sipnet_calibration.probability._probes import corner_points
 from sipnet_calibration.probability._validation import as_count, truncated
+from sipnet_calibration.probability.conjugacy import ConjugateRule, conjugate_rule
 from sipnet_calibration.probability.layout import (
     LabeledValues,
     Layout,
     ValuesByName,
     check_flat_ends_in_the_size,
 )
-from sipnet_calibration.probability.model import FactoredDistribution, block_at_labels
+from sipnet_calibration.probability.model import FactoredDistribution, block_at_labels, check_name_is_a_component
 from sipnet_calibration.probability.names import SAMPLE, THETA, THETA_ENTRY
 from sipnet_calibration.probability.parts import DeterministicSpec, FactorSpec, Simulator, SimulatorOutput
 
 __all__ = [
+    "FullConditional",
     "GaussianLikelihood",
     "Posterior",
     "PosteriorEvaluation",
@@ -567,6 +572,40 @@ class Posterior:
             out[name] = value
         return out
 
+    def theta_with(self, theta: Any, values: Mapping[str, Any]) -> Array:
+        """*theta* with the named parameters set to natural *values*,
+        through :math:`T^{-1}`: ``(..., D)``, each value ``(..., *block)`` or
+        one block for every row. Traceable; a concrete value is checked to
+        have a theta.
+
+        Raises
+        ------
+        TypeError
+            If *values* is not a mapping.
+        KeyError
+            If a name is not a parameter.
+        ValueError
+            If the last axis of *theta* is not ``D`` long, a value does not
+            end in its block shape, or a concrete value has no theta (it lies
+            outside its support or on a closed end,
+            :meth:`Layout.contains <sipnet_calibration.probability.layout.Layout.contains>`).
+        """
+        theta, lead = self._theta(theta)
+        check_values_are_a_mapping(values)
+        unconstrained = self.parameters.unconstrained
+        for name, value in values.items():
+            check_name_is_a_parameter(name, self)
+            component = self.parameters[name]
+            block = self.parameters.block_shape(name)
+            value = jnp.asarray(value, dtype=jnp.float64)
+            check_value_ends_in_its_block_shape(name, tuple(value.shape), block)
+            value = jnp.broadcast_to(value, (*lead, *block))
+            if not isinstance(value, jax.core.Tracer):
+                check_value_has_a_theta(name, _layout_of(self.model, [name]), value, lead)
+            entries = component.bijector.inverse(value).reshape((*lead, -1))
+            theta = theta.at[..., unconstrained.slice_of(name)].set(entries)
+        return theta
+
     def to_labeled(self, theta: Any) -> LabeledValues:
         """A batch of theta as labeled values, batch dim ``sample``: the
         natural values of :meth:`natural_values`, and ``"theta"`` on
@@ -616,6 +655,28 @@ class Posterior:
             y=self.y,
             noise_covariance=_linalg.block_diag(*operators),
             mean_names=tuple(bound.spec.law.mean[0] for bound in self._likelihood),
+        )
+
+    def full_conditional(self, component_name: str) -> FullConditional:
+        """The closed-form law of one parameter given every other component,
+        by a conjugate rule (:mod:`~sipnet_calibration.probability.conjugacy`):
+        a Gibbs step's, drawn from an evaluation's residuals with no new
+        simulator run.
+
+        Raises
+        ------
+        KeyError
+            If *component_name* is not a component.
+        ValueError
+            If it is not a parameter, or no conjugate rule applies, naming the
+            condition that failed.
+        """
+        check_name_is_a_component(component_name, self.model.spec)
+        check_component_is_a_parameter(component_name, self)
+        rule = conjugate_rule(self.model, component_name)
+        return FullConditional(
+            component_name=component_name, rule=rule.rule, posterior=self, _rule=rule,
+            _structure=rule.structure(self.model),
         )
 
     # ── supporting methods ────────────────────────────────────────────────────
@@ -828,6 +889,77 @@ class GaussianLikelihood:
         return predictions, evaluation.valid, evaluation
 
 
+@dataclass(frozen=True, eq=False, kw_only=True)
+class FullConditional:
+    """The closed-form law of one parameter given every other component of a
+    posterior, by a conjugate rule
+    (:mod:`~sipnet_calibration.probability.conjugacy`'s R1 or R2). Made by
+    :meth:`Posterior.full_conditional`. Compared and hashed by identity.
+
+    Its residuals come from a :class:`PosteriorEvaluation`: the reading
+    factor's event less its mean, at each sample, so a draw needs no new
+    simulator run. Where a sample's mean was not computed, its law's
+    parameters, and its draws, are ``NaN``.
+
+    Attributes
+    ----------
+    component_name : str
+    rule : str
+        ``"inverse gamma scale"`` or ``"inverse Wishart"``.
+    posterior : Posterior
+    """
+
+    component_name: str
+    rule: str
+    posterior: Posterior
+    _rule: ConjugateRule = field(repr=False)
+    _structure: Any = field(repr=False)
+
+    def law(self, evaluation: PosteriorEvaluation, sample: int) -> Any:
+        """Its law at sample *sample* of *evaluation*, unbatched; a family
+        over samples is :meth:`sample`'s.
+
+        Raises
+        ------
+        TypeError
+            If *evaluation* is not a ``PosteriorEvaluation``, or *sample* not
+            an integer.
+        ValueError
+            If *evaluation*'s theta is not ``(J, D)``, or *sample* is not in
+            ``0 .. J - 1``.
+        KeyError
+            If *evaluation* lacks a value the residuals need: it is another
+            posterior's.
+        """
+        parameters = self._parameters(evaluation)
+        check_sample_is_a_row(sample, evaluation.theta.shape[0])
+        at_sample = {name: value[sample] for name, value in parameters.items()}
+        return self._rule.conditional_law(self.posterior.model, self._structure, at_sample)
+
+    def sample(self, key: Array, evaluation: PosteriorEvaluation) -> Array:
+        """One draw per sample of *evaluation*, ``(J, *block)``.
+
+        Raises
+        ------
+        TypeError, ValueError, KeyError
+            As :meth:`law`, for *evaluation*.
+        """
+        return self._rule.conditional_sample(key, self.posterior.model, self._structure, self._parameters(evaluation))
+
+    def _parameters(self, evaluation: PosteriorEvaluation) -> dict[str, Array]:
+        """The law's parameters at each sample of *evaluation*."""
+        check_evaluation_is_an_evaluation(evaluation)
+        check_theta_is_a_batch(tuple(evaluation.theta.shape), self.posterior.dimension)
+        model = self.posterior.model
+        event, mean = self._rule.residual_names
+        covariance_names = self._rule.covariance_names(model)
+        values = _values_at(self.posterior, evaluation, [event, mean, *covariance_names])
+        residual = (values[event] - values[mean]).reshape((evaluation.theta.shape[0], -1))
+        return self._rule.conditional_parameters(
+            model, self._structure, residual, {name: values[name] for name in covariance_names}
+        )
+
+
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 
@@ -880,6 +1012,24 @@ def _parameters_read_by_the_covariance(posterior: Posterior, bound: BoundFactor)
     owners = [spec._owner[n].name for n in bound.spec.law.covariance.reads if n in spec._owner]
     ancestors = spec._ancestors(owners)
     return [name for name in posterior.parameter_names if spec._owner[name].name in ancestors]
+
+
+def _values_at(posterior: Posterior, evaluation: PosteriorEvaluation, names: Sequence[str]) -> dict[str, Array]:
+    """Each of *names* at every sample of *evaluation*, ``(J, *block)``: a
+    parameter's natural value, a computed value, or a held one."""
+    natural = posterior._parameter_values(evaluation.theta)
+    n = evaluation.theta.shape[0]
+    out = {}
+    for name in names:
+        if name in natural:
+            out[name] = natural[name]
+        elif name in evaluation.values:
+            out[name] = jnp.asarray(evaluation.values[name])
+        else:
+            check_evaluation_holds(name, posterior)
+            value = jnp.asarray(posterior._fixed[name])
+            out[name] = jnp.broadcast_to(value, (n, *value.shape))
+    return out
 
 
 def _layout_of(model: FactoredDistribution, names: Sequence[str]) -> Layout:
@@ -1094,6 +1244,63 @@ def check_theta_is_finite(theta: np.ndarray) -> None:
     rows = np.flatnonzero(~np.isfinite(theta).all(axis=1)).tolist()
     if rows:
         raise ValueError(f"theta holds a non-finite value in row(s) {truncated(rows)}; give finite values.")
+
+
+def check_component_is_a_parameter(name: str, posterior: Posterior) -> None:
+    """A full conditional is a parameter's: one the posterior infers."""
+    if name not in posterior.parameter_names:
+        raise ValueError(
+            f"{name!r} is not a parameter of the posterior (it is observed, barren or computed), so it has no full "
+            f"conditional; the parameters are {truncated(list(posterior.parameter_names))}."
+        )
+
+
+def check_evaluation_holds(name: str, posterior: Posterior) -> None:
+    """An evaluation holds what a full conditional's residuals read."""
+    if name not in posterior._fixed:
+        raise KeyError(
+            f"the evaluation holds no value of {name!r}, which the full conditional reads; give an evaluation of "
+            "this posterior."
+        )
+
+
+def check_sample_is_a_row(sample: Any, n: int) -> None:
+    """A sample is a row of the evaluation."""
+    if isinstance(sample, bool) or not isinstance(sample, (int, np.integer)):
+        raise TypeError(f"sample is a {type(sample).__name__}; give an integer row of the evaluation.")
+    if not 0 <= int(sample) < n:
+        raise ValueError(f"sample is {sample}, but the evaluation has rows 0 to {n - 1}.")
+
+
+def check_values_are_a_mapping(values: Any) -> None:
+    """Values to set are ``{parameter name: value}``."""
+    if not isinstance(values, Mapping):
+        raise TypeError(f"values must be a mapping {{parameter name: value}}, got {type(values).__name__}.")
+
+
+def check_name_is_a_parameter(name: Any, posterior: Posterior) -> None:
+    """A name set in theta is a parameter's, which has entries there."""
+    if not isinstance(name, str) or name not in posterior.parameter_names:
+        raise KeyError(
+            f"{name!r} is not a parameter, so it has no entries in theta; name one of "
+            f"{truncated(list(posterior.parameter_names))}."
+        )
+
+
+def check_value_ends_in_its_block_shape(name: str, shape: tuple[int, ...], block: tuple[int, ...]) -> None:
+    """A value set in theta ends in its block shape."""
+    if shape[len(shape) - len(block):] != block or len(shape) < len(block):
+        raise ValueError(f"the value of {name!r} has shape {shape}, but its block shape is {block}; give (..., *block).")
+
+
+def check_value_has_a_theta(name: str, layout: Layout, value: Array, lead: tuple[int, ...]) -> None:
+    """A value set in theta has one: inside its support, off a closed end."""
+    inside = layout.contains(layout.values_to_flat({name: value}))
+    if not bool(jnp.all(inside)):
+        raise ValueError(
+            f"a value of {name!r} has no theta: it lies outside its support {layout[name].support.name!r} or on a "
+            "closed end of it, which no theta reaches."
+        )
 
 
 def check_evaluation_is_an_evaluation(evaluation: Any) -> None:
