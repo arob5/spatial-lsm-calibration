@@ -22,8 +22,8 @@ and proofs are the design's §12; the column below is a summary.
 | P0 | `docs/probability-refactor-workflow` | merged #76 | — | The workflow in CLAUDE.md; this file; `design.html` |
 | P1 | `refactor/probability-p1-references` | merged #77 | P0 | A script writing reference values from today's code: the prior draws and densities (PR #69's prior transcribed, `example_calibration`, a hierarchy, a copula, a per-PFT simplex), and `ForwardModel` predictions on `test_forward`'s fake runners |
 | P2 | `refactor/probability-p2-foundations` | merged #78 | P0 | Supports, with `PositiveDefinite`; `ArraySpec`; `labels` v2; `Layout`; encode and decode; shims left in `parameters` (split into P2a and P2b if large) |
-| P3 | `refactor/probability-p3-prior-model` | open #79 | P1, P2 | Laws, families, builders; `FactorSpec`, `DeterministicSpec`, decorators; `joint`, `bind`, `FactoredDistribution`; `condition_on` and `Posterior` without simulators |
-| P4 | `refactor/probability-p4-adapter-prep` | next | P2 | F8; the SIPNET map on dicts and `ArraySpec`s; `ObservationSource.standard_deviation`; the observation dims and constants; `observation.model` |
+| P3 | `refactor/probability-p3-prior-model` | merged #79 | P1, P2 | Laws, families, builders; `FactorSpec`, `DeterministicSpec`, decorators; `joint`, `bind`, `FactoredDistribution`; `condition_on` and `Posterior` without simulators |
+| P4 | `refactor/probability-p4-adapter-prep` | open #PR | P2 | F8; the SIPNET map on dicts and `ArraySpec`s; `ObservationSource.standard_deviation`; the observation dims and constants; `observation.model` |
 | P5 | `refactor/probability-p5-simulator` | waiting | P3, P4 | The `Simulator` seam; `SIPNETRuns`, with today's `ForwardModel` delegating to it; `SIPNETSimulator`; F6, F7 |
 | P6 | `refactor/probability-p6-gaussian` | waiting | P5 | Covariance specs, `GaussianSpec`, `noise_factor`, `gaussian_likelihood`, through the `probability/_linalg.py` shim over today's pyEKI |
 | P7 | `refactor/probability-p7-inference` | waiting | P6 | The `inference` package on today's pyEKI |
@@ -374,3 +374,90 @@ joint laws' parts, but not at a mixture's choice of component. The list is
 `_bound._LAWS_WITHOUT_A_DENSITY`, by name. A law from another package that
 is singular is not caught; when the foreign-law adapters arrive (P9),
 theirs need the same check.
+
+### 2026-10-04: P4, the adapters' preparation
+
+**Done.** Additive throughout; the Flat API, `ForwardModel` and every old
+test are unchanged.
+
+- `ObservationSource(standard_deviation=)`: optional observed values, read
+  by label at the observed values' labels (a larger grid is fine), in units
+  that convert to theirs by exactly 1, finite and non-negative at every
+  observation (zero allowed), stored on the observed grid with `NaN` where
+  they are. It follows `select` and `restrict_to_sites`.
+  `ObservationSource.observation_labels` is the source's `(site[, time])`
+  `MultiIndex` (`site` `int32`, `time` `datetime64[ns]`).
+- `ObservationVector`: `coords` (one observation dim per source,
+  `"<source>_observation"`), `observation_dim_name`, `prediction_name`
+  (`"predicted_<source>"`), `constants(source)` (`observed`,
+  `standard_deviation`, `time_since_epoch`, `calendar_year`,
+  `window_length`, each as the design lists), `year_label_map`,
+  `observed_values_by_component`, `with_observed_values` and `to_fields`.
+  The names are module constants exported by `observation`.
+- `observation.model`: `observed_components` and `prediction_components`,
+  `ArraySpec`s on `REAL` in the observed values' units. The package does
+  not import it, and a test says so.
+- The SIPNET map takes labeled values (a dict of DataArrays) wherever it
+  took a Dataset, reading only what its rules name and refusing arrays
+  that label a shared dim differently. `check_sipnet_parameter_map_fits`
+  accepts `ArraySpec`s. F8: a `ValueRequirement` may omit `units` and
+  `domain` (`FROM_SIPNET_SPEC`), resolved by `Compute` against the SIPNET
+  parameter it writes; `Copy.same_names(names)`.
+- `conventions.ReadOnlyCopies(default=None)`, for the optional standard
+  deviation.
+
+A test binds and conditions a small model over the observed and prediction
+components, reading the vector's constants, and checks its density against
+SciPy. Another shows a dict of labeled values from a `Layout` gives the map
+the same fields and domain report as today's Dataset.
+Tests: 2795 passed and 94 skipped at P3's merge; COUNT after.
+
+**Review.** REVIEW
+
+**Deviations from the design**, recorded in `design.html`:
+
+- F8's "the SIPNET spec" is read as the spec of the SIPNET parameter the
+  rule writes. A requirement that states its units and omits its domain
+  keeps today's meaning, no domain, so `ValueRequirement("degC")` and the
+  old tests are unchanged; only `ValueRequirement()` and
+  `ValueRequirement(domain=...)` inherit. A map refuses a custom rule that
+  leaves a field unresolved.
+- The design named no methods for the constants or the dim's name:
+  `constants(source)` and `observation_dim_name(source)` are added, and
+  `ObservationSource.observation_labels`.
+- An observed component carries the observed values' `units` but not their
+  `constituent`, which an `ArraySpec` has no field for.
+
+**Choices the design left open:**
+
+- `to_fields` skips an array on none of the vector's observation dims
+  (`theta`, a parameter), so a posterior's whole `to_labeled` can be
+  passed; it refuses a label that is no observation (`KeyError`), a dim
+  that is not a batch dim, and other levels.
+- `with_observed_values` requires the new values to observe exactly the
+  same `(site[, time])` pairs, `NaN` elsewhere; a source not named is kept
+  as it is, the same object.
+- `calendar_year` is a `float64` constant (constants are `float64` or
+  `bool`); `year_label_map` holds the year as a string, for a `year`
+  element axis.
+- The standard deviation's units are compared by `conversion_factor == 1`,
+  as the map compares a value's, constituents included.
+- No check refuses a source name whose derived names collide (a source
+  `predicted_x` beside `x`); `joint` refuses duplicate component names.
+
+**What P5 and P6 must know.**
+
+- P5: `SIPNETSimulator.check_given` is `check_sipnet_parameter_map_fits(map,
+  given_specs)` plus today's corner check. `sipnet_parameter_fields` and
+  `out_of_domain` take `LabeledValues` directly; the inputs (initial states)
+  are not in `posterior.to_labeled`, so `SIPNETRuns.evaluate` must merge
+  them in. `prediction_components(observation_vector)` are the simulator's
+  `outputs`; a prediction's Flat-to-labeled conversion is by label through
+  `observation_labels`, never by Flat position.
+- P6: `noise_factor` reads `observation_vector.constants(source)` and, for a
+  grouping by site, the `site` level of the observation dim. About 10% of
+  MODIS LAI standard deviations are zero locally, which the source accepts;
+  the covariance's positive-definiteness is `condition_on`'s to check.
+- Two stacked dims with a `site` level cannot share an `xr.Dataset` or one
+  DataArray (xarray refuses the shared level), which is why labeled values
+  are a dict.

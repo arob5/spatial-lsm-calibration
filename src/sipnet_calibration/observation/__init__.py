@@ -21,7 +21,14 @@ Two abstractions and a handful of functions:
   :class:`ObservationVector`: the observations of an experiment in a fixed
   order, with Fields and Flat representations,
   ``y``, ``index`` (levels :data:`INDEX_LEVELS`), ``positions`` and
-  ``predict``.
+  ``predict``; and, as components of a model, each source's observation
+  dim (``coords``), constants, prediction name, observed values on that dim
+  (``observed_values_by_component``) and the way back to fields
+  (``to_fields``).
+
+:mod:`~sipnet_calibration.observation.model` makes the observed and
+prediction components, which need the probability layer; this package does
+not import it, so the data sources and PyEns workers load no TFP.
 
 The verbs the operators are written with: temporal alignment in
 :mod:`~sipnet_calibration.observation.time_alignment` (``aggregate_time``,
@@ -33,9 +40,9 @@ pySIPNET's :func:`~pysipnet.parameters.model.parameter_dataarray`. Unit
 conversion is pySIPNET's :func:`pysipnet.units.convert_dataarray_units`,
 which :meth:`ObservationVector.predict` applies.
 
-The error model and the likelihood are not here; they belong to the
-inference layer, which reads ``y``, ``index`` and ``positions`` off the
-vector.
+The error model and the likelihood are not here: today's inference layer
+reads ``y``, ``index`` and ``positions`` off the vector, and the probability
+layer's noise factors read the observation dims and constants.
 """
 
 from sipnet_calibration.observation.operators import (
@@ -70,17 +77,33 @@ from sipnet_calibration.observation.source import (
     validate_observed_values,
 )
 from sipnet_calibration.observation.vector import (
+    CALENDAR_YEAR,
     INDEX_LEVELS,
+    OBSERVATION_DIM_SUFFIX,
+    OBSERVED,
+    PREDICTION_PREFIX,
+    STANDARD_DEVIATION,
+    TIME_SINCE_EPOCH,
+    WINDOW_LENGTH,
+    YEAR,
     ObservationVector,
     check_batch_dim_is_not_an_observation_source_name,
 )
 
 __all__ = [
+    "CALENDAR_YEAR",
     "DEFAULT_METHOD_FOR_KIND",
     "DEFAULT_OBS_OPS",
     "INDEX_LEVELS",
+    "OBSERVATION_DIM_SUFFIX",
+    "OBSERVED",
+    "PREDICTION_PREFIX",
     "RESAMPLING_METHODS",
+    "STANDARD_DEVIATION",
+    "TIME_SINCE_EPOCH",
+    "WINDOW_LENGTH",
     "WINDOW_REDUCTIONS",
+    "YEAR",
     "ComputeLeafAreaIndex",
     "ObservationOperator",
     "ObservationSource",

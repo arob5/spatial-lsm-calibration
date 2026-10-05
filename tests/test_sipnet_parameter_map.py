@@ -11,6 +11,8 @@ in ``test_equivalence.py``.
 
 from __future__ import annotations
 
+import pickle
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -32,7 +34,9 @@ from sipnet_calibration.parameters import (
     Parameter,
     ParameterVector,
 )
+from sipnet_calibration.probability import ArraySpec, Layout
 from sipnet_calibration.sipnet_parameter_map import (
+    FROM_SIPNET_SPEC,
     INITIAL_STATE_NAMES,
     REQUIRED_SIPNET_PARAMETER_NAMES,
     Compute,
@@ -601,3 +605,123 @@ def test_a_vector_input_with_one_number_outside_an_interval_is_reported(site_dim
     fields = sipnet_map.sipnet_parameter_fields(values, site_dims=site_dims)
     outside = sipnet_map.out_of_domain(fields, values, site_dims=site_dims)
     assert outside[["sample", "site", "value_name"]].values.tolist() == [[1, 4711, "shares"]]
+
+
+# ── the probability layer's forms ─────────────────────────────────────────────
+
+
+def array_specs() -> list[ArraySpec]:
+    """The fixture vector's parameters as the probability layer declares them."""
+    return [
+        ArraySpec("photosynthetic_capacity", units="nmol g-1 s-1", support=POSITIVE),
+        ArraySpec("respiration_share", units="1", support=OPEN_UNIT_INTERVAL),
+        ArraySpec("allocation", units="1", support=SIMPLEX, indexed_by=("pft",),
+                  element_axes={"allocation_part": ALLOCATION}),
+        ArraySpec("base_soil_respiration", units="yr-1", support=POSITIVE, indexed_by=("pft",)),
+        ArraySpec("initial_soil_carbon", units="g m-2", support=POSITIVE, indexed_by=("site",)),
+    ]
+
+
+@pytest.fixture(scope="module")
+def labeled(vector, site_dims) -> dict[str, xr.DataArray]:
+    """The fixture values as labeled values, through a Layout, with a
+    component on a stacked dim and theta beside them, which the map ignores."""
+    theta = jax.random.normal(jax.random.key(0), (8, vector.unconstrained.size))
+    values_by_name = vector.flat_to_values(vector.to_natural(theta))
+    layout = Layout(array_specs(), coords={"pft": site_dims.coords["pft"], "site": site_dims.coords["site"]})
+    labeled = layout.values_to_labeled(values_by_name, batch_dims=("sample",))
+    observations = pd.MultiIndex.from_arrays([np.asarray([1, 27], dtype=np.int32), ["a", "b"]], names=["site", "part"])
+    labeled["observed"] = xr.DataArray(
+        [1.0, 2.0], dims="observation", coords=xr.Coordinates.from_pandas_multiindex(observations, "observation"))
+    labeled["theta"] = xr.DataArray(np.asarray(theta), dims=("sample", "theta_entry"))
+    return labeled
+
+
+def test_labeled_values_give_the_fields_the_dataset_gives(sipnet_map, values, labeled, site_dims):
+    from_dataset = sipnet_map.sipnet_parameter_fields(values, site_dims=site_dims)
+    from_labeled = sipnet_map.sipnet_parameter_fields(labeled, site_dims=site_dims)
+    xr.testing.assert_identical(from_labeled, from_dataset)
+    pd.testing.assert_frame_equal(
+        sipnet_map.out_of_domain(from_labeled, labeled, site_dims=site_dims),
+        sipnet_map.out_of_domain(from_dataset, values, site_dims=site_dims),
+    )
+
+
+def test_labeled_values_on_different_labels_are_refused(sipnet_map, labeled, site_dims):
+    shifted = dict(labeled, respiration_share=labeled["respiration_share"].assign_coords(sample=np.arange(1, 9)))
+    with pytest.raises(ValueError, match="label a shared dim differently"):
+        sipnet_map.sipnet_parameter_fields(shifted, site_dims=site_dims)
+
+
+def test_labeled_values_lacking_a_value_read_are_refused(sipnet_map, labeled, site_dims):
+    with pytest.raises(KeyError, match="which the values lack"):
+        sipnet_map.sipnet_parameter_fields({k: v for k, v in labeled.items() if k != "allocation"}, site_dims=site_dims)
+
+
+@pytest.mark.parametrize("bad", [[1.0], {"photosynthetic_capacity": np.ones(3)}])
+def test_values_are_a_dataset_or_a_mapping_of_arrays(sipnet_map, site_dims, bad):
+    with pytest.raises(TypeError, match="a mapping of DataArrays by name"):
+        sipnet_map.sipnet_parameter_fields(bad, site_dims=site_dims)
+
+
+def test_the_map_fits_array_specs(sipnet_map, site_dims):
+    specs = {spec.name: spec for spec in array_specs()}
+    check_sipnet_parameter_map_fits(sipnet_map, specs, site_dims=site_dims)
+    wrong_units = dict(specs, initial_soil_carbon=ArraySpec("initial_soil_carbon", units="kg m-2", indexed_by=("site",)))
+    with pytest.raises(ValueError, match="requires 'g m-2'"):
+        check_sipnet_parameter_map_fits(sipnet_map, wrong_units)
+    wrong_shape = dict(specs, allocation=ArraySpec("allocation", units="1", element_axes={"allocation_part": 3}))
+    with pytest.raises(ValueError, match=r"has shape \(3,\)"):
+        check_sipnet_parameter_map_fits(sipnet_map, wrong_shape)
+
+
+def test_an_omitted_requirement_is_the_sipnet_parameter_written():
+    rule = Compute(sipnet_parameter_name="min_photosynthesis_temperature",
+                   values_read={"optimum": ValueRequirement(), "spread": ValueRequirement(domain=POSITIVE),
+                                "share": ValueRequirement("1")},
+                   function=lambda optimum, spread, share: optimum - spread * share, provenance="t")
+    assert rule.values_read["optimum"] == ValueRequirement("degC", REAL)
+    assert rule.values_read["spread"] == ValueRequirement("degC", POSITIVE)
+    assert rule.values_read["share"] == ValueRequirement("1") == ValueRequirement("1", None, ())
+
+
+def test_an_omitted_requirement_takes_the_sipnet_parameters_domain():
+    rule = Compute(sipnet_parameter_name="base_wood_respiration_rate", values_read={"rate": ValueRequirement()},
+                   function=lambda rate: rate, provenance="t")
+    copy = Copy(value_name="rate", sipnet_parameter_name="base_wood_respiration_rate")
+    assert rule.values_read["rate"].domain == POSITIVE
+    assert dict(copy.values_read) == dict(rule.values_read)
+
+
+def test_an_omitted_requirement_needs_a_flat_name():
+    with pytest.raises(KeyError, match="not a pySIPNET parameter"):
+        Compute(sipnet_parameter_name="not_a_parameter", values_read={"x": ValueRequirement()},
+                function=lambda x: x, provenance="t")
+
+
+def test_a_map_refuses_a_rule_leaving_a_requirement_unresolved():
+    class Unresolved:
+        values_read = {"x": ValueRequirement()}
+        constants = {}
+        sipnet_parameter_names_read = ()
+        sipnet_parameter_names_written = ("soil_carbon",)
+
+        def __call__(self, values, sipnet_parameter_values):
+            return {"soil_carbon": values["x"]}
+
+    with pytest.raises(ValueError, match="omit their units or domain"):
+        SIPNETParameterMap(rules=[Unresolved()])
+
+
+def test_an_omitted_requirement_pickles_to_itself():
+    requirement = pickle.loads(pickle.dumps(ValueRequirement(shape=(2,))))
+    assert requirement.units is FROM_SIPNET_SPEC and requirement.domain is FROM_SIPNET_SPEC
+    assert not requirement.is_resolved and ValueRequirement("1").is_resolved
+
+
+def test_copy_same_names_copies_each_value_to_its_namesake():
+    copies = Copy.same_names(["soil_respiration_q10", "half_saturation_light"])
+    assert [(c.value_name, c.sipnet_parameter_name) for c in copies] == [
+        ("soil_respiration_q10", "soil_respiration_q10"), ("half_saturation_light", "half_saturation_light")]
+    with pytest.raises(TypeError, match="pass"):
+        Copy.same_names("soil_respiration_q10")
