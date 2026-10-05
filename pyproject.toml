@@ -70,6 +70,15 @@ dependencies = [
 [dependency-groups]
 dev = [
     "pytest>=8.0",
+    # The probability layer adapts numpyro's distributions without importing
+    # numpyro, so the package does not depend on it; its tests do.
+    "numpyro>=0.18",
+]
+# Optional: the tests of a GPJax Gaussian process as a factor's law, skipped
+# without it. Install with `uv sync --group gpjax`; a plain `uv sync` removes
+# it again.
+gpjax = [
+    "gpjax>=1.0",
 ]
 
 # The three companion packages are developed alongside this project rather than

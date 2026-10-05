@@ -180,6 +180,17 @@ def test_the_probability_layer_reaches_pyeki_through_one_shim():
     assert _files_importing("sipnet_calibration.probability", "pyeki") == ["_linalg.py"]
 
 
+def test_the_probability_layer_never_imports_numpyro_or_gpjax():
+    """numpyro and GPJax are not dependencies: the layer recognizes their
+    distributions by class name, so no file imports either and importing
+    the package loads neither."""
+    for top_level in ("numpyro", "gpjax"):
+        assert _files_importing("sipnet_calibration", top_level) == []
+    code = "import sys; import sipnet_calibration.probability; print(sorted(m for m in ('numpyro', 'gpjax') if m in sys.modules))"
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
+    assert result.stdout.strip() == "[]"
+
+
 def test_the_inference_adapters_read_only_a_posterior():
     """The inference package imports the probability layer, ``smc`` and
     ``validation`` and nothing else of the package, so it reads a posterior

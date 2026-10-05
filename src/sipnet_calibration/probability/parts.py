@@ -71,7 +71,7 @@ from sipnet_calibration.probability._validation import (
 from sipnet_calibration.probability.builders import Builder
 from sipnet_calibration.probability.covariance import CovarianceSpec
 from sipnet_calibration.probability.labels import as_constants, as_label_maps
-from sipnet_calibration.probability.laws import Law, distribution_name, is_law
+from sipnet_calibration.probability.laws import Law, as_law, distribution_name, is_law
 from sipnet_calibration.probability.layout import LabeledValues
 from sipnet_calibration.probability.scale_mixtures import MatrixStudentTSpec, StudentTSpec
 from sipnet_calibration.probability.spec import ArraySpec
@@ -111,13 +111,16 @@ class FactorSpec:
     law : Law, callable, Builder, GaussianSpec, StudentTSpec or MatrixStudentTSpec
         Keyword-only. The law, or how to build it per draw:
 
-        - a law (a TFP distribution, or an object implementing
-          :class:`~sipnet_calibration.probability.laws.Law`), when the
-          factor reads nothing and its one component is indexed by nothing;
+        - a law (a TFP distribution, a law
+          :func:`~sipnet_calibration.probability.laws.as_law` adapts, such as
+          a ``pyeki.gauss.Gaussian`` or a numpyro distribution, or an object
+          implementing :class:`~sipnet_calibration.probability.laws.Law`),
+          when the factor reads nothing and its one component is indexed by
+          nothing; it is held adapted;
         - a function ``(**reads) -> law`` for one draw: a law of TFP batch
           shape ``()`` over the block, or over a dict of blocks keyed by the
-          event's names for a joint factor; traced, and vmapped over draws
-          when it reads a component;
+          event's names for a joint factor, adapted by ``as_law``; traced,
+          and vmapped over draws when it reads a component;
         - a builder's result (:func:`~sipnet_calibration.probability.builders.iid_over_dim`
           and the others), which the model also gives the index shape;
         - a :class:`GaussianSpec`, over one component on
@@ -197,7 +200,7 @@ class FactorSpec:
         event = _as_specs(event, what="a factor's event")
         name = "+".join(spec.name for spec in event)
         _set(self, "event", event)
-        _set(self, "law", law)
+        _set(self, "law", as_law(law) if is_law(law) else law)
         _set(self, "constants", as_constants({} if constants is None else constants, message_name=f"{name!r} constants"))
         _set(self, "label_maps", as_label_maps({} if label_maps is None else label_maps, message_name=f"{name!r} label_maps"))
         _set(self, "own_dims", as_names(own_dims, message_name=f"{name!r} own_dims"))
@@ -758,8 +761,8 @@ def check_bare_law_needs_nothing_bound(spec: FactorSpec) -> None:
     if spec.event[0].indexed_by:
         raise TypeError(
             f"the factor {spec.name!r} is over a component indexed by {spec.event[0].indexed_by}, so its "
-            "law is built for the labels in use; wrap the law as iid_over_dim(law) or "
-            "independent_over_dim(family, ...)."
+            "law is built for the labels in use; wrap a TFP law as iid_over_dim(law) or "
+            "independent_over_dim(family, ...), or give a function returning a law over the whole block."
         )
     if spec.constants or spec.label_maps:
         raise TypeError(
@@ -827,7 +830,7 @@ def check_law_is_one_of_the_forms(name: str, law: Any) -> None:
     """A factor's law is a law, a builder or a function returning a law."""
     if not callable(law):
         raise TypeError(
-            f"the law of {name!r} is a {type(law).__name__}; give a TFP distribution, a builder such as "
+            f"the law of {name!r} is a {type(law).__name__}; give a law (a TFP or numpyro distribution), a builder such as "
             "iid_over_dim(...), or a function of what it reads that returns a law."
         )
 

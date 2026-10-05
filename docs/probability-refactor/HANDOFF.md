@@ -28,8 +28,8 @@ and proofs are the design's §12; the column below is a summary.
 | P6 | `refactor/probability-p6-gaussian` | merged #83 | P5 | Covariance specs, `GaussianSpec`, `noise_factor`, `gaussian_likelihood`, through the `probability/_linalg.py` shim over today's pyEKI |
 | P7 | `refactor/probability-p7-inference` | merged #84 | P6 | The `inference` package on today's pyEKI |
 | #69 | `feat/single-site-mcmc-vs-eki` | not this refactor's | P7 | PR #69 migrates in its own session |
-| P8 | `refactor/probability-p8-conjugacy` | open #85 | P6 | `marginalize`, `full_conditional`, `theta_with` |
-| P9 | `refactor/probability-p9-foreign-laws` | waiting | P3 | numpyro and EnsKit `Gaussian` adapters; GPJax as an optional test group |
+| P8 | `refactor/probability-p8-conjugacy` | merged #85 | P6 | `marginalize`, `full_conditional`, `theta_with` |
+| P9 | `refactor/probability-p9-foreign-laws` | open #86 | P3 | numpyro and EnsKit `Gaussian` adapters; GPJax as an optional test group |
 | R1 | `refactor/probability-r1-removal` | waiting | #69 migrated | Delete `parameters`, today's `ForwardModel`, the Flat API, the old `describe_calibration`; move the vocabulary into CLAUDE.md's glossary |
 | E1–E3 | `refactor/probability-e<k>-enskit` | waiting | EnsKit PRs 1, 2 and 4, 7 | The pyEKI-to-EnsKit rename, EnsKit's `linalg` and `Gaussian`, EnsKit's EKI driver |
 
@@ -136,6 +136,19 @@ recommendations included, and reports any recommendation it finds doubtful.
   and scale parameters, named as `inverse_gamma(shape=, scale=)` names
   them. Recommended: keep them matching the family; the alternative is
   `concentration` in both, which renames P3's family.
+- **numpyro and GPJax are not dependencies (P9).** The layer recognizes
+  numpyro's distributions by class name and imports neither package;
+  numpyro is in the `dev` group for the tests, GPJax in an optional `gpjax`
+  group, so the GPJax test is skipped after a plain `uv sync`.
+  Recommended: keep it so until an experiment uses one of them; the
+  alternative is GPJax in `dev`, which adds about ten packages (equinox,
+  lineax, optax, ...) to every environment.
+- **The builders refuse numpyro's laws (P9).** `iid_over_dim` and
+  `independent_over_dim` wrap a law in TFP's `Sample` or `Independent`, so
+  they refuse one from another package, and a numpyro law over a block is
+  written as a law function (`nd.Normal(...).expand([n]).to_event(1)`).
+  Recommended: keep it; repeating a numpyro law through its own `expand`
+  and `to_event` is a small addition if an experiment wants it.
 
 ## Notes for implementers
 
@@ -1014,3 +1027,88 @@ in P8"):
   binding (P9's EnsKit `Gaussian` adapter may want it).
 - P9 (foreign laws) is next in table order; it needs P3 only. #69's
   migration and R1 follow.
+
+### 2026-10-05: P9, laws from other packages
+
+**Done.** Additive, in `probability`:
+
+- `laws`: `as_law` adapts a numpyro distribution (GPJax's
+  `GaussianDistribution` among them) to a new `NumpyroLaw`, and a
+  `pyeki.gauss.Gaussian` to a `GaussianLaw`, as P6 began; `is_law` answers
+  for both. `NumpyroLaw` reorders `sample`'s arguments and vmaps `log_prob`
+  over the axes in front of its batch and event, which GPJax's does not
+  broadcast. `pushforward` of a TFP base is unchanged (an exact
+  `tfd.TransformedDistribution`); of any other base it is a new
+  `PushforwardLaw`.
+- `_numpyro` (private): numpyro's classes recognized by the qualified names
+  in their MRO, with no import; which have no density; what a wrapper
+  wraps.
+- `_bound`: a law function's result is adapted; a `PushforwardLaw` through
+  the components' own bijectors is evaluated by its base density; the
+  no-density check looks inside adapters and numpyro's wrappers and
+  mixtures; numpyro's `Dirichlet` (under `Independent` or `expand` too) is
+  accepted on the simplex; a structure change inside an adapter is caught.
+- `parts.FactorSpec` holds a bare law adapted, so `FactorSpec(law=gaussian)`
+  with a pyEKI `Gaussian` works (P6's open item). `builders` refuse a law
+  that is not TFP's.
+- `pyproject.toml`: numpyro in `dev`, GPJax in a new optional `gpjax` group;
+  `uv.lock` only adds packages.
+
+Tests: 3072 passed and 95 skipped at P8's merge; 3101 and 95 after, with the
+`gpjax` group installed (one more skipped without it). `tests/test_probability_law_adapters.py` checks
+each adapted law against TFP or SciPy (densities in theta and at natural
+values, draws), the §10.3 GPJax field against TFP's `MaternThreeHalves`
+process, and the refusals; `tests/test_package.py` checks that no file
+imports numpyro or GPJax.
+
+**Review.** One Standard round: code, mutation testing, docs. Fixed:
+
+- `PushforwardLaw.log_prob` summed the bijector's log-Jacobian over the
+  base's rank rather than the value's, so any non-TFP base on
+  `POSITIVE_DEFINITE` (`FillScaleTriL`, rank 1 to 2) raised;
+- `NumpyroLaw.log_prob` mis-shaped a value with fewer axes than the
+  distribution's batch;
+- a numpyro law with `float32` parameters passed the `float64` check, its
+  draws being `float64` under x64; `NumpyroLaw.dtype` now reports the
+  parameter's;
+- `PushforwardLaw.dtype` raised `AttributeError` for a base with no `dtype`;
+- an expanded numpyro `Dirichlet` was refused on the simplex;
+- advice to wrap a numpyro law in `iid_over_dim`, which refuses it;
+- docs: the glossary's *law*, `pushforward`'s Raises, stale "TFP only"
+  messages, the test module's name ("foreign" is not a glossary word) and
+  docstring, the design's account of discrete laws.
+
+Mutation testing made 24 mutants, of which 5 survived; tests now kill all
+of them (a structure change inside a `NumpyroLaw` and a `PushforwardLaw`,
+the unwrapping of `Independent`, `MixtureGeneral`'s components).
+P3's `test_pushforward_takes_a_tfp_base` pinned the restriction this PR
+lifts; it is now `test_pushforward_takes_a_law`.
+
+**Deviations from the design**, each recorded in `design.html` ("As built
+in P9"):
+
+- EnsKit's `Gaussian` is not released, so pyEKI's is adapted, through the
+  `_linalg` shim; E2 swaps the class there;
+- numpyro is recognized by class name, not imported, and is not a
+  dependency of the package;
+- `pushforward` of a non-TFP base returns a `PushforwardLaw`, the design
+  having said only "a law";
+- the builders stay TFP's and refuse other laws.
+
+**Choices the design left open:** numpyro's `Delta`, `Unit` and LKJ laws are
+refused by class and its discrete laws by their support, beside TFP's list;
+a numpyro discrete law draws integers, so the dtype check refuses it first.
+`CENTERED_LAW_SPECS` was not needed: a pyEKI `Gaussian` given as a law is a
+fixed law over its block, not one centered on another component.
+
+**What the next sessions must know.**
+
+- The GPJax test runs only after `uv sync --group gpjax`; a plain
+  `uv sync` removes the group again.
+- numpyro's own deprecation warning (`is_prng_key`) comes from GPJax's
+  sampler, not from the adapter.
+- GPJax's `GaussianDistribution` flattens to a pytree with no leaves, so a
+  structure check cannot see its parameters; the adapter's class and the
+  distribution's class are what it compares.
+- #69's migration is next; it is not this refactor's session. R1 waits on
+  it, and E1–E3 on EnsKit.

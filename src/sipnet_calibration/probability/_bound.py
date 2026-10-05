@@ -38,9 +38,17 @@ import numpy as np
 import pandas as pd
 from tensorflow_probability.substrates import jax as tfp
 
+from sipnet_calibration.probability import _numpyro
 from sipnet_calibration.probability._probes import bijectors_agree, joint_probe_points
 from sipnet_calibration.probability.builders import Builder
-from sipnet_calibration.probability.laws import CARRIES_ITS_BIJECTOR, GaussianLaw, is_law
+from sipnet_calibration.probability.laws import (
+    CARRIES_ITS_BIJECTOR,
+    GaussianLaw,
+    NumpyroLaw,
+    PushforwardLaw,
+    as_law,
+    is_law,
+)
 from sipnet_calibration.probability.parts import (
     CENTERED_LAW_SPECS,
     DeterministicSpec,
@@ -110,6 +118,11 @@ _LAWS_WITHOUT_A_DENSITY = tuple(
     )
     if hasattr(tfd, name)
 )
+
+#: The laws whose ``.distribution`` and ``.bijector`` are a base in theta and
+#: a map from it: TFP's, and what ``pushforward`` makes of a base from another
+#: package.
+_PUSHFORWARDS = (*CARRIES_ITS_BIJECTOR, PushforwardLaw)
 
 #: The magnitude of theta beyond which a probe is an outer one, where a
 #: computed value may round onto its support's boundary or overflow: every
@@ -318,7 +331,8 @@ class BoundFactor:
             return law(self.index_shape, **self._reads(given))
         if is_law(law):
             return law
-        return law(**self._reads(given))
+        built = law(**self._reads(given))
+        return as_law(built) if is_law(built) else built
 
     def covariance_reads(self, given: Mapping[str, Array]) -> dict[str, Any]:
         """What a Gaussian factor's covariance reads, from *given* and its
@@ -430,9 +444,9 @@ class BoundFactor:
     def _pushes_through(self, law: Any, probes: Array) -> bool:
         """Whether *law* is ``TransformedDistribution(base, b)``, the base's
         event theta's block, with ``b`` the components' own map at the probe
-        points: an exact ``TransformedDistribution``, ``LogNormal`` or
-        ``LogitNormal``."""
-        if type(law) not in CARRIES_ITS_BIJECTOR:
+        points: an exact ``TransformedDistribution``, ``LogNormal``,
+        ``LogitNormal`` or :class:`PushforwardLaw`."""
+        if type(law) not in _PUSHFORWARDS:
             return False
         base_event = tuple(law.distribution.event_shape)
         if not self.joint:
@@ -637,12 +651,18 @@ def _laws_within(law: Any) -> list[Any]:
     them: the base of a ``Sample``, an ``Independent``, a
     ``TransformedDistribution``, a ``BatchBroadcast``, a ``BatchReshape`` or
     a ``Masked``; a mixture's components, not the law choosing among them;
-    a joint law's parts where they are laws rather than functions."""
+    a joint law's parts where they are laws rather than functions; the law
+    an adapter or a :class:`PushforwardLaw` holds, and the numpyro
+    distributions a numpyro distribution wraps likewise."""
     found, pending = [], [law]
     while pending:
         current = pending.pop()
         found.append(current)
-        if isinstance(current, tfd.MixtureSameFamily):
+        if isinstance(current, (NumpyroLaw, PushforwardLaw)):
+            pending.append(current.distribution)
+        elif _numpyro.is_numpyro_distribution(current):
+            pending.extend(_numpyro.laws_wrapped_by(current))
+        elif isinstance(current, tfd.MixtureSameFamily):
             pending.append(current.components_distribution)
         elif isinstance(current, tfd.Mixture):
             pending.extend(current.components)
@@ -654,10 +674,23 @@ def _laws_within(law: Any) -> list[Any]:
     return found
 
 
+def _has_no_density(law: Any) -> bool:
+    """Whether *law* is one of TFP's or numpyro's laws with no density a
+    model can evaluate."""
+    if _numpyro.is_numpyro_distribution(law):
+        return _numpyro.has_no_density(law)
+    return isinstance(law, _LAWS_WITHOUT_A_DENSITY)
+
+
 def _structure_of(law: Any) -> Any:
     """A law's pytree structure: its class, its parts' classes and its
     static parameters; its class alone where it has no pytree structure, as
-    for a ``JointDistributionNamed``."""
+    for a ``JointDistributionNamed``; an adapter's, its class and the
+    structure of what it holds."""
+    if isinstance(law, NumpyroLaw):
+        return (NumpyroLaw, _structure_of(law.distribution))
+    if isinstance(law, PushforwardLaw):
+        return (PushforwardLaw, _structure_of(law.distribution), _structure_of(law.bijector))
     try:
         return jax.tree_util.tree_structure(law)
     except (AttributeError, TypeError):
@@ -665,10 +698,13 @@ def _structure_of(law: Any) -> Any:
 
 
 def _event_shape_and_dtype(law: Any) -> tuple[Any, Any, Any]:
-    """A law's event shape, TFP batch shape and dtype: TFP's own, or for any
-    other law the shape and dtype of one draw, with batch shape ``()``."""
+    """A law's event shape, TFP batch shape and dtype: TFP's own, an
+    adapter's own, or for any other law the shape and dtype of one draw,
+    with batch shape ``()``."""
     if isinstance(law, tfd.Distribution):
         return _shape_of(law.event_shape), _shape_of(law.batch_shape), law.dtype
+    if isinstance(law, (NumpyroLaw, PushforwardLaw)):
+        return law.event_shape, law.batch_shape, law.dtype
     draw = jax.eval_shape(lambda key: law.sample((), seed=key), jax.random.key(0))
     if isinstance(draw, Mapping):
         return {n: tuple(d.shape) for n, d in draw.items()}, (), {n: d.dtype for n, d in draw.items()}
@@ -838,7 +874,7 @@ def check_law_has_a_density(bound: BoundFactor) -> None:
     """A factor's law, and every law it wraps, has a density against its
     support's reference measure: no discrete law, point mass or LKJ law,
     which probe points and draws cannot tell from one that has."""
-    singular = [type(law).__name__ for law in _laws_within(bound.law) if isinstance(law, _LAWS_WITHOUT_A_DENSITY)]
+    singular = [type(law).__name__ for law in _laws_within(bound.law) if _has_no_density(law)]
     if singular:
         raise ValueError(
             f"the law of {bound.name!r} is or wraps {sorted(set(singular))}, which has no density against "
@@ -865,14 +901,16 @@ def check_change_of_variables_has_a_measure(bound: BoundFactor) -> None:
 
 def check_simplex_density_is_a_dirichlet(bound: BoundFactor) -> None:
     """On the simplex, a factor evaluated by change of variables is one
-    component's ``Dirichlet``, whose density is against the first ``k - 1``
-    coordinates, as the Jacobian is."""
+    component's ``Dirichlet``, TFP's or numpyro's, whose density is against
+    the first ``k - 1`` coordinates, as the Jacobian is."""
     if bound.by_base_density or not any(isinstance(c.support, Simplex) for c in bound.components):
         return
     inner = bound.law
     if type(inner) in (tfd.Sample, tfd.Independent):
         inner = inner.distribution
-    if bound.joint or type(inner) is not tfd.Dirichlet:
+    if isinstance(inner, NumpyroLaw):
+        inner = _numpyro.independent_base(inner.distribution)
+    if bound.joint or not (type(inner) is tfd.Dirichlet or _numpyro.is_dirichlet(inner)):
         raise ValueError(
             f"the law of {bound.name!r} is a density on the simplex other than a Dirichlet, whose "
             "reference measure is unknown; write it as a pushforward through the components' "

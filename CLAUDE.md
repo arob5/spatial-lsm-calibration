@@ -250,7 +250,7 @@ moves it here.
 | **observed component** | a source's observed values as a component, named for the source, on its observation dim (`observation.model.observed_components`, values `observed_values_by_component()`) | |
 | **prediction** | the forward model's value of an observed quantity, on the source's observation dim and in its units: `predicted_<source>` (`ObservationVector.prediction_name`, `observation.model.prediction_components`) | "predictions", the Flat `(J, N)`, which keeps its meaning |
 | **spec** | a declaration, holding no labels and no numbers; its class ends in `Spec` (`ArraySpec`, `FactorSpec`, `DeterministicSpec`, `ModelSpec`) | the distribution it becomes once bound |
-| **law** | the concrete distribution a factor evaluates to for one draw of what it reads: a TFP distribution, or an object implementing `probability.laws.Law`, such as a `GaussianLaw` | a factor, which declares one |
+| **law** | the concrete distribution a factor evaluates to for one draw of what it reads: a TFP distribution, or an object implementing `probability.laws.Law`, such as a `GaussianLaw`; a pyEKI `Gaussian` or a numpyro distribution (GPJax's among them) is adapted to one by `as_law` (`GaussianLaw`, `NumpyroLaw`), and `pushforward` of a base that is not TFP's is a `PushforwardLaw` | a factor, which declares one |
 | **Gaussian factor** | a factor whose law is a `GaussianSpec` (`probability.parts`): its one component, on `REAL` and indexed by one dim at most, centered on a mean component, with a covariance declared by a **covariance spec** (`probability.covariance`); its law at a draw is a `GaussianLaw`, holding one of pyEKI's operators | a law function returning a Gaussian, which is opaque |
 | **covariance spec** / **scope** | a declaration of a covariance as structure over labels (`DiagonalSpec`, `DenseSpec`, `SumSpec`, `ScaledSpec`, `BlockDiagonalSpec`, `SubmatrixSpec`); its scope is the entries it covers, the event or one group of a `BlockDiagonalSpec`, whose groups are the entries sharing labels at a level (`by=`) | "cell" for a block |
 | **noise factor** | a source's Gaussian factor, its observed component centered on its prediction (`observation.model.noise_factor`), holding the source's constants its covariance reads | |
@@ -467,7 +467,10 @@ coercion lives in `validation.py`.
   nothing but it (its supports, private coercion and probe points, which
   `parameters` re-exports); `tests/test_package.py` enforces both, and that
   pyEKI is imported by `probability/_linalg.py` alone, the shim the move to
-  EnsKit changes (E1, E2). The
+  EnsKit changes (E1, E2), and numpyro and GPJax by no file: the layer
+  adapts their distributions recognized by class name
+  (`probability/_numpyro.py`), and neither is a dependency (numpyro is in
+  the `dev` group, GPJax in the optional `gpjax` group). The
   probability layer keeps its own private coercion helpers and its own
   reserved names (`probability.names`, whose `SAMPLE` a test holds equal to
   `conventions.SAMPLE`), and the project's reserved names, the site table
@@ -1063,9 +1066,11 @@ src/sipnet_calibration/
                           # to_natural(), to_unconstrained(), contains();
                           # ValuesByName, LabeledValues;
                           # encode_labeled_values/decode_labeled_values
-    laws.py               # Law (the protocol), as_law (a pyEKI Gaussian
-                          # too), pushforward; GaussianLaw (a Gaussian over a
-                          # block holding a structured covariance)
+    laws.py               # Law (the protocol), as_law (TFP; a pyEKI
+                          # Gaussian, a numpyro distribution, GPJax's too),
+                          # pushforward (any base); GaussianLaw (a Gaussian
+                          # over a block holding a structured covariance),
+                          # NumpyroLaw, PushforwardLaw
     covariance.py         # CovarianceSpec: DiagonalSpec, DenseSpec, SumSpec,
                           # ScaledSpec, BlockDiagonalSpec (by= a level or the
                           # dim; groups contiguous), SubmatrixSpec; each bound
@@ -1112,13 +1117,14 @@ src/sipnet_calibration/
                           # covariance block): conjugate_rule ->
                           # ConjugateRule, marginalize,
                           # InverseWishartGivenRows
-    _bound.py, _keywords.py, _probes.py, _validation.py, _linalg.py
-                          # private: a part at the labels in use (its law,
+    _bound.py, _keywords.py, _probes.py, _validation.py, _linalg.py,
+    _numpyro.py           # private: a part at the labels in use (its law,
                           # density, draws, the bind checks, the log-Jacobian
                           # against each support's reference measure); the
                           # keyword rule; the probe and corner points;
                           # coercion; the one shim over pyEKI's operators
-                          # and Gaussian
+                          # and Gaussian; numpyro's distributions recognized
+                          # by class name, with no import
   parameters/             # the parameter layer: imports nothing of the package
                           # outside itself but probability/ (tested);
                           # __init__ re-exports it
