@@ -232,7 +232,7 @@ adapter reads. It provides:</p>
   <li><b>The observation vector</b> supplies the observed components, their
   per-observation constants, and a one-line noise factor per source
   (<code>noise_factor</code>).</li>
-  <li><b>The algorithm adapters</b> (EnsKit/pyEKI, SMC, MCMC) move to a new
+  <li><b>The algorithm adapters</b> (EnsKit, SMC, MCMC) move to a new
   generic <code>inference</code> package.</li>
 </ul>
 <p>The vocabulary follows ProbPipe's where its design is settled: component,
@@ -658,7 +658,7 @@ flowchart LR
     FD --> PO["condition_on: Posterior"]
   end
   subgraph inf["inference (generic)"]
-    EK["EnsKit / pyEKI"]
+    EK["EnsKit"]
     SM["SMC"]
     MC["MCMC"]
   end
@@ -676,7 +676,7 @@ flowchart LR
 <thead><tr><th>Package</th><th>Holds</th><th>Imports from the package</th></tr></thead>
 <tbody>
 <tr><td><span class="pill core">core</span> <code>probability</code></td><td>supports, specs, laws, joint and binding, layout, conditioning, conjugacy</td><td>nothing outside itself</td></tr>
-<tr><td><span class="pill core">core</span> <code>inference</code></td><td>the EnsKit/pyEKI, SMC and MCMC adapters over a <code>Posterior</code></td><td><code>probability</code>, <code>smc</code></td></tr>
+<tr><td><span class="pill core">core</span> <code>inference</code></td><td>the EnsKit, SMC and MCMC adapters over a <code>Posterior</code></td><td><code>probability</code>, <code>smc</code></td></tr>
 <tr><td><code>smc</code></td><td>unchanged</td><td><code>io</code>, <code>validation</code></td></tr>
 <tr><td><span class="pill adapter">adapter</span> <code>site_dims</code></td><td>unchanged: coords, covariates and label maps of the sites</td><td><code>sites</code>, <code>site_labels</code></td></tr>
 <tr><td><span class="pill adapter">adapter</span> <code>observation</code></td><td>sources, operators, time alignment; <b>new</b>: observation dims, constants, prediction names, <code>observed_values_by_component</code></td><td><code>fields</code> (still TFP-free)</td></tr>
@@ -2541,43 +2541,53 @@ hands each algorithm what it takes, and it is the only place that imports an
 algorithm package. A second experiment uses it unchanged, which meets issue
 #63's condition for moving the adapters out of the experiment.</p>
 
-<h3>9.1 EnsKit (pyEKI)</h3>
-<p>EnsKit's EKI driver reads four things:</p>
+<h3>9.1 EnsKit</h3>
+<p>EnsKit's EKI driver, <code>enskit.algorithms.eki</code>, reads four things:</p>
 <ul>
   <li>a forward map from the parameter blocks to <code>(J, N)</code>
-  predictions, with non-finite rows for failed samples;</li>
+  predictions, with non-finite rows for failed samples: a simulator in the
+  sense of <code>enskit.maps.pushforward</code>, called once per step with
+  one <code>(J, d_b)</code> array per block, positionally;</li>
   <li><var>y</var>;</li>
   <li>the base noise covariance;</li>
-  <li>an initial ensemble.</li>
+  <li>an initial ensemble, an unweighted <code>Ensemble</code> whose blocks
+  are the parameters, the particles of an <code>EKIState</code>.</li>
 </ul>
-<p>The covariance is already an <code>enskit.linalg</code> operator, so nothing
-is converted. Starting EKI needs no prior Gaussian. Issue #74 stays open only
-for <code>AdditiveInflation</code>, which needs the prior's covariance. This
-adapter targets EnsKit's driver (EnsKit PR 7), and until then today's
-pyEKI, whose <code>EKIState.from_prior</code> calls only
-<code>prior.sample(key, n)</code>. It is kept thin while EnsKit's API
-settles.</p>
+<p>The ensemble has one block, <code>theta</code>, so the forward map takes
+theta <code>(J, D)</code> as its one argument. The covariance is already an
+<code>enskit.linalg</code> operator, so nothing is converted. Starting EKI
+needs no prior Gaussian: <code>EKIState.from_prior</code> takes one, and
+<code>initial_ensemble</code> replaces it with the prior's own draws. Issue
+#74 stays open only for <code>AdditiveInflation</code>, which needs the
+prior's covariance. The adapter imports EnsKit's <code>Ensemble</code> and
+nothing of its algorithms: the experiment imports the driver, the update
+rule and the schedule.</p>
 <pre><code class="language-python">class EKIProblem:
     """What an EKI run reads, from a posterior whose likelihood is Gaussian.
 
     Attributes
     ----------
-    forward : Callable
-        ``(J, D) -&gt; (J, N)``, ``NaN`` in a failed sample: EnsKit's simulator
-        contract. Each call replaces ``last_evaluation``, so no wrapper
-        rebuilds the failure bookkeeping (F14).
+    posterior : Posterior
+    likelihood : GaussianLikelihood
     y : jax.Array
         ``(N,)``.
     noise_covariance : enskit.linalg.PSDLinOp
         :math:`R`.
     last_evaluation : PosteriorEvaluation or None
         The last forward call's: the ensemble evaluated at that step, before
-        its update.
+        its update. A run that ends on its schedule never evaluates its
+        final ensemble, so this is then the ensemble before the last update,
+        as the driver's own ``result.last_evaluation`` is.
     """
+
+    def forward(self, theta: Array) -&gt; Array:
+        """``(J, D) -&gt; (J, N)``, ``NaN`` in an invalid sample: EnsKit's
+        simulator contract. Each call replaces ``last_evaluation``, so no
+        wrapper rebuilds the failure bookkeeping (F14)."""
 
     def initial_ensemble(self, key: Array, n: int) -&gt; Ensemble:
         """``n`` prior draws as an unweighted EnsKit ``Ensemble`` with one block,
-        ``theta``."""
+        ``theta``; ``n &gt;= 2``."""
 
 
 def eki_problem(posterior: Posterior) -&gt; EKIProblem:
@@ -2589,6 +2599,23 @@ def eki_problem(posterior: Posterior) -&gt; EKIProblem:
         As :meth:`Posterior.gaussian_likelihood`; hold a noise
         hyperparameter by observing it at a value first.
     """</code></pre>
+<p>A run:</p>
+<pre><code class="language-python">from enskit import kalman
+from enskit.algorithms import eki
+
+problem = eki_problem(posterior)
+ensemble_key, run_key = jax.random.split(key)
+state = eki.EKIState(problem.initial_ensemble(ensemble_key, 100), key=run_key)
+result = eki.run(state, problem.forward, problem.y, problem.noise_covariance,
+                 update_rule=kalman.Matheron(), schedule=eki.AdaptiveESSSchedule(ess_fraction=0.5),
+                 on_failure="repair")
+posterior.to_labeled(result.ensemble["theta"])       # the final particles, labeled
+problem.forward(result.ensemble["theta"])            # their predictions: one more batch of runs</code></pre>
+<p><i>As built in E2:</i> the section above, rewritten from the interim pyEKI
+text. <code>initial_ensemble</code> returns the <code>Ensemble</code>, where
+P7 returned theta <code>(n, D)</code>; nothing else in the adapter changed.
+<code>tests/test_package.py</code> checks that, of EnsKit, the package imports
+only <code>enskit.distribution</code>, and loads none of its algorithms.</p>
 
 <h3>9.2 SMC and importance sampling</h3>
 <pre><code class="language-python">class PriorBaseDensity:
@@ -2640,8 +2667,8 @@ def initial_points(posterior: Posterior, key: Array, n: int, *,
   returns plain functions, arrays and operators, and pyEKI's driver, like
   emcee, is the experiment's import.</li>
   <li><code>EKIProblem.initial_ensemble(key, n)</code> returns theta
-  <code>(n, D)</code>, the array today's <code>EKIState</code> takes, until
-  EnsKit's <code>Ensemble</code> (E3). <code>EKIProblem</code> also holds
+  <code>(n, D)</code>, the array pyEKI's <code>EKIState</code> took, until
+  EnsKit's <code>Ensemble</code> (E2, §9.1). <code>EKIProblem</code> also holds
   <code>posterior</code> and <code>likelihood</code>, the
   <code>GaussianLikelihood</code> it reads; <code>forward</code> is a method,
   and <code>initial_ensemble</code> refuses fewer than two members.</li>
@@ -2924,7 +2951,7 @@ posterior.describe()                      # every component and input, and its r
 <pre><code class="language-python">import emcee                                               # not yet a dependency
 import jax
 import numpy as np
-from enskit.algorithms import eki                          # after EnsKit PR 7; interim below
+from enskit.algorithms import eki
 from enskit.kalman import Matheron
 
 from sipnet_calibration import io, smc
@@ -2935,16 +2962,11 @@ ensemble_key, run_key, walker_key = jax.random.split(jax.random.key(config.EKI_S
 
 # EKI: replaces prior_gaussian, _RecordingForward and the y and R plumbing
 problem = eki_problem(posterior)
-state = eki.EKIState(problem.initial_ensemble(ensemble_key, 100), beta=0.0, step=0, key=run_key)
+state = eki.EKIState(problem.initial_ensemble(ensemble_key, 100), key=run_key)
 result = eki.run(state, problem.forward, problem.y, problem.noise_covariance,
                  update_rule=Matheron(), schedule=eki.AdaptiveESSSchedule(ess_fraction=0.5),
                  on_failure="repair")
 problem.last_evaluation.valid             # which samples of the last evaluated ensemble ran
-# Interim, today's pyEKI: the ensemble is an array, the update a policy object
-#   state = pyeki.eki.EKIState(np.asarray(posterior.sample_prior(ensemble_key, 100)), 0.0, 0, run_key)
-#   result = pyeki.eki.run(state, problem.forward, problem.y, problem.noise_covariance,
-#                          schedule=pyeki.eki.AdaptiveESSSchedule(ess_fraction=0.5),
-#                          update=pyeki.eki.PathwiseUpdate(), on_failure="repair")
 
 # SMC from a Student-t fitted to the final EKI ensemble
 base = smc.fit_student_t(np.asarray(result.ensemble["theta"]), degrees_of_freedom=5.0)

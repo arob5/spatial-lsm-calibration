@@ -1,17 +1,19 @@
-"""Ensemble Kalman inversion: what an EKI run reads from a posterior whose
-likelihood is Gaussian.
+"""Ensemble Kalman inversion: what EnsKit's EKI driver,
+``enskit.algorithms.eki``, reads from a posterior whose likelihood is
+Gaussian.
 
-EKI reads four things: a forward map from theta to predictions,
+The driver reads four things: a forward map from theta to predictions,
 :math:`G : (J, D) \\to (J, N)`, with a non-finite row for a failed sample;
-:math:`y`; the base noise covariance :math:`R`; and an initial ensemble. A
-posterior whose observed factors are Gaussian with held covariances,
+:math:`y`; the base noise covariance :math:`R`; and an initial ensemble, an
+EnsKit ``Ensemble`` whose blocks are the parameters. A posterior whose
+observed factors are Gaussian with held covariances,
 :math:`y \\sim \\mathcal N(G(\\theta), R)`, provides all four
-(:meth:`~sipnet_calibration.probability.Posterior.gaussian_likelihood`); the
-covariance is already one of EnsKit's operators, so nothing is converted, and
-no Gaussian prior is needed to start.
-
-The initial ensemble is a ``(J, D)`` array, which EnsKit's driver
-(``enskit.algorithms.eki``) takes as an ``Ensemble`` of one block, theta.
+(:meth:`~sipnet_calibration.probability.Posterior.gaussian_likelihood`): the
+ensemble has one block,
+:data:`~sipnet_calibration.probability.names.THETA`, which the driver
+passes to the forward map as its one positional argument; the covariance is
+already one of EnsKit's operators, so nothing is converted; and no Gaussian
+prior is needed to start.
 
 Usage
 -----
@@ -20,15 +22,23 @@ Usage
     import jax
     from enskit import kalman
     from enskit.algorithms import eki
-    from enskit.distribution import Ensemble
 
     problem = eki_problem(posterior)
     ensemble_key, run_key = jax.random.split(key)
-    state = eki.EKIState(Ensemble({"theta": problem.initial_ensemble(ensemble_key, 100)}), key=run_key)
+    state = eki.EKIState(problem.initial_ensemble(ensemble_key, 100), key=run_key)
     result = eki.run(state, problem.forward, problem.y, problem.noise_covariance,
                      update_rule=kalman.Matheron(), schedule=eki.AdaptiveESSSchedule(ess_fraction=0.5),
                      on_failure="repair")
     problem.last_evaluation.valid      # which samples of the last ensemble evaluated ran
+    posterior.to_labeled(result.ensemble["theta"])
+
+Notes
+-----
+A run that ends on its schedule never evaluates its final ensemble, so
+:attr:`EKIProblem.last_evaluation` is then the ensemble before the last
+update, as the driver's own ``result.last_evaluation`` is. The final
+ensemble's predictions are one more call,
+``problem.forward(result.ensemble["theta"])``.
 """
 
 from __future__ import annotations
@@ -36,9 +46,11 @@ from __future__ import annotations
 from typing import Any
 
 import jax
+from enskit.distribution import Ensemble
 
 from sipnet_calibration.inference._validation import check_posterior_is_a_posterior
 from sipnet_calibration.probability import GaussianLikelihood, Posterior, PosteriorEvaluation
+from sipnet_calibration.probability.names import THETA
 from sipnet_calibration.validation import as_bounded_integer
 
 __all__ = [
@@ -130,9 +142,11 @@ class EKIProblem:
         self._last_evaluation = evaluation
         return predictions
 
-    def initial_ensemble(self, key: Array, n: int) -> Array:
-        """``n`` draws of the prior, theta ``(n, D)``, the one block of the
-        ``Ensemble`` EnsKit's ``EKIState`` takes; no simulator runs.
+    def initial_ensemble(self, key: Array, n: int) -> Ensemble:
+        """``n`` draws of the prior as an unweighted EnsKit ``Ensemble`` with
+        one block, :data:`~sipnet_calibration.probability.names.THETA`
+        ``(n, D)``, the initial particles of EnsKit's ``EKIState``; no
+        simulator runs.
 
         Raises
         ------
@@ -143,4 +157,4 @@ class EKIProblem:
             :meth:`Posterior.sample_prior`.
         """
         n = as_bounded_integer(n, minimum=2, message_name="n")
-        return self.posterior.sample_prior(key, n)
+        return Ensemble({THETA: self.posterior.sample_prior(key, n)})

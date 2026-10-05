@@ -15,8 +15,8 @@ The package is generic, like the probability layer: it reads a
 sites or the observation vector, so a second experiment uses it unchanged.
 It imports the probability layer, :mod:`~sipnet_calibration.smc` and
 :mod:`~sipnet_calibration.validation`, and no algorithm package: each
-adapter returns the plain functions, arrays and operators its algorithm
-takes, and the experiment imports the algorithm.
+adapter returns the plain functions, arrays, operators and ensembles its
+algorithm takes, and the experiment imports the algorithm.
 
 Every adapter that needs the likelihood evaluates theta through
 :meth:`Posterior.evaluate`, one simulator call per batch; the prior's
