@@ -578,10 +578,12 @@ class ObservationVector:
         KeyError
             If a source is not in the vector.
         ValueError
-            If a source's values are not observed values, or observe other
-            ``(site[, time])`` pairs than the source does.
+            If a source's values are not observed values, observe other
+            ``(site[, time])`` pairs than the source does, or differ from
+            its values in another coordinate (a location, a window) or in
+            units.
         """
-        check_values_are_a_mapping(values)
+        check_values_are_a_mapping(values, "values")
         check_observation_source_names_are_held(list(values), self.observation_source_names)
         sources = []
         for source in self.observation_sources:
@@ -727,7 +729,7 @@ class ObservationVector:
             If the source is static.
         """
         source = self[observation_source_name]
-        check_source_is_dated(source, "a year label map")
+        check_source_is_dated(source)
         years = source.observation_labels.get_level_values(TIME).year.astype(str).to_numpy(object)
         return _on_the_observation_dim(source, years, name=YEAR, attrs={})
 
@@ -769,12 +771,12 @@ class ObservationVector:
             If *labeled* is not a mapping, or a value is not a ``DataArray``.
         ValueError
             If an array is on two observation dims, on a dim that is not a
-            batch dim, or labels its observation dim with other levels than
-            the source's.
+            batch dim, labels its observation dim with other levels than
+            the source's, or holds an observation twice.
         KeyError
             If an array holds a label the source does not observe.
         """
-        check_values_are_a_mapping(labeled)
+        check_values_are_a_mapping(labeled, "labeled")
         sources_by_dim = {_observation_dim_name(s): s for s in self.observation_sources}
         out: dict[str, xr.DataArray] = {}
         for name, array in labeled.items():
@@ -1032,6 +1034,7 @@ def _unstacked_from_observation_dim(
         check_dim_is_a_batch_dim(name, array, batch_dim)
     labels = array.indexes.get(dim)
     check_observation_levels_are_the_sources(name, labels, source)
+    check_observation_labels_are_unique(name, labels)
     grid = source.observed_values
     site_positions = grid.indexes[SITE].get_indexer(labels.get_level_values(SITE))
     positions = [site_positions]
@@ -1429,27 +1432,44 @@ def check_array_has_the_observed_time_labels(
         )
 
 
-def check_values_are_a_mapping(values: Any) -> None:
+def check_values_are_a_mapping(values: Any, message_name: str) -> None:
     """Values by source or by name are a mapping."""
     if not isinstance(values, Mapping):
-        raise TypeError(f"expected a mapping {{name: DataArray}}, got {type(values).__name__}; pass a dict.")
-
-
-def check_values_observe_the_same_labels(replaced: ObservationSource, source: ObservationSource) -> None:
-    """Replacing a source's observed values keeps its observations, so that
-    what was bound at them still applies."""
-    if not replaced.observation_labels.equals(source.observation_labels):
-        raise ValueError(
-            f"{source.observation_source_name}: the new observed values observe "
-            f"{replaced.n_observations} (site, time) pairs, not the source's {source.n_observations}; "
-            "give values at the same observations, NaN elsewhere."
+        raise TypeError(
+            f"{message_name} must be a mapping {{name: DataArray}}, got {type(values).__name__}; pass a dict."
         )
 
 
-def check_source_is_dated(source: ObservationSource, what: str) -> None:
+def check_values_observe_the_same_labels(replaced: ObservationSource, source: ObservationSource) -> None:
+    """Replacing a source's observed values keeps its observations, their
+    coordinates (locations, windows) and units, so that what was bound at
+    them, and the constants read from them, still apply."""
+    name = source.observation_source_name
+    if not replaced.observation_labels.equals(source.observation_labels):
+        raise ValueError(
+            f"{name}: the new observed values observe other (site, time) pairs than the source's "
+            f"{source.n_observations}; give values at the same observations, NaN elsewhere."
+        )
+    new, old = replaced.observed_values, source.observed_values
+    differing = [
+        str(c) for c in sorted(set(new.coords) | set(old.coords), key=str)
+        if c not in new.coords or c not in old.coords or not new[c].equals(old[c])
+    ]
+    differing += [a for a in ("units", "constituent") if new.attrs.get(a) != old.attrs.get(a)]
+    if differing:
+        raise ValueError(
+            f"{name}: the new observed values differ from the source's in {differing}; give values "
+            "with the source's coordinates and units, changing only the values."
+        )
+
+
+def check_source_is_dated(source: ObservationSource) -> None:
     """A source read by time has a time."""
     if source.is_static:
-        raise ValueError(f"{source.observation_source_name} is static, so it has no {what}.")
+        raise ValueError(
+            f"{source.observation_source_name} is static, so its observations have no year; ask for "
+            "the years of a dated source."
+        )
 
 
 def check_array_is_on_one_observation_dim(name: str, dims: Sequence[str]) -> None:
@@ -1480,6 +1500,17 @@ def check_observation_levels_are_the_sources(
         raise ValueError(
             f"{name} labels its observation dim with {found or 'a plain index, or none'}, the source "
             f"{source.observation_source_name!r} with {expected}; label it with the vector's coords."
+        )
+
+
+def check_observation_labels_are_unique(name: str, labels: pd.MultiIndex) -> None:
+    """An array to unstack holds each observation once, so that one value is
+    placed at each."""
+    if not labels.is_unique:
+        repeated = labels[labels.duplicated()].unique()
+        raise ValueError(
+            f"{name} holds the observation(s) {truncated([str(r) for r in repeated])} more than once; "
+            "keep one value per observation."
         )
 
 

@@ -70,8 +70,8 @@ def observed_components(observation_vector: ObservationVector) -> tuple[ArraySpe
 
 
 def prediction_components(observation_vector: ObservationVector) -> tuple[ArraySpec, ...]:
-    """The predictions, one per source, in the vector's order: a forward
-    model's outputs, as the module docstring's data model has them."""
+    """The prediction components, one per source, in the vector's order: a
+    forward model's outputs, as the module docstring's data model has them."""
     return tuple(
         _component(observation_vector, name, observation_vector.prediction_name(name))
         for name in observation_vector.observation_source_names

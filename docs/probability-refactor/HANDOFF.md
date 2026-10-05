@@ -50,6 +50,23 @@ recommendations included, and reports any recommendation it finds doubtful.
   Pinning its revision in `[tool.uv.sources]` would protect everyone.
 - **The recommended decisions** (§13): D1, D2, D5, D7, D8, D9, D10, D11, D12,
   D13, D14, D18–D24.
+- **An observation's calendar year (P4).** `calendar_year` and
+  `year_label_map` take the year of the `time` label. For a source labeled
+  at its window's end, such as observed NEE, the step ending
+  2013-01-01T00:00 then belongs to 2013, though its window lies in 2012.
+  The annual constraints, labeled January 1, are unaffected. Recommended:
+  keep the label's year (the design's definition, and what PR #69's LAI
+  block assumes), and revisit when a noise factor groups NEE by year;
+  the alternative is the year of the window's start where there is one.
+- **Element axes are read by position in the SIPNET map (P4, found in
+  review; predates the refactor).** `CopySimplex` and every rule read a
+  value's element axes in the order the array holds them, so a simplex
+  given in another `allocation_part` order writes the wrong allocations
+  without an error, through a Dataset or labeled values alike. A `Layout`
+  always produces the spec's order, so the probability layer's own path is
+  safe. Recommended: P5's `check_given` checks the given `ArraySpec`s'
+  element labels, and the map transposes by label where a value carries
+  them; or leave it, the risk being a hand-built Dataset.
 
 ## Notes for implementers
 
@@ -410,17 +427,38 @@ A test binds and conditions a small model over the observed and prediction
 components, reading the vector's constants, and checks its density against
 SciPy. Another shows a dict of labeled values from a `Layout` gives the map
 the same fields and domain report as today's Dataset.
-Tests: 2795 passed and 94 skipped at P3's merge; COUNT after.
+Tests: 2795 passed and 94 skipped at P3's merge; 2858 and 94 after.
 
-**Review.** REVIEW
+**Review.** One Standard round (code, mutation testing, docs). It found,
+and this PR fixes:
+
+- an explicit `ValueRequirement(units, FROM_SIPNET_SPEC)` losing its domain
+  (the domain's default is now its own sentinel);
+- `with_observed_values` accepting values with other windows, locations or
+  units, which would have changed the constants silently;
+- `to_fields` accepting an observation twice;
+- a custom rule's non-`ValueRequirement` raising `AttributeError`, and
+  conflicting coordinates in labeled values escaping as xarray's
+  `MergeError`;
+- a standard deviation lacking an observed label raising `ValueError`
+  rather than CLAUDE.md's `KeyError` (the design's stub said `ValueError`;
+  noted there);
+- messages and docs: a check without a `message_name`, an ungrammatical
+  message, "predictions" used for the components, CLAUDE.md's layout
+  missing `observation_dim_name`, unwrapped lines.
+
+Mutation testing killed 28 of 31 mutants; tests now kill the other three
+(a resolved requirement's shape, the standard deviation's own attributes,
+and its constant's), and unequal windows pin `window_length`'s order.
+Two findings are questions below, not fixes.
 
 **Deviations from the design**, recorded in `design.html`:
 
 - F8's "the SIPNET spec" is read as the spec of the SIPNET parameter the
   rule writes. A requirement that states its units and omits its domain
   keeps today's meaning, no domain, so `ValueRequirement("degC")` and the
-  old tests are unchanged; only `ValueRequirement()` and
-  `ValueRequirement(domain=...)` inherit. A map refuses a custom rule that
+  old tests are unchanged; a field inherits when omitted with the units,
+  or when given as `FROM_SIPNET_SPEC`. A map refuses a custom rule that
   leaves a field unresolved.
 - The design named no methods for the constants or the dim's name:
   `constants(source)` and `observation_dim_name(source)` are added, and
@@ -435,8 +473,9 @@ Tests: 2795 passed and 94 skipped at P3's merge; COUNT after.
   passed; it refuses a label that is no observation (`KeyError`), a dim
   that is not a batch dim, and other levels.
 - `with_observed_values` requires the new values to observe exactly the
-  same `(site[, time])` pairs, `NaN` elsewhere; a source not named is kept
-  as it is, the same object.
+  same `(site[, time])` pairs, `NaN` elsewhere, with the same coordinates
+  (locations, windows) and units; a source not named is kept as it is, the
+  same object.
 - `calendar_year` is a `float64` constant (constants are `float64` or
   `bool`); `year_label_map` holds the year as a string, for a `year`
   element axis.

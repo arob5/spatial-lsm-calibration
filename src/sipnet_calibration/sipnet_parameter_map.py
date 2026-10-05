@@ -485,14 +485,18 @@ class SIPNETParameterMap:
 # ── what a rule requires, and fixed values ────────────────────────────────────
 
 
+# Defined before ValueRequirement, whose defaults they are.
 class _Omitted(enum.Enum):
-    """An omitted field of a :class:`ValueRequirement`; an enum, so it pickles to itself."""
+    """A field of a :class:`ValueRequirement` left to its rule; an enum, so
+    it pickles to itself."""
 
-    FROM_SIPNET_SPEC = "the SIPNET parameter written's"
+    FROM_SIPNET_SPEC = "from the spec of the SIPNET parameter written"
+    #: The domain's default, which follows whether the units were stated.
+    DOMAIN_DEFAULT = "the domain's default"
 
 
 #: What an omitted field of a :class:`ValueRequirement` holds until its rule
-#: resolves it: the SIPNET parameter written's units or domain.
+#: resolves it: the units or domain of the SIPNET parameter the rule writes.
 FROM_SIPNET_SPEC = _Omitted.FROM_SIPNET_SPEC
 
 
@@ -514,31 +518,30 @@ class ValueRequirement:
         The set the rule's formula is defined on for this value, checked on
         the values: at the corners of theta when the forward model is
         built, and at every evaluation (:meth:`SIPNETParameterMap.out_of_domain`).
-        ``None``: no requirement. Omitted: the domain of the SIPNET
-        parameter written when *units* are omitted too, and ``None`` when
-        they are stated.
+        ``None``: no requirement. :data:`FROM_SIPNET_SPEC`: the domain of
+        the SIPNET parameter written. Omitted: that when *units* are
+        omitted too, and ``None`` when they are stated.
     shape:
         One site's value's shape: ``()`` for a scalar, ``(k,)`` for a
         vector. Checked before anything runs.
 
     Notes
     -----
-    An omitted field is resolved by the rule, which knows the SIPNET
-    parameter it writes (:meth:`resolved`): :class:`Compute` does so when
-    built, and a map refuses a rule that leaves one unresolved. So a
-    reference rule, ``psnTMin = psnTOpt - 10``, reads its value with
-    ``ValueRequirement()``, in ``degC`` on the real line, without restating
-    them.
+    A field left to the SIPNET parameter is resolved by the rule, which
+    knows the parameter it writes (:meth:`resolved`): :class:`Compute` does
+    so when built, and a map refuses a rule that leaves one. So a reference
+    rule, ``psnTMin = psnTOpt - 10``, reads its value with
+    ``ValueRequirement()``, in ``degC`` on the real line.
     """
 
     units: str | None | _Omitted = FROM_SIPNET_SPEC
-    domain: Support | None | _Omitted = FROM_SIPNET_SPEC
+    domain: Support | None | _Omitted = _Omitted.DOMAIN_DEFAULT
     shape: tuple[int, ...] = ()
 
     def __post_init__(self) -> None:
-        if self.domain is FROM_SIPNET_SPEC and self.units is not FROM_SIPNET_SPEC:
-            # A requirement that states its units states its domain: none, unless given.
-            object.__setattr__(self, "domain", None)
+        if self.domain is _Omitted.DOMAIN_DEFAULT:
+            # A requirement that states its units has no domain unless it gives one.
+            object.__setattr__(self, "domain", FROM_SIPNET_SPEC if self.units is FROM_SIPNET_SPEC else None)
 
     @property
     def is_resolved(self) -> bool:
@@ -763,7 +766,7 @@ class Compute:
         or *provenance* is empty.
     KeyError
         If a requirement omits a field and *sipnet_parameter_name* is not a
-        pySIPNET flat name.
+        pySIPNET flat name (``TypeError`` if it is not a string).
 
     Notes
     -----
@@ -1249,8 +1252,12 @@ def check_rule_is_a_rule(rule: Any) -> None:
 
 
 def check_rule_requirements_are_resolved(rule: Any) -> None:
-    """Every requirement a rule places on a value states its units and
-    domain, an omitted field having been resolved by the rule."""
+    """Every requirement a rule places on a value is a ``ValueRequirement``
+    stating its units and domain, an omitted field having been resolved by
+    the rule."""
+    for name, requirement in rule.values_read.items():
+        if not isinstance(requirement, ValueRequirement):
+            raise TypeError(f"{_set_by(rule)} reads {name!r} without a ValueRequirement; give it one.")
     unresolved = [name for name, requirement in rule.values_read.items() if not requirement.is_resolved]
     if unresolved:
         raise ValueError(
@@ -1342,14 +1349,15 @@ def check_values_are_a_dataset_or_a_mapping(values: Any) -> None:
 
 
 def check_values_share_their_labels(values: Mapping[str, xr.DataArray]) -> None:
-    """Values given as a mapping label each dim they share alike, so that a
-    batch dim zips and a site is one site."""
+    """Values given as a mapping label each dim they share alike, and agree
+    on the coordinates they share, so that a batch dim zips and a site is
+    one site."""
     try:
-        xr.align(*values.values(), join="exact")
-    except ValueError:
+        xr.merge(list(values.values()), join="exact", compat="no_conflicts")
+    except ValueError:  # xarray's AlignmentError and MergeError among them
         raise ValueError(
-            "the values the map reads label a shared dim differently; give them on the same labels, "
-            "as one posterior's labeled values are."
+            "the values the map reads label a shared dim differently, or disagree on a shared "
+            "coordinate; give them on the same labels, as one posterior's labeled values are."
         ) from None
 
 

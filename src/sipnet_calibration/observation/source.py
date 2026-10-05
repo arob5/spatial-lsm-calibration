@@ -215,10 +215,12 @@ class ObservationSource:
         If *observation_source_name* is empty or reserved
         (:data:`RESERVED_OBSERVATION_SOURCE_NAMES`); if *observed_values* are not
         observed values (:func:`validate_observed_values`), once sorted; if
-        the operator declares an alias; or if *standard_deviation* breaks the
-        data model (:func:`check_standard_deviation_is_valid`).
+        the operator declares an alias; or if *standard_deviation* is
+        otherwise not what the data model says
+        (:func:`check_standard_deviation_is_valid`).
     KeyError
-        If the operator declares a name pySIPNET does not know.
+        If the operator declares a name pySIPNET does not know, or
+        *standard_deviation* lacks a label of the observed values.
 
     Notes
     -----
@@ -501,7 +503,7 @@ def check_standard_deviation_covers_the_observed_labels(
         wanted = observed_values.indexes[dim]
         missing = wanted[held.get_indexer(wanted) < 0]
         if len(missing):
-            raise ValueError(
+            raise KeyError(
                 f"{message_name} lacks the {dim} label(s) {truncated([str(m) for m in missing])} of "
                 "the observed values; give it at every observed label."
             )

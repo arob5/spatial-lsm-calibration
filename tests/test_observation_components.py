@@ -90,6 +90,11 @@ class TestStandardDeviation:
         assert float(held.sel(site=1, time=TIMES[0])) == 0.1
         assert held.attrs["units"] == "m2 m-2"
 
+    def test_keeps_its_own_attributes(self, lai, lai_standard_deviation):
+        source = source_with(lai, lai_standard_deviation.assign_attrs(long_name="reported deviation"))
+        assert source.standard_deviation.attrs["long_name"] == "reported deviation"
+        assert "long_name" not in source.observed_values.attrs
+
     def test_is_read_by_label_from_a_larger_grid(self, lai):
         larger = dated_observed_values([1, 2, 3], TIMES.append(pd.DatetimeIndex(["2013-06-01"])), name="lai")
         larger = larger.copy(data=np.arange(12.0).reshape(3, 4))
@@ -117,7 +122,7 @@ class TestStandardDeviation:
         source_with(lai, lai_standard_deviation.assign_attrs(units="1"))
 
     def test_a_missing_label_is_refused(self, lai, lai_standard_deviation):
-        with pytest.raises(ValueError, match="lacks the time label"):
+        with pytest.raises(KeyError, match="lacks the time label"):
             source_with(lai, lai_standard_deviation.isel(time=[0, 1]))
 
     def test_a_gap_at_an_observation_is_refused(self, lai, lai_standard_deviation):
@@ -203,7 +208,17 @@ def test_a_dated_windowed_sources_constants(vector):
     np.testing.assert_array_equal(constants[WINDOW_LENGTH].values, [86_400.0] * 4)
     assert constants[OBSERVED].attrs["units"] == "m2 m-2"
     assert constants[TIME_SINCE_EPOCH].attrs["units"] == "s"
+    assert constants[STANDARD_DEVIATION].attrs == vector["lai"].standard_deviation.attrs
     as_constants(constants, message_name="constants")
+
+
+def test_window_lengths_follow_each_observation(lai):
+    starts = lai["window_end"].values - np.array([1, 2, 3], dtype="timedelta64[D]")
+    unequal = lai.assign_coords(window_start=("time", starts))
+    vector = ObservationVector(observation_sources=[ObservationSource(
+        observation_source_name="lai", observed_values=unequal, operator=SelectTimestep("leaf_carbon"))])
+    # Observations (1, t0), (1, t2), (2, t1), (2, t2): windows of 1, 3, 2 and 3 days.
+    np.testing.assert_array_equal(vector.constants("lai")[WINDOW_LENGTH].values / 86_400.0, [1.0, 3.0, 2.0, 3.0])
 
 
 def test_the_observed_constant_agrees_with_y_by_label(vector):
@@ -279,6 +294,12 @@ def test_to_fields_refuses_a_label_that_is_no_observation(vector):
         vector.to_fields({"lai": xr.concat([observed, stray], dim="lai_observation")})
 
 
+def test_to_fields_refuses_an_observation_given_twice(vector):
+    observed = vector.observed_values_by_component()["lai"].isel(lai_observation=[0, 0, 1])
+    with pytest.raises(ValueError, match="more than once"):
+        vector.to_fields({"lai": observed})
+
+
 def test_to_fields_refuses_a_dim_that_is_no_batch_dim(vector):
     observed = vector.observed_values_by_component()["lai"].expand_dims(part=["a"])
     with pytest.raises(ValueError, match="neither its observation dim nor a batch dim"):
@@ -307,7 +328,7 @@ def test_to_fields_refuses_an_unlabeled_observation_dim(vector):
 
 
 def test_to_fields_refuses_what_is_not_an_array(vector):
-    with pytest.raises(TypeError, match="expected a mapping"):
+    with pytest.raises(TypeError, match="labeled must be a mapping"):
         vector.to_fields([1.0])
     with pytest.raises(TypeError, match="expected a DataArray"):
         vector.to_fields({"lai": [1.0]})
@@ -333,8 +354,22 @@ def test_with_observed_values_refuses_other_observations(vector, lai):
 def test_with_observed_values_refuses_an_unknown_source_and_a_non_mapping(vector, lai):
     with pytest.raises(KeyError, match="no observation source 'nee'"):
         vector.with_observed_values({"nee": lai})
-    with pytest.raises(TypeError, match="expected a mapping"):
+    with pytest.raises(TypeError, match="values must be a mapping"):
         vector.with_observed_values([lai])
+
+
+@pytest.mark.parametrize(
+    ("change", "what"),
+    [
+        (lambda a: a.drop_vars(["window_start", "window_end"]), "window_end"),
+        (lambda a: a.assign_coords(window_start=a["window_start"] - pd.Timedelta("7D")), "window_start"),
+        (lambda a: a.assign_coords(lon=a["lon"] + 3.0), "lon"),
+        (lambda a: a.assign_attrs(units="cm2 m-2"), "units"),
+    ],
+)
+def test_with_observed_values_refuses_other_coordinates_or_units(vector, lai, change, what):
+    with pytest.raises(ValueError, match=f"differ from the source's in .*{what}"):
+        vector.with_observed_values({"lai": change(lai)})
 
 
 # ── observation.model ─────────────────────────────────────────────────────────

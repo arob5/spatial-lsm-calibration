@@ -246,7 +246,7 @@ moves it here.
 | **values by name** / `ValuesByName` | a layout's structured, traceable form: `{name: (*batch, *block shape)}` | |
 | **labeled values** / `LabeledValues` | a layout's labeled form: a `dict` of one `xr.DataArray` per component on `(*batch dims, *indexed_by, *element axes)`, a dict because two stacked dims with a `site` level cannot share a Dataset; `encode_labeled_values` makes the Dataset netCDF holds | a `ParameterDataset` |
 | **own dim** | a dim of a constant that is neither a dim of the coords nor an element axis, passed whole, which its reader declares in `own_dims=` | |
-| **observation dim** | a source's stacked dim, `"<source>_observation"`, whose labels are the `(site, time)` pairs it observes (`(site,)` if static), sorted by site, then time: `ObservationVector.coords`, `ObservationSource.observation_labels` | Flat's site-major order, which is the vector's, not a dim's |
+| **observation dim** | a source's stacked dim, `"<source>_observation"`, whose labels are the `(site, time)` pairs it observes (`(site,)` if static), sorted by site, then time: `ObservationVector.coords`, `ObservationSource.observation_labels`, `observation_dim_name()` | a batch dim |
 | **observed component** | a source's observed values as a component, named for the source, on its observation dim (`observation.model.observed_components`, values `observed_values_by_component()`) | |
 | **prediction** | the forward model's value of an observed quantity, on the source's observation dim and in its units: `predicted_<source>` (`ObservationVector.prediction_name`, `observation.model.prediction_components`) | "predictions", the Flat `(J, N)`, which keeps its meaning |
 | **spec** | a declaration, holding no labels and no numbers; its class ends in `Spec` (`ArraySpec`, `FactorSpec`, `DeterministicSpec`, `ModelSpec`) | the distribution it becomes once bound |
@@ -406,7 +406,8 @@ coercion lives in `validation.py`.
   `DATA_ROOT_ENV_VAR`, `data_root()`, `tracked_data_root()`); and
   `read_only_copy` and `ReadOnlyCopies`, the read-only copies of xarray data a
   frozen class keeps and hands out, copied on assignment so nothing a caller
-  holds is frozen (`ReadOnlyCopies(default=None)` for an optional one). Read-only mappings are `frozendict`s (the `frozendict`
+  holds is frozen (`ReadOnlyCopies(default=None)` for an optional
+  one). Read-only mappings are `frozendict`s (the `frozendict`
   package): a `dict` subclass, so pandas and `json` read one as a dict, and it
   pickles and hashes. Every module-level mapping constant of the package is
   one (the scripts' own tables are not the package's), and one is handed to
@@ -1168,7 +1169,8 @@ src/sipnet_calibration/
                           # observation_source, time), y, flat()/fields(),
                           # positions(),
                           # predict(); for the probability layer, coords (one
-                          # observation dim per source), constants(),
+                          # observation dim per source),
+                          # observation_dim_name(), constants(),
                           # prediction_name(), year_label_map(),
                           # observed_values_by_component(),
                           # with_observed_values(), to_fields()
@@ -1330,7 +1332,8 @@ plotting code. The load-bearing rules:
   likelihood lives in the package yet; today's inference layer builds those
   from `y`, `index` and `positions`, and the probability layer's noise
   factors (P6) will read the vector's observation dims and `constants()`,
-  which are each one source's, by site and then time, not Flat's order. A batch dim on an observation source's values is
+  which are each one source's, by site and then time, not Flat's order.
+  A batch dim on an observation source's values is
   refused: the experiment reduces an ensemble of observed values before it
   enters; a scalar batch label is metadata and is kept. An `ObservationSource`
   keeps only the sites and time labels it observes, so its operator never reads

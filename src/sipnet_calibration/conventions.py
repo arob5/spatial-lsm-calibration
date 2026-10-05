@@ -336,6 +336,7 @@ def read_only_copy(data: xr.DataArray | xr.Dataset) -> xr.DataArray | xr.Dataset
     return copied
 
 
+# Defined before ReadOnlyCopies, whose argument's default it is.
 #: What :class:`ReadOnlyCopies` holds for "no default", so that ``None`` can be one.
 _NO_DEFAULT = object()
 
@@ -359,6 +360,8 @@ class ReadOnlyCopies:
     """
 
     def __init__(self, *, default: Any = _NO_DEFAULT) -> None:
+        """*default*: the attribute's dataclass default, kept as it is;
+        omitted, the attribute has none and must be given."""
         self._default = default
 
     def __set_name__(self, owner: type, name: str) -> None:

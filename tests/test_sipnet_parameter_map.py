@@ -653,6 +653,13 @@ def test_labeled_values_on_different_labels_are_refused(sipnet_map, labeled, sit
         sipnet_map.sipnet_parameter_fields(shifted, site_dims=site_dims)
 
 
+def test_labeled_values_disagreeing_on_a_coordinate_are_refused(sipnet_map, labeled, site_dims):
+    noted = dict(labeled, respiration_share=labeled["respiration_share"].assign_coords(note=1.0),
+                 photosynthetic_capacity=labeled["photosynthetic_capacity"].assign_coords(note=2.0))
+    with pytest.raises(ValueError, match="disagree on a shared coordinate"):
+        sipnet_map.sipnet_parameter_fields(noted, site_dims=site_dims)
+
+
 def test_labeled_values_lacking_a_value_read_are_refused(sipnet_map, labeled, site_dims):
     with pytest.raises(KeyError, match="which the values lack"):
         sipnet_map.sipnet_parameter_fields({k: v for k, v in labeled.items() if k != "allocation"}, site_dims=site_dims)
@@ -685,6 +692,20 @@ def test_an_omitted_requirement_is_the_sipnet_parameter_written():
     assert rule.values_read["share"] == ValueRequirement("1") == ValueRequirement("1", None, ())
 
 
+def test_an_omitted_requirement_keeps_its_shape():
+    assert ValueRequirement(shape=(2,)).resolved("soil_carbon").shape == (2,)
+    rule = Compute(sipnet_parameter_name="leaf_allocation", values_read={"x": ValueRequirement(shape=(3,))},
+                   function=lambda x: x[..., 0], provenance="t")
+    assert rule.values_read["x"].shape == (3,)
+
+
+def test_a_stated_unit_may_ask_for_the_sipnet_parameters_domain():
+    rule = Compute(sipnet_parameter_name="base_wood_respiration_rate",
+                   values_read={"rate": ValueRequirement("yr-1", FROM_SIPNET_SPEC)},
+                   function=lambda rate: rate, provenance="t")
+    assert rule.values_read["rate"] == ValueRequirement("yr-1", POSITIVE)
+
+
 def test_an_omitted_requirement_takes_the_sipnet_parameters_domain():
     rule = Compute(sipnet_parameter_name="base_wood_respiration_rate", values_read={"rate": ValueRequirement()},
                    function=lambda rate: rate, provenance="t")
@@ -711,6 +732,12 @@ def test_a_map_refuses_a_rule_leaving_a_requirement_unresolved():
 
     with pytest.raises(ValueError, match="omit their units or domain"):
         SIPNETParameterMap(rules=[Unresolved()])
+
+    class NoRequirement(Unresolved):
+        values_read = {"x": 3}
+
+    with pytest.raises(TypeError, match="without a ValueRequirement"):
+        SIPNETParameterMap(rules=[NoRequirement()])
 
 
 def test_an_omitted_requirement_pickles_to_itself():
