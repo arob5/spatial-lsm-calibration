@@ -23,7 +23,7 @@ and proofs are the design's §12; the column below is a summary.
 | P1 | `refactor/probability-p1-references` | merged #77 | P0 | A script writing reference values from today's code: the prior draws and densities (PR #69's prior transcribed, `example_calibration`, a hierarchy, a copula, a per-PFT simplex), and `ForwardModel` predictions on `test_forward`'s fake runners |
 | P2 | `refactor/probability-p2-foundations` | merged #78 | P0 | Supports, with `PositiveDefinite`; `ArraySpec`; `labels` v2; `Layout`; encode and decode; shims left in `parameters` (split into P2a and P2b if large) |
 | P3 | `refactor/probability-p3-prior-model` | merged #79 | P1, P2 | Laws, families, builders; `FactorSpec`, `DeterministicSpec`, decorators; `joint`, `bind`, `FactoredDistribution`; `condition_on` and `Posterior` without simulators |
-| P4 | `refactor/probability-p4-adapter-prep` | open #PR | P2 | F8; the SIPNET map on dicts and `ArraySpec`s; `ObservationSource.standard_deviation`; the observation dims and constants; `observation.model` |
+| P4 | `refactor/probability-p4-adapter-prep` | open #80 | P2 | F8; the SIPNET map on dicts and `ArraySpec`s; `ObservationSource.standard_deviation`; the observation dims and constants; `observation.model` |
 | P5 | `refactor/probability-p5-simulator` | waiting | P3, P4 | The `Simulator` seam; `SIPNETRuns`, with today's `ForwardModel` delegating to it; `SIPNETSimulator`; F6, F7 |
 | P6 | `refactor/probability-p6-gaussian` | waiting | P5 | Covariance specs, `GaussianSpec`, `noise_factor`, `gaussian_likelihood`, through the `probability/_linalg.py` shim over today's pyEKI |
 | P7 | `refactor/probability-p7-inference` | waiting | P6 | The `inference` package on today's pyEKI |
