@@ -429,8 +429,9 @@ REWEIGHTING_DEFENSIVE_FRACTION = 0.1
 #: The number of draws importance sampling makes.
 IMPORTANCE_SAMPLE_SIZE = 1000
 
-#: The number of samples tempered SMC carries.
-SMC_SAMPLE_SIZE = 500
+#: The number of samples tempered SMC carries. Each move step runs SIPNET
+#: once per sample and a stage takes up to 20, so this sets SMC's cost.
+SMC_SAMPLE_SIZE = 300
 
 #: The seed of the base density's draws and of SMC's moves.
 REWEIGHTING_SEED = 20261006
