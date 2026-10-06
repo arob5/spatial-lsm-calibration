@@ -1323,8 +1323,9 @@ batch of runs, `problem.forward(result.ensemble["theta"])`, which replaces
 merging `main` into its branch) runs on the probability layer and EnsKit, and
 uses nothing R1 deletes: no `parameters`, `ForwardModel`,
 `ForwardEvaluation`, old `describe_calibration`, pyEKI, or Flat API of the
-observation vector (`y`, `positions`, `flat`, `fields`, `index`). A grep of
-`experiments/` for them is empty.
+observation vector (`y`, `positions`, `flat`, `fields`, `index`). A grep of the
+code under `experiments/` for them is empty (the exploration records under
+`parameter_analysis/` still name the old classes in prose).
 
 - `model/calibration.py` (replacing `inverse_problem.py`) assembles the
   model in one place: `joint(*prior.prior_factors(), SIPNETSimulator(...),
@@ -1385,6 +1386,21 @@ later):
   (related: "`predict` runs SIPNET again").
 - Binding and conditioning the one-site model takes about 30 s, most of it
   outside SIPNET; each entry point builds one or two posteriors.
+
+**Review.** One Standard round: code, mutation (against the equivalence
+harness, the experiment having no tests), docs. No pairing or ordering bug:
+predictions, `y`, `R` and the measurement errors line up by label, and the
+posterior predictive's predictions equal the EKI step's at the same theta.
+Fixed: the final ensemble's evaluation repaired an invalid member into the
+posterior ensemble where pyEKI's raised (it raises again, reported as an
+error); a missing input or an `EKIError` now ends `run/eki.py` with its
+`error:` message; the initial states are the model's inputs in the
+glossary's word (`prior.INPUT_NAMES`, `input_values`), not external
+inputs; provenance strings read their numbers from `config`; stale wording.
+Not acted on: the step's `.npz` is written before its history row (as
+before); bare "member" for EKI rows in the run's text and files (as
+before); the noise summary counts the carbon fraction's error as
+discrepancy (as before).
 
 **What R1 must know.** #69's experiment and `presentation_2026_09_30`
 import none of what R1 deletes. Andrew's uncommitted

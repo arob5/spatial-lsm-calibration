@@ -15,7 +15,7 @@ The time series and pools, against the observations:
   fluxes and pools behind them, day by day.
 
 In these the ensemble is the prior's draws (role ``prior``: a median and 50%
-and 90% bands), the one run is at the prior mean (a solid line), and
+and 90% bands), the one run is at the prior's center (a solid line), and
 observations are black points with error bars of the noise model's total
 standard deviation; the held-out tower's are hollow.
 

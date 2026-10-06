@@ -79,7 +79,7 @@ parts depend one way:
 | `figures/diagnostics.py` | a run's diagnostic figures, for slides: the predictive check per source, the weekly residuals and their recurring part, the residuals' autocorrelation against $R$'s, and the two towers |
 | `figures/comparison.py` | the EKI setups compared, for slides: each setup's posterior predictive seasonal cycle, the parameters the error model moves, and the daytime residual's slow and fast parts; into `output/figures/comparison/` |
 | `exploration/parameter_analysis/` | the evidence for the prior and the fixed values: the parameter-structure analysis, the base set, the sensitivity screening and the prior-predictive checks |
-| `exploration/fast_forward.py` | a fast forward path for exploration, SIPNET in a process pool with the predictions by index arithmetic; it equals the library's to 1e-11, and is not the calibration's forward model |
+| `exploration/fast_forward.py` | a fast forward path for exploration, SIPNET in a process pool with the predictions by index arithmetic; it equals the library's to 1e-11, and is not the calibration's forward map |
 | `output/` | everything the experiment writes; untracked |
 
 ## Running it

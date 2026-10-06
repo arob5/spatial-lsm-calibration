@@ -92,10 +92,10 @@ def climate_drivers() -> ClimateDrivers:
 def initial_state() -> xr.Dataset:
     """The site's initial conditions, each state at its median over the members.
 
-    External inputs on ``site`` alone, in the processed file's units, under
+    On ``site`` alone, in the processed file's units, under
     the names ``initial_condition_rules`` read them by. Each state's median
     is taken separately, so they need not be one member's. The calibration
-    reads the states it does not calibrate from here (``prior.external_inputs``).
+    reads the states it does not calibrate from here (``prior.input_values``).
     """
     fields = inputs.initial_condition_fields()
     return xr.Dataset(

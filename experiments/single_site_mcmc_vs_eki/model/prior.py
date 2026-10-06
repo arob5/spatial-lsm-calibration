@@ -82,12 +82,15 @@ from . import inputs, sipnet
 __all__ = [
     "ALLOCATION_PART",
     "ALLOCATION_PARTS",
-    "EXTERNAL_STATE_NAMES",
+    "DECIDUOUS_BY_SITE_LABEL",
     "FIXED_SIPNET_PARAMETERS_FILE",
+    "INPUT_NAMES",
+    "INPUT_SUPPORTS",
+    "PROVENANCE",
     "SITE_LABELS_NAME",
-    "external_inputs",
     "fixed_sipnet_parameters",
     "input_specs",
+    "input_values",
     "natural_table",
     "prior_alone",
     "prior_center",
@@ -117,14 +120,14 @@ FIXED_SIPNET_PARAMETERS_FILE = (
     Path(__file__).resolve().parent / "fixed_sipnet_parameters.csv"
 )
 
-#: The initial states the calibration takes from the site's ensemble medians;
-#: initial wood and soil carbon are calibrated instead.
-EXTERNAL_STATE_NAMES = ("initial_leaf_carbon", "initial_soil_moisture_saturation")
+#: The initial states the calibration takes from the site's ensemble medians,
+#: the model's inputs; initial wood and soil carbon are calibrated instead.
+INPUT_NAMES = ("initial_leaf_carbon", "initial_soil_moisture_saturation")
 
 #: The support of each input, the domain its rule reads it on
 #: (``initial_condition_rules``): leaf carbon is a stock, soil moisture a
 #: percent of saturation.
-EXTERNAL_STATE_SUPPORTS = {
+INPUT_SUPPORTS = {
     "initial_leaf_carbon": NON_NEGATIVE,
     "initial_soil_moisture_saturation": Interval(
         0.0, 100.0, low_closed=True, high_closed=True
@@ -339,28 +342,28 @@ def site_dims() -> SiteDims:
 def input_specs() -> list[ArraySpec]:
     """The initial states the map reads and nothing calibrates, on ``site``.
 
-    Each in the units of the initial-condition file (:func:`external_inputs`).
+    Each in the units of the initial-condition file (:func:`input_values`).
     """
-    values = external_inputs()
+    values = input_values()
     return [
         ArraySpec(
             name,
             units=values[name].attrs["units"],
-            support=EXTERNAL_STATE_SUPPORTS[name],
+            support=INPUT_SUPPORTS[name],
             indexed_by=("site",),
         )
-        for name in EXTERNAL_STATE_NAMES
+        for name in INPUT_NAMES
     ]
 
 
-def external_inputs() -> dict[str, xr.DataArray]:
+def input_values() -> dict[str, xr.DataArray]:
     """The values of :func:`input_specs`, by name: the site's initial-condition medians."""
     initial_state = sipnet.initial_state()
-    return {name: initial_state[name] for name in EXTERNAL_STATE_NAMES}
+    return {name: initial_state[name] for name in INPUT_NAMES}
 
 
 def natural_table(posterior: Posterior, theta) -> pd.DataFrame:
-    """Theta's natural values, one row per row of *theta*, ``(J, D)``.
+    """Theta's natural values, one row per row of *theta* (``(J, D)``).
 
     One column per parameter, and per element of a parameter with element
     axes, named ``<parameter>.<element label>`` (``allocation.leaf``). The

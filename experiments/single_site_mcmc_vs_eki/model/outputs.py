@@ -122,9 +122,10 @@ def load_eki_run(directory: Path) -> dict:
     ``theta_prior`` is the initial ensemble as drawn; ``theta_posterior`` the
     ensemble after the last step. ``predictions`` are the last step's, in
     the calibration posterior's y order, a member's row NaN where its sample
-    was invalid, since the evaluation moved it to the valid center. ``finished`` says whether that last step is the
-    evaluation of the final ensemble, at beta = 1 with no update, so the
-    predictions are the posterior's. ``y`` is the synthetic observations, or
+    was invalid, since the evaluation moved it to the valid center.
+    ``finished`` says whether that last step is the evaluation of the final
+    ensemble, at beta = 1 with no update, so the predictions are the
+    posterior's. ``y`` is the synthetic observations, or
     ``None`` for a run on the calibration vector's own.
 
     Raises

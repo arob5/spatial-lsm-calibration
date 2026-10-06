@@ -95,7 +95,7 @@ def model(observation_vector: ObservationVector) -> FactoredDistribution:
     )
     return model_spec.bind(
         coords={SITE: [config.SITE], **observation_vector.coords},
-        inputs=prior.external_inputs(),
+        inputs=prior.input_values(),
     )
 
 

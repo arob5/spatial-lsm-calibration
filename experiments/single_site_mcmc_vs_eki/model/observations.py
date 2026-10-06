@@ -18,7 +18,7 @@ Observation sources
     ``config.NEE_MINIMUM_MEASURED_FRACTION`` of its values were measured
     (quality flag 0); the others are dropped. Its ``time`` is the window's
     end, and ``window_start``/``window_end`` carry the window. Its standard
-    deviation is :func:`reported_nee_window_standard_deviations`', or the
+    deviation is :func:`reported_nee_window_standard_deviations`, or the
     source's median where none of the window's values reports one.
 ``modis_leaf_area_index``
     The MODIS composites, as processed, whose labels fall inside the run's

@@ -285,8 +285,8 @@ $c_\tau(t, t') = \exp(-|t - t'| / \tau)$, with $t$ in days.
 
 ## Parameterization and prior
 
-`model/prior.py` declares them, a prior factor per parameter and the SIPNET
-parameter map; this section says how they were found. The records are in `exploration/parameter_analysis/`
+`model/prior.py` declares the parameters, a prior factor for each, and the
+SIPNET parameter map; this section says how they were found. The records are in `exploration/parameter_analysis/`
 (`phase1_report.md`, `phase2_report.md` and their tables). It is a
 **starting point**: every prior is set from the literature, the traits or the
 site's data, and none was tuned to the observations beyond checking that the

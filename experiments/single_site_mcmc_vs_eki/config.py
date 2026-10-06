@@ -286,7 +286,7 @@ OBSERVATION_OPERATORS = frozendict(
 
 # ── the prior predictive ──
 #
-# The prior mean's run and an ensemble of prior draws, the model against the
+# The prior center's run and an ensemble of prior draws, the model against the
 # data before calibration; run/prior_predictive.py runs them and
 # figures/prior_predictive.py draws them.
 
@@ -318,7 +318,7 @@ PRIOR_PREDICTIVE_OUTPUT_VARIABLE_NAMES = (
 #
 # The covariance R of the observation errors, block-diagonal over the
 # observation sources, each block measurement error plus model discrepancy;
-# MODEL.md, "Noise model", states it exactly and model/noise.py builds it. The
+# MODEL.md, "Noise model", states it exactly and model/noise.py declares it. The
 # discrepancy terms carry most of the weight: they set how much each source
 # constrains the calibration. NEE's discrepancy has the three terms of
 # model/discrepancy.py; the LAI timescale is that of the exponential

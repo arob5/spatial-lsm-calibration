@@ -49,13 +49,16 @@ Under ``config.EKI_DIRECTORY / <data>``:
   final ensembles' natural values, one row per member;
 - ``synthetic`` only: ``truth.csv``, theta*'s natural values, and
   ``synthetic.npz``, ``theta_true`` ``(D,)`` and ``y`` ``(N,)``;
-- ``calibration_parts.csv``, ``calibration_sipnet_parameters.csv`` and
-  ``provenance.json``, as the prior predictive's.
+- ``calibration_parts.csv``, ``calibration_components.csv``,
+  ``calibration_sipnet_parameters.csv`` and ``provenance.json``, as the prior
+  predictive's.
 
 The ladder ends when the increments reach beta = 1, without evaluating the
 ensemble it ends with; the last step is then that ensemble's evaluation, at
 beta = 1 with no update (its increment is 0), so its ``predictions`` are the
-posterior ensemble's predictions of the calibration vector.
+posterior ensemble's predictions of the calibration vector. A member
+invalid there stops the run with an error, rather than being repaired, so
+that it cannot enter the posterior ensemble.
 
 Once the ladder reaches beta = 1, the run draws its ladder, its marginals
 and, on synthetic data, its recovery of the truth (``figures/eki.py``) into
@@ -118,8 +121,8 @@ def main(argv: list[str] | None = None) -> int:
     arguments = _parser().parse_args(argv)
     directory = config.EKI_DIRECTORY / arguments.data
     (directory / "steps").mkdir(parents=True, exist_ok=True)
-    posterior = calibration.calibration_posterior()
     try:
+        posterior = calibration.calibration_posterior()
         if arguments.data == "synthetic":
             posterior = synthetic_posterior(
                 posterior, directory, resume=arguments.resume
@@ -138,7 +141,11 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if not arguments.resume:
         _write_start(directory, posterior, state)
-    state = run_ladder(problem, state, directory)
+    try:
+        state = run_ladder(problem, state, directory)
+    except eki.EKIError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
     write_ensemble(
         directory / "posterior_ensemble.csv", posterior, state.ensemble[THETA]
     )
@@ -205,7 +212,15 @@ def run_ladder(
     problem: EKIProblem, state: eki.EKIState, directory: Path
 ) -> eki.EKIState:
     """Move *state* up the ladder to beta = 1, writing each step as it is taken,
-    then evaluate the ensemble it ends with."""
+    then evaluate the ensemble it ends with.
+
+    Raises
+    ------
+    enskit.algorithms.eki.EKIError
+        If fewer than two members of a step are valid, or any member of the
+        final ensemble is not: the posterior ensemble is never written with
+        an invalid sample in it.
+    """
     arguments = (problem.forward, problem.y, problem.noise_covariance)
     steps = eki.iterate(
         state,
@@ -216,7 +231,7 @@ def run_ladder(
     )
     for state, record, evaluation in steps:
         _write_step(directory, problem, state, record, evaluation)
-    evaluation = eki.evaluate(state, *arguments, on_failure="repair")
+    evaluation = eki.evaluate(state, *arguments)
     record = eki.HistoryRecord.from_evaluation(evaluation)
     _write_step(directory, problem, state, record, evaluation)
     return state
@@ -242,7 +257,7 @@ def _write_start(directory: Path, posterior: Posterior, state: eki.EKIState) -> 
         "history.csv",
         "posterior_ensemble.csv",
         "nee_discrepancy_fit.csv",
-        "calibration.csv",
+        *_provenance.CALIBRATION_FILE_NAMES,
     ):
         (directory / name).unlink(missing_ok=True)
     for name in ("posterior_predictive", "diagnostics"):

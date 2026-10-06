@@ -66,6 +66,7 @@ from .. import config
 from .discrepancy import NEEDiscrepancy
 
 __all__ = [
+    "LANDTRENDR_DISCREPANCY_VARIANCE",
     "SECONDS_PER_DAY",
     "carbon_fraction_error",
     "floored_measurement_variance",
@@ -182,9 +183,10 @@ def shared_measurement_error(standard_deviation):
 
 
 def carbon_fraction_error(observed):
-    """:math:`\\kappa^2 y y^\\top`, :math:`\\kappa = 0.02 / 0.48`: the carbon
-    fraction's relative error (``config.WOOD_CARBON_FRACTION_UNCERTAINTY``
-    over ``config.WOOD_CARBON_FRACTION``), shared by every year."""
+    """:math:`\\kappa^2 y y^\\top`: the carbon fraction's error, shared by
+    every year, :math:`\\kappa` its relative uncertainty,
+    ``config.WOOD_CARBON_FRACTION_UNCERTAINTY`` over
+    ``config.WOOD_CARBON_FRACTION``."""
     relative = config.WOOD_CARBON_FRACTION_UNCERTAINTY / config.WOOD_CARBON_FRACTION
     return relative**2 * jnp.outer(observed, observed)
 
@@ -261,8 +263,11 @@ def _leaf_area_index_factor(observation_vector, name) -> FactorSpec:
             DenseSpec(leaf_area_index_discrepancy),
         ),
         provenance=(
-            "MCD15A3H LAI_StdDev floored at the reanalysis's 0.66; discrepancy "
-            "0.5 m2 m-2 over 30 days within a summer (reasoned)."
+            "MCD15A3H LAI_StdDev floored at the reanalysis's "
+            f"{config.LAI_STANDARD_DEVIATION_FLOOR} m2 m-2; discrepancy "
+            f"{config.LAI_DISCREPANCY_STANDARD_DEVIATION} m2 m-2 over "
+            f"{config.LAI_DISCREPANCY_TIMESCALE.days} days within a summer "
+            "(reasoned)."
         ),
     )
 
@@ -284,9 +289,11 @@ def _landtrendr_factor(observation_vector, name) -> FactorSpec:
             )
         },
         provenance=(
-            "LandTrendr's reported error and the carbon fraction's, 0.48 +/- "
-            "0.02, each shared by every year; independent discrepancy 5 Mg ha-1 "
-            "(reasoned)."
+            "LandTrendr's reported error and the carbon fraction's, "
+            f"{config.WOOD_CARBON_FRACTION} +/- "
+            f"{config.WOOD_CARBON_FRACTION_UNCERTAINTY}, each shared by every "
+            "year; independent discrepancy "
+            f"{config.LANDTRENDR_DISCREPANCY_STANDARD_DEVIATION} Mg ha-1 (reasoned)."
         ),
     )
 
@@ -300,8 +307,10 @@ def _soil_carbon_factor(observation_vector, name) -> FactorSpec:
             DiagonalSpec(measurement_variance), DiagonalSpec(soil_carbon_discrepancy)
         ),
         provenance=(
-            "SoilGrids' reported error; discrepancy 25% of the stock, for the "
-            "depth and definition SIPNET's soil pool does not share (reasoned)."
+            "SoilGrids' reported error; discrepancy "
+            f"{config.SOIL_CARBON_DISCREPANCY_FRACTION:.0%} of the stock, for "
+            "the depth and definition SIPNET's soil pool does not share "
+            "(reasoned)."
         ),
     )
 
