@@ -33,8 +33,7 @@ The summaries, sized for slides (:data:`SLIDE_STYLE`):
   90% intervals, noise included.
 
 :func:`draw_prior_predictive_figures` draws them all; ``run/prior_predictive.py``
-calls it at the end of the run, and ``run/draw_figures.py --run prior``
-redraws them.
+calls it at the end of the run.
 """
 
 import matplotlib.pyplot as plt

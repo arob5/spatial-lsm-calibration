@@ -388,7 +388,7 @@ SOIL_CARBON_DISCREPANCY_FRACTION = 0.25
 # Ensemble Kalman inversion in its sampling form: an ensemble drawn from the
 # prior, moved up the tempering ladder from beta = 0 (the prior) to beta = 1
 # (the posterior) by EnsKit's perturbed-observation (Matheron) update, the
-# increments chosen adaptively. run/eki.py runs it and figures/eki.py draws it.
+# increments chosen adaptively. algorithms/eki.py runs it (run/calibrate.py).
 
 #: Where every calibration run writes: ``<nee error model>/<noise>/<algorithm>/``.
 #: ``$HF_RUNS_DIRECTORY`` moves it, for a smoke test.

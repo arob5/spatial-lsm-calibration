@@ -131,7 +131,7 @@ def scale_marginal_increment(noise_model, forms, valid, phi: float) -> tuple[flo
     """The stage's increment and the ESS it keeps, by bisection on the
     scale-marginal weights of the module docstring; invalid particles weigh 0."""
     n_valid = int(valid.sum())
-    target = config.EKI_ESS_FRACTION * len(valid)
+    target = config.EKI_ESS_FRACTION * n_valid
 
     def log_weights(increment: float) -> np.ndarray:
         after = phi + increment

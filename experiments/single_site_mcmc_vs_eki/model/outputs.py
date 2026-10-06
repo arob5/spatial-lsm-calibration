@@ -1,47 +1,46 @@
-"""Reading what the runs wrote: a predictive, and an EKI run.
+"""Reading what the runs wrote: a calibration run, a predictive, diagnostics.
 
-The runs write; this module reads, so the diagnostics and the figures
-read a run one way. Nothing here runs a model or writes a file.
+The runs write; this module reads, so the diagnostics, the comparison and
+the figures read a run one way. Nothing here runs a model or writes a file.
 
 Functions
 ---------
+:func:`run_directory`
+    Where a run's outputs are, by model and run name; ``prior`` is the
+    prior predictive.
+:func:`load_run`
+    A calibration run's directory (``algorithms/records.py``): its samples,
+    natural values, cost and history.
 :func:`load_predictive`
-    A predictive's directory (``run/_predictive.py``'s layout: the prior
-    predictive, or an EKI run's posterior predictive), as nested dicts of
-    xarray objects at the site.
-:func:`load_eki_run`
-    An EKI run's directory (``run/eki.py``): its history, its first and
-    final ensembles, the final ensemble's predictions of the calibration
-    vector, and the synthetic truth when there is one.
+    A predictive's directory (the prior predictive, ``run/_predictive.py``,
+    or a run's, ``run/predict.py``), as nested dicts of xarray objects at
+    the site.
 :func:`load_diagnostics`
     A run's diagnostics (``run/diagnose.py``), one table per file.
-:func:`run_directory`
-    Where a run's outputs are, by the run's name.
 :func:`at_site`
     Data at the configured site, the ``site`` dim dropped.
 """
 
+import json
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 import xarray as xr
 from frozendict import frozendict
 
 from sipnet_calibration.conventions import SITE
 
-from .. import config
+from .. import config, models
+from ..algorithms.records import load_samples
 
 __all__ = [
     "DIAGNOSTIC_INDEX_COLUMNS",
     "VECTOR_NAMES",
     "at_site",
-    "check_eki_run_finished",
-    "check_eki_run_wrote_a_step",
     "check_run_was_diagnosed",
     "load_diagnostics",
-    "load_eki_run",
     "load_predictive",
+    "load_run",
     "run_directory",
 ]
 
@@ -65,6 +64,31 @@ DIAGNOSTIC_INDEX_COLUMNS = frozendict(
 
 #: The diagnostics tables with a ``time`` column.
 _TIMED_TABLES = ("nee_residuals", "nee_towers")
+
+
+def run_directory(model_name: str, run: str) -> Path:
+    """Where run *run* of model *model_name* is (``models.Model.directory``),
+    or the prior predictive's directory for ``run == "prior"``."""
+    if run == "prior":
+        return config.PRIOR_PREDICTIVE_DIRECTORY
+    return models.Model.parse(model_name).directory(run)
+
+
+def load_run(directory: Path) -> dict:
+    """A calibration run's outputs (``algorithms/records.py``).
+
+    Returns ``{"samples": Dataset, "natural_values": DataFrame, "cost":
+    dict, "history": DataFrame or None}``, the natural values one row per
+    sample with its ``log_weight``.
+    """
+    directory = Path(directory)
+    history = directory / "history.csv"
+    return {
+        "samples": load_samples(directory),
+        "natural_values": pd.read_csv(directory / "natural_values.csv", index_col=0),
+        "cost": json.loads((directory / "cost.json").read_text()),
+        "history": pd.read_csv(history) if history.exists() else None,
+    }
 
 
 def load_predictive(directory: Path | None = None) -> dict:
@@ -111,65 +135,6 @@ def load_predictive(directory: Path | None = None) -> dict:
     return outputs
 
 
-def load_eki_run(directory: Path) -> dict:
-    """An EKI run's outputs.
-
-    Returns ``{"history": DataFrame, "prior": DataFrame, "posterior":
-    DataFrame or None, "theta_prior": (J, D), "theta_posterior": (J, D),
-    "predictions": (J, N), "beta": float, "finished": bool, "y": (N,) or
-    None, "truth": DataFrame or None, "theta_true": (D,) or None}``.
-
-    ``theta_prior`` is the initial ensemble as drawn; ``theta_posterior`` the
-    ensemble after the last step. ``predictions`` are the last step's, in
-    the calibration posterior's y order, a member's row NaN where its sample
-    was invalid, since the evaluation moved it to the valid center.
-    ``finished`` says whether that last step is the evaluation of the final
-    ensemble, at beta = 1 with no update, so the predictions are the
-    posterior's. ``y`` is the synthetic observations, or
-    ``None`` for a run on the calibration vector's own.
-
-    Raises
-    ------
-    FileNotFoundError
-        If the run wrote no step.
-    """
-    steps = sorted((directory / "steps").glob("step_*.npz"))
-    check_eki_run_wrote_a_step(steps, directory)
-    first, last = np.load(steps[0]), np.load(steps[-1])
-    history = pd.read_csv(directory / "history.csv")
-    predictions = np.array(last["predictions"])
-    if "valid" in last:
-        predictions[~last["valid"]] = np.nan
-    initial_path = directory / "initial_ensemble.npy"
-    synthetic_path = directory / "synthetic.npz"
-    synthetic = np.load(synthetic_path) if synthetic_path.exists() else None
-    posterior_path = directory / "posterior_ensemble.csv"
-    final = history.iloc[-1]
-    return {
-        "history": history,
-        "prior": pd.read_csv(directory / "prior_ensemble.csv", index_col=0),
-        "posterior": (
-            pd.read_csv(posterior_path, index_col=0)
-            if posterior_path.exists()
-            else None
-        ),
-        "theta_prior": (
-            np.load(initial_path) if initial_path.exists() else first["ensemble"]
-        ),
-        "theta_posterior": last["next_ensemble"],
-        "predictions": predictions,
-        "beta": float(last["next_beta"]),
-        "finished": bool(final["increment"] == 0 and np.isclose(final["beta"], 1.0)),
-        "y": synthetic["y"] if synthetic is not None else None,
-        "truth": (
-            pd.read_csv(directory / "truth.csv", index_col=0)
-            if synthetic is not None
-            else None
-        ),
-        "theta_true": synthetic["theta_true"] if synthetic is not None else None,
-    }
-
-
 def load_diagnostics(directory: Path) -> dict[str, pd.DataFrame]:
     """A run's diagnostics, ``<directory>/diagnostics/<name>.csv``, by name.
 
@@ -194,14 +159,6 @@ def load_diagnostics(directory: Path) -> dict[str, pd.DataFrame]:
     }
 
 
-def run_directory(run_name: str) -> Path:
-    """Where a run's outputs are: ``prior`` (the prior predictive), or an EKI
-    run's data, ``synthetic`` or ``observed``."""
-    if run_name == "prior":
-        return config.PRIOR_PREDICTIVE_DIRECTORY
-    return config.EKI_DIRECTORY / run_name
-
-
 def at_site(data):
     """*data* at the configured site, the ``site`` dim dropped to a scalar."""
     return data.sel({SITE: config.SITE}) if SITE in data.dims else data
@@ -210,28 +167,11 @@ def at_site(data):
 # ── checks ──
 
 
-def check_eki_run_wrote_a_step(steps: list[Path], directory: Path) -> None:
-    """An EKI run wrote at least one step."""
-    if not steps:
-        raise FileNotFoundError(
-            f"no step under {directory / 'steps'}; run run/eki.py first"
-        )
-
-
 def check_run_was_diagnosed(paths: list[Path], directory: Path) -> None:
     """A run has diagnostics tables."""
     if not paths:
         raise FileNotFoundError(
             f"no diagnostics under {directory / 'diagnostics'}; run its "
-            "predictive (run/prior_predictive.py or run/posterior_predictive.py), "
-            "or run/diagnose.py"
-        )
-
-
-def check_eki_run_finished(run: dict, directory: Path) -> None:
-    """An EKI run reached beta = 1 and evaluated its final ensemble."""
-    if not run["finished"]:
-        raise ValueError(
-            f"the run under {directory} has not evaluated a final ensemble at "
-            "beta = 1; finish it with run/eki.py --resume"
+            "predictive (run/prior_predictive.py or run/predict.py), then "
+            "run/diagnose.py"
         )

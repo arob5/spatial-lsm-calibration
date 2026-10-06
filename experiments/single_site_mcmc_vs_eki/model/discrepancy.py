@@ -18,8 +18,8 @@ unchanged every year). A term whose standard deviation is 0 is left out, so
 a :class:`NEEDiscrepancy` with only the short term is the single exponential
 term of ``MODEL.md``'s "Noise model".
 
-This module holds the form only; ``config.NEE_DISCREPANCY`` holds the values
-and ``model/noise.py`` declares ``R`` with them.
+This is the form ``run/fit_nee_discrepancy.py`` fits; the model's ``R``
+uses ``model/nee_error.py``'s error models, built from those fits.
 """
 
 from dataclasses import dataclass, fields

@@ -1,9 +1,8 @@
 """A run's diagnostic figures, sized for slides.
 
 Reads what ``run/diagnose.py`` wrote (``model/outputs.py``'s
-``load_diagnostics``) and draws, for ``--run <run>``, into
-``config.FIGURE_DIRECTORY`` for the prior predictive and into its
-``config.EKI_RUN_NAME`` subdirectory for an EKI run:
+``load_diagnostics``) and draws, for a run, into the run's ``figures/``,
+or into ``config.FIGURE_DIRECTORY`` for the prior predictive:
 
 - :func:`plot_predictive_check` (``diagnostics_<run>_predictive_check``):
   per observation source, the members' standardized misfit
@@ -15,14 +14,13 @@ Reads what ``run/diagnose.py`` wrote (``model/outputs.py``'s
 - :func:`plot_autocorrelation` (``diagnostics_<run>_autocorrelation``): per
   NEE source, the residuals' autocorrelation, with and without the recurring
   part, against the correlation ``R`` implies;
-- :func:`plot_towers` (``diagnostics_towers``): each NEE source's windows at
-  one tower against the other's, where both keep one.
+- :func:`plot_towers` (``diagnostics_towers``, always into
+  ``config.FIGURE_DIRECTORY``): each NEE source's windows at one tower
+  against the other's, where both keep one.
 
 ``MODEL.md``, "Diagnostics", defines each quantity.
 
-:func:`draw_diagnostic_figures` draws them all; the predictive runs call it
-once they have diagnosed themselves, and ``run/draw_figures.py`` redraws
-them.
+:func:`draw_diagnostic_figures` draws them all.
 """
 
 import matplotlib.pyplot as plt
@@ -187,11 +185,9 @@ def plot_towers(tables: dict) -> plt.Figure:
 # ── drawing a run ──
 
 
-def draw_diagnostic_figures(run_name: str) -> None:
-    """Draw one run's diagnostic figures into ``config.FIGURE_DIRECTORY``.
-
-    *run_name* is ``prior``, ``synthetic`` or ``observed``
-    (``model/outputs.py``'s ``run_directory``).
+def draw_diagnostic_figures(model_name: str, run: str) -> None:
+    """Draw the diagnostic figures of run *run* of model *model_name*
+    (``prior``: the prior predictive, ``model/outputs.py``'s ``run_directory``).
 
     Raises
     ------
@@ -199,19 +195,21 @@ def draw_diagnostic_figures(run_name: str) -> None:
         If the run has not been diagnosed.
     """
     use_project_style()
-    tables = load_diagnostics(run_directory(run_name))
-    eki_run = run_name != "prior"
+    run_path = run_directory(model_name, run)
+    tables = load_diagnostics(run_path)
+    prior = run == "prior"
+    directory = config.FIGURE_DIRECTORY if prior else run_path / "figures"
     with plt.rc_context(SLIDE_STYLE):
-        prefix = f"diagnostics_{run_name}"
-        kind = "prior" if run_name == "prior" else "posterior"
+        prefix = f"diagnostics_{run}"
+        kind = "prior" if prior else "posterior"
         save_figure(
             plot_predictive_check(tables, kind=kind),
             f"{prefix}_predictive_check",
-            eki_run=eki_run,
+            directory,
         )
         for name, draw in (
             ("weekly_residuals", plot_weekly_residuals),
             ("autocorrelation", plot_autocorrelation),
         ):
-            save_figure(draw(tables), f"{prefix}_{name}", eki_run=eki_run)
+            save_figure(draw(tables), f"{prefix}_{name}", directory)
         save_figure(plot_towers(tables), "diagnostics_towers")

@@ -3,29 +3,29 @@
 Overview
 --------
 ``MODEL.md``, "NEE error", "Estimating the parameters", states the method;
-this script carries it out on one EKI run. For each NEE observation source
-and each of four variants of the discrepancy (``model/discrepancy.py``),
+this script carries it out on one run's predictive. For each NEE
+observation source and each of four variants of the discrepancy
+(``model/discrepancy.py``),
 
 - ``single``: the short term alone, refitted (the first calibration's form);
 - ``two_term``: the short and long terms, no recurring one;
 - ``three_term``: the short, long and recurring terms;
 - ``drifting``: the three terms, the recurring one drifting from year to year,
 
-it maximizes the Gaussian log likelihood of the residuals of the run's
-median prediction under ``R_k(phi) = diag(sigma_obs^2) + Sigma_delta(phi)``,
-over the logarithms of the parameters, by L-BFGS-B with JAX's gradient, from
-several starts. It then checks each fit against the towers' floor and scores
-it on the held-out tower's windows under the run's posterior predictive.
+it maximizes the Gaussian log likelihood of the residuals of the
+predictive's median prediction under
+``R_k(phi) = diag(sigma_obs^2) + Sigma_delta(phi)``, over the logarithms
+of the parameters, by L-BFGS-B with JAX's gradient, from several starts. It then checks each fit against the towers' floor and scores
+it on the held-out tower's windows under the same predictive.
 
-The fitted values are not written into ``config``: ``config`` stays the one
-source of truth, and adopting a fit is a decision made by copying it there.
+The fitted values are not written into ``config`` or ``model/nee_error.py``:
+adopting a fit is a decision made by copying it there.
 
 Input data
 ----------
-``output/eki/<setup>/<data>``, ``<setup>`` ``config.EKI_RUN_NAME`` unless
-``--setup`` names another: the run's final step, its posterior
-predictive and the diagnosis it ends with (``run/posterior_predictive.py``),
-for the held-out score and the towers' floor.
+The run's directory (``--model``, ``--run``): its ``predictive/``
+(``run/predict.py``) and its diagnosis (``run/diagnose.py``), for the
+towers' floor.
 
 Output data
 -----------
@@ -33,16 +33,15 @@ Output data
 variant: the fitted parameters (timescales in days), the log likelihood
 ``log_likelihood``, the number of parameters ``k`` and ``aic``,
 ``floor_holds`` (the fitted total discrepancy variance at least the towers'
-representativeness variance), and, with a posterior predictive,
-``heldout_log_density`` (the held-out tower's log predictive density) and
-``heldout_ratio`` (twice its median member's misfit over its windows).
+representativeness variance), ``heldout_log_density`` (the held-out
+tower's log predictive density) and ``heldout_ratio`` (twice its median
+member's misfit over its windows).
 
 Usage
 -----
 From the repository root::
 
-    uv run python -m experiments.single_site_mcmc_vs_eki.run.fit_nee_discrepancy --data observed
-    uv run python -m experiments.single_site_mcmc_vs_eki.run.fit_nee_discrepancy --data observed --setup single_term_discrepancy
+    uv run python -m experiments.single_site_mcmc_vs_eki.run.fit_nee_discrepancy --model long_memory/fixed --run eki
 """
 
 import argparse
@@ -60,19 +59,18 @@ from scipy.optimize import minimize
 from scipy.special import logsumexp
 
 from .. import config
-from ..model import calibration, diagnostics
+from ..model import diagnostics
 from ..model.discrepancy import NEEDiscrepancy
-from ..model.outputs import load_diagnostics, load_eki_run, load_predictive
+from ..model.outputs import load_diagnostics, load_predictive, run_directory
+from ..models import MODEL_NAMES, Model, fixed_posterior, heldout_posterior
 
 __all__ = [
     "BOUNDS",
     "VARIANTS",
     "Variant",
-    "calibration_sources",
     "check_residuals_are_finite",
     "fit_variant",
     "heldout_scores",
-    "heldout_sources",
     "main",
 ]
 
@@ -84,21 +82,25 @@ def main(argv: list[str] | None = None) -> int:
     """Fit every variant to every NEE source and write the table."""
     warnings.filterwarnings("ignore", message=".*vapor_pressure_deficit.*")
     arguments = _parser().parse_args(argv)
-    data = arguments.data
-    directory = config.OUTPUT_DIRECTORY / "eki" / arguments.setup / data
+    model = Model.parse(arguments.model)
+    directory = run_directory(model.name, arguments.run)
     try:
-        run = load_eki_run(directory)
+        outputs = load_predictive(directory / "predictive")
         floors = load_diagnostics(directory)["nee_towers_summary"][
             "representativeness_standard_deviation"
         ]
     except (FileNotFoundError, KeyError) as error:
         print(
-            f"error: {error}; run run/eki.py and run/posterior_predictive.py first",
+            f"error: {error}; run run/predict.py and run/diagnose.py first",
             file=sys.stderr,
         )
         return 1
-    calibration = calibration_sources(run)
-    heldout = heldout_sources(directory, data)
+    calibration = diagnostics.sources_from_predictive(
+        outputs, "calibration", fixed_posterior(model)
+    )
+    heldout = diagnostics.sources_from_predictive(
+        outputs, "validation", heldout_posterior(model)
+    )
     rows = []
     for name in config.NEE_WINDOWS:
         for variant in VARIANTS:
@@ -128,21 +130,6 @@ def main(argv: list[str] | None = None) -> int:
 
 
 # ── the steps ──
-
-
-def calibration_sources(run: dict) -> dict:
-    """The run's final predictions of the calibration vector, per source."""
-    return diagnostics.sources_from_eki_run(run)
-
-
-def heldout_sources(directory, data: str) -> dict | None:
-    """The posterior predictive's predictions of the held-out tower, if there are any."""
-    predictive = directory / "posterior_predictive"
-    if data != "observed" or not (predictive / "ensemble_daily.nc").exists():
-        return None
-    return diagnostics.sources_from_predictive(
-        load_predictive(predictive), "validation", calibration.validation_posterior()
-    )
 
 
 def fit_variant(source, variant: "Variant") -> tuple[NEEDiscrepancy, float, dict]:
@@ -201,12 +188,8 @@ def fit_variant(source, variant: "Variant") -> tuple[NEEDiscrepancy, float, dict
     )
 
 
-def heldout_scores(
-    heldout: dict | None, name: str, discrepancy: NEEDiscrepancy
-) -> dict:
+def heldout_scores(heldout: dict, name: str, discrepancy: NEEDiscrepancy) -> dict:
     """The held-out tower's log predictive density and misfit ratio under *discrepancy*."""
-    if heldout is None:
-        return {}
     source = heldout[name]
     covariance = np.diag(
         source.measurement_standard_deviation**2
@@ -282,14 +265,10 @@ def _days_since_first(times: pd.DatetimeIndex) -> np.ndarray:
 
 
 def _parser() -> argparse.ArgumentParser:
-    """The command line: which EKI run, by its data and its setup."""
+    """The command line: which run, by model and run name."""
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("--data", choices=("synthetic", "observed"), required=True)
-    parser.add_argument(
-        "--setup",
-        default=config.EKI_RUN_NAME,
-        help="the EKI setup whose run is fitted; config.EKI_RUN_NAME by default",
-    )
+    parser.add_argument("--model", choices=MODEL_NAMES, required=True)
+    parser.add_argument("--run", required=True, help="the run's directory name")
     return parser
 
 

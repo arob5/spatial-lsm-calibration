@@ -83,7 +83,10 @@ def main(argv: list[str] | None = None) -> int:
     directory.mkdir(parents=True, exist_ok=True)
     samples = load_samples(run_directory)
     chosen = _chosen_samples(samples, arguments.samples)
-    theta = samples["theta"].values[chosen]
+    # A resampled run repeats samples; each distinct one is run once and its
+    # outputs repeated, SIPNET being deterministic.
+    distinct, repeat = np.unique(chosen, return_inverse=True)
+    theta = samples["theta"].values[distinct]
     posteriors = {"calibration": fixed_posterior(model), "heldout": heldout_posterior(model)}
     vectors = {label: observation_vector(p) for label, p in posteriors.items()}
     runs = posteriors["calibration"].simulators[SIMULATOR_NAME].runs
@@ -96,6 +99,13 @@ def main(argv: list[str] | None = None) -> int:
             freq="1D",
         )
         phase["sipnet_runs"], phase["forward_calls"] = len(theta), 1
+    predictions_by_vector = [
+        {name: np.asarray(values)[repeat] for name, values in predictions.items()}
+        for predictions in evaluation.predictions
+    ]
+    daily = evaluation.model_output.isel({SAMPLE: repeat}).assign_coords(
+        {SAMPLE: np.arange(len(chosen))}
+    )
     if len(evaluation.failures):
         print(f"{len(evaluation.failures)} runs failed", flush=True)
     scales = {
@@ -104,13 +114,13 @@ def main(argv: list[str] | None = None) -> int:
         if f"{name}_noise_scale" in samples
     }
     pd.DataFrame({"run_sample": chosen, **scales}).to_csv(directory / "samples.csv", index=False)
-    for (label, vector), predictions in zip(vectors.items(), evaluation.predictions, strict=True):
+    for (label, vector), predictions in zip(vectors.items(), predictions_by_vector, strict=True):
         name = _DIRECTORY_NAMES[label]
         _write_fields(directory / "predictions" / "ensemble" / name, vector, predictions)
         _write_observed(directory / "observed" / name, posteriors[label], vector)
-    evaluation.model_output.to_netcdf(directory / "ensemble_daily.nc")
+    daily.to_netcdf(directory / "ensemble_daily.nc")
     heldout = NoiseModel(posteriors["heldout"], inferred=model.noise == "inferred")
-    _heldout_scores(heldout, evaluation.predictions[1], scales).to_csv(
+    _heldout_scores(heldout, predictions_by_vector[1], scales).to_csv(
         directory / "heldout_scores.csv"
     )
     cost.write(directory)

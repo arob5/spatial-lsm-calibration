@@ -7,9 +7,11 @@ Functions
 :func:`one_legend`
     One deduplicated legend for a figure of several panels.
 :func:`save_figure`
-    Write a figure into ``config.FIGURE_DIRECTORY``, or an EKI setup's
-    subdirectory of it, and close it.
+    Write a figure into a directory, ``config.FIGURE_DIRECTORY`` by
+    default, and close it.
 """
+
+from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -48,23 +50,9 @@ def one_legend(figure: plt.Figure, axes) -> None:
 
 
 def save_figure(
-    figure: plt.Figure,
-    name: str,
-    *,
-    eki_run: bool = False,
-    subdirectory: str | None = None,
+    figure: plt.Figure, name: str, directory: Path = config.FIGURE_DIRECTORY
 ) -> None:
-    """Write *figure* as ``<name>.png`` and close it.
-
-    Into ``config.FIGURE_DIRECTORY``; for a figure of an EKI run (*eki_run*),
-    into its subdirectory ``config.EKI_RUN_NAME``, beside the figures of the
-    setup's other runs; or into the named *subdirectory*.
-    """
-    directory = config.FIGURE_DIRECTORY
-    if eki_run:
-        directory = directory / config.EKI_RUN_NAME
-    elif subdirectory is not None:
-        directory = directory / subdirectory
+    """Write *figure* as ``<directory>/<name>.png`` and close it."""
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"{name}.png"
     figure.savefig(path)

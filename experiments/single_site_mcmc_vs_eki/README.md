@@ -43,15 +43,12 @@ seeded run's seed phases included), `history.csv` and `provenance.json`;
 | `models.py` | the models: `Model`, `MODEL_NAMES`, and the posteriors every algorithm reads (`fixed_posterior`, `heldout_posterior`, `marginal_posterior`) |
 | `model/` | the calibration's definitions: `prior.py` (the prior and the SIPNET parameter map), `nee_error.py` (the NEE error models), `noise.py` (the noise factors and scales), `likelihood.py` (the likelihood from predictions, fixed or with the scales integrated out, and the scales' conditionals), `observations.py`, `operators.py`, `sipnet.py`, `inputs.py` |
 | `algorithms/` | `eki.py`, `eki_gibbs.py`, `reweighting.py` (IS and SMC), `mcmc.py`, and `records.py` (the run format and its cost) |
-| `run/` | the entry points: `calibrate`, `predict`, `prepare_drivers`, `check_inputs`, `prior_predictive` |
+| `run/` | the entry points: `calibrate`, `predict`, `diagnose`, `compare`, `fit_nee_discrepancy`, `prepare_drivers`, `check_inputs`, `prior_predictive` |
+| `analysis/` | `compare.py`: the cross-run tables (cost, parameters, agreement with a reference run, noise scales, reweighting, held-out scores) |
 | `scc/` | the SCC jobs: `submit_all.sh`, `model_job.sh`, `mcmc_job.sh`, `smoke_job.sh`, `env.sh` |
 | `tests/` | the numerical pieces on small problems, no SIPNET |
-| `figures/`, `report/`, `exploration/` | figures, the report, and the records that found the model |
-
-The diagnostics and figures of the earlier layout (`model/diagnostics.py`,
-`model/outputs.py`, `figures/`, `run/diagnose.py`, `run/posterior_predictive.py`,
-`run/fit_nee_discrepancy.py`) still read `output/eki/<setup>/`; they move to
-the run format next.
+| `model/diagnostics.py`, `model/outputs.py` | a run's diagnostics from its predictive, and reading what the runs wrote |
+| `figures/`, `report/`, `exploration/` | figures (the prior predictive's and a run's diagnostics), the report, and the records that found the model |
 
 ## Running it
 
@@ -63,6 +60,8 @@ uv run python -m experiments.single_site_mcmc_vs_eki.run.prepare_drivers
 uv run python -m experiments.single_site_mcmc_vs_eki.run.calibrate --model long_memory/fixed --algorithm eki
 uv run python -m experiments.single_site_mcmc_vs_eki.run.calibrate --model long_memory/fixed --algorithm is --from eki
 uv run python -m experiments.single_site_mcmc_vs_eki.run.predict --model long_memory/fixed --run eki_is
+uv run python -m experiments.single_site_mcmc_vs_eki.run.diagnose --model long_memory/fixed --run eki_is
+uv run python -m experiments.single_site_mcmc_vs_eki.run.compare
 uv run pytest experiments/single_site_mcmc_vs_eki/tests
 ```
 

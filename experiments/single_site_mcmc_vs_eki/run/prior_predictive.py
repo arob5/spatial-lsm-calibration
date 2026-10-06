@@ -12,15 +12,14 @@ came back:
    ``SIPNETModel`` call, the run's output as model output, and the
    observation vectors' operators on it.
 2. **An ensemble**, ``config.PRIOR_PREDICTIVE_ENSEMBLE_SIZE`` draws of the
-   prior, evaluated by the calibration and the validation posteriors
-   (``model/calibration.py``), SIPNET through PyEns on local workers, and
-   run once more for daily model output.
+   prior, run once through PyEns on local workers, each run reduced by the
+   calibration and the held-out vectors' operators and to daily output.
 
-Every run is scored under the calibration's likelihood (``model/noise.py``).
-The script then draws the prior predictive's figures
-(``figures/prior_predictive.py``) and diagnoses it (``run/diagnose.py``):
-its diagnostics tables and their figures. ``--no-diagnose`` skips the
-diagnosis.
+The model, ``--model`` (``long_memory/fixed`` by default), sets the noise
+model: every run is scored under its fixed posterior's likelihood, every
+scale at 1 (``model/likelihood.py``). The script then draws the prior
+predictive's figures (``figures/prior_predictive.py``) and diagnoses it
+(``run/diagnose.py``); ``--no-diagnose`` skips the diagnosis.
 
 Input data
 ----------
@@ -58,7 +57,8 @@ import jax
 
 from .. import config
 from ..figures.prior_predictive import draw_prior_predictive_figures
-from ..model import calibration, prior
+from ..model import prior
+from ..models import MODEL_NAMES, Model, fixed_posterior, heldout_posterior
 from . import _predictive, _provenance
 from .diagnose import diagnose_run
 
@@ -72,7 +72,8 @@ def main(argv: list[str] | None = None) -> int:
     """Run the prior predictive, write its outputs, draw them and diagnose it."""
     warnings.filterwarnings("ignore", message=".*vapor_pressure_deficit.*")
     arguments = _parser().parse_args(argv)
-    posterior = calibration.calibration_posterior()
+    model = Model.parse(arguments.model)
+    posterior = fixed_posterior(model)
     directory = config.PRIOR_PREDICTIVE_DIRECTORY
     directory.mkdir(parents=True, exist_ok=True)
     _provenance.write_calibration(directory, posterior)
@@ -82,7 +83,7 @@ def main(argv: list[str] | None = None) -> int:
     _predictive.run_predictive(
         directory,
         posterior,
-        calibration.validation_posterior(),
+        heldout_posterior(model),
         theta,
         center=prior.prior_center(posterior),
     )
@@ -92,7 +93,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"wrote {directory}")
     draw_prior_predictive_figures()
     if not arguments.no_diagnose:
-        diagnose_run("prior")
+        diagnose_run(model.name, "prior")
     return 0
 
 
@@ -100,15 +101,16 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _parser() -> argparse.ArgumentParser:
-    """The command line: the ensemble's size, and whether to diagnose."""
+    """The command line: the model, the ensemble's size, and whether to diagnose."""
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser.add_argument("--model", choices=MODEL_NAMES, default="long_memory/fixed")
     parser.add_argument(
         "--ensemble-size", type=int, default=config.PRIOR_PREDICTIVE_ENSEMBLE_SIZE
     )
     parser.add_argument(
         "--no-diagnose",
         action="store_true",
-        help="skip the run's diagnosis and its figures",
+        help="skip the run's diagnosis",
     )
     return parser
 

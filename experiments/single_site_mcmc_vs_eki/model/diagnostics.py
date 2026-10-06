@@ -12,12 +12,11 @@ a mapping from observation source name to :class:`SourcePredictions`: the
 source's observed values ``y`` ``(n,)``, their window ends ``times`` (``NaT``
 for a static source), the ensemble's predictions ``(J, n)``, and the
 source's block of ``R`` with its measurement standard deviations, each in
-the order of the source's observations. A posterior over the vector
-(``model/calibration.py``) supplies all but the predictions. Three builders
-make it: :func:`sources_from_predictions` from predictions ``(J, N)`` in a
-posterior's y order, :func:`sources_from_eki_run` from an EKI run's final
-step, and :func:`sources_from_predictive` from a predictive's files
-(``model/outputs.py``).
+the order of the source's observations. A model's fixed posterior over the
+vector (``models.py``) supplies all but the predictions. Two builders make
+it: :func:`sources_from_predictions` from predictions ``(J, N)`` in a
+posterior's y order, and :func:`sources_from_predictive` from a
+predictive's files (``model/outputs.py``).
 
 Functions
 ---------
@@ -38,7 +37,7 @@ Functions
     they bound.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 import pandas as pd
@@ -53,11 +52,11 @@ from sipnet_calibration.observation import (
     ObservationSource,
     ObservationVector,
 )
-from sipnet_calibration.probability import Posterior, condition_on
+from sipnet_calibration.probability import Posterior
 
-from .. import config
-from . import calibration, noise, observations
-from .discrepancy import NEEDiscrepancy
+from .. import config, models
+from . import noise, observations
+from .nee_error import NEE_ERROR_MODELS, Memory
 
 __all__ = [
     "AUTOCORRELATION_LAGS",
@@ -73,7 +72,6 @@ __all__ = [
     "residual_autocorrelation",
     "residual_summary",
     "slow_fast_split",
-    "sources_from_eki_run",
     "sources_from_predictions",
     "sources_from_predictive",
     "tower_comparison",
@@ -130,40 +128,42 @@ def sources_from_predictions(
     return _sources(posterior, posterior.observations.flat_to_values(predictions))
 
 
-def sources_from_eki_run(run: dict) -> dict[str, SourcePredictions]:
-    """An EKI run's final predictions of the calibration vector (``model/outputs.py``'s
-    ``load_eki_run``), against the observations it conditioned on: the
-    vector's own, or the run's synthetic ``y``."""
-    posterior = calibration.calibration_posterior()
-    if run["y"] is not None:
-        posterior = condition_on(
-            posterior.model, posterior.observations.flat_to_values(run["y"])
-        )
-    return sources_from_predictions(posterior, run["predictions"])
-
-
 def sources_from_predictive(
-    outputs: dict, vector_name: str, posterior: Posterior
+    outputs: dict,
+    vector_name: str,
+    posterior: Posterior,
+    *,
+    scales: dict[str, float] | None = None,
 ) -> dict[str, SourcePredictions]:
     """The sources *posterior* observes, from a predictive's files (``model/outputs.py``).
+
+    *scales*, ``{source: s_k}``, multiply those sources' noise blocks,
+    :math:`R_k = s_k C_k` (a run's posterior median scale); the measurement
+    standard deviations are left as they are.
 
     Raises
     ------
     ValueError
         If the files' observed values are not the posterior's.
     """
-    vector = calibration.observation_vector(posterior)
+    vector = models.observation_vector(posterior)
     check_files_hold_the_observations(
         outputs["observed"][vector_name], posterior, vector_name
     )
     predicted = outputs["predicted"]["ensemble"][vector_name]
-    return _sources(
+    sources = _sources(
         posterior,
         {
             name: _at_observations(predicted[name], vector[name])
             for name in vector.observation_source_names
         },
     )
+    for name, scale in (scales or {}).items():
+        if name in sources:
+            sources[name] = replace(
+                sources[name], noise_block=scale * sources[name].noise_block
+            )
+    return sources
 
 
 # ── the predictive check ──
@@ -241,13 +241,17 @@ def nee_residuals(sources: dict[str, SourcePredictions]) -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True)
 
 
-def residual_summary(residuals: pd.DataFrame) -> pd.DataFrame:
+def residual_summary(
+    residuals: pd.DataFrame, *, scales: dict[str, float] | None = None
+) -> pd.DataFrame:
     """Per NEE source: the residuals' size beyond measurement error, and their seasonality.
 
     Columns: ``n``; ``residual_variance``; ``measurement_variance``, the mean
     of the windows' measurement variances; ``non_measurement_standard_deviation``, the square
-    root of their difference; ``discrepancy_standard_deviation``, the configured
-    discrepancy's at one window; ``recurring_share``, the recurring seasonal
+    root of their difference; ``discrepancy_standard_deviation``, the model's
+    at one window, :math:`\\sqrt{s_k v_k}`, ``v_k`` the square of
+    ``config.NEE_DISCREPANCY_STANDARD_DEVIATION`` and ``s_k`` the source's
+    entry of *scales* (1 where absent); ``recurring_share``, the recurring seasonal
     part's share of the residual variance; and the correlation of each year's
     weekly means with the other years' mean, its median, minimum and maximum
     over years; and the mean residual in each season, ``mean_djf``,
@@ -270,7 +274,8 @@ def residual_summary(residuals: pd.DataFrame) -> pd.DataFrame:
                 ),
                 "non_measurement_standard_deviation": np.sqrt(max(excess, 0.0)),
                 "discrepancy_standard_deviation": np.sqrt(
-                    config.NEE_DISCREPANCY[name].total_variance()
+                    (scales or {}).get(name, 1.0)
+                    * config.NEE_DISCREPANCY_STANDARD_DEVIATION[name] ** 2
                 ),
                 "recurring_share": recurring.var() / residual.var(),
                 "year_correlation_median": np.median(correlations),
@@ -312,21 +317,32 @@ def weekly_residuals(residuals: pd.DataFrame) -> pd.DataFrame:
     return pd.concat(frames)
 
 
-def residual_autocorrelation(residuals: pd.DataFrame) -> pd.DataFrame:
+def residual_autocorrelation(
+    residuals: pd.DataFrame, nee_error_model_name: str
+) -> pd.DataFrame:
     """Per NEE source and lag: the residuals' autocorrelation, and the one ``R`` implies.
 
     Columns ``observed``, the autocorrelation of the residuals over the pairs
     of days both observed; ``remainder``, the same after the recurring
     seasonal part is subtracted; and ``modeled``, the residuals' correlation
-    under the configured ``R``, the discrepancy's covariance at the lag over
-    its variance plus the mean measurement variance.
+    at lag :math:`\\ell` under error model *nee_error_model_name*,
+
+    .. math::
+
+        \\frac{v_k \\rho_k(\\ell)}{v_k + \\bar\\sigma^2_k},
+
+    ``v_k`` the square of ``config.NEE_DISCREPANCY_STANDARD_DEVIATION``,
+    :math:`\\rho_k` the error model's memory and :math:`\\bar\\sigma^2_k` the
+    mean measurement variance; the scale :math:`s_k` multiplies both terms
+    and cancels.
     """
     rows = []
     for name, frame in residuals.groupby("source", sort=False):
         residual = _residual_series(frame)
         remainder = residual - _recurring_part(residual)
         modeled = _modeled_correlation(
-            config.NEE_DISCREPANCY[name],
+            NEE_ERROR_MODELS[nee_error_model_name].memory(name),
+            config.NEE_DISCREPANCY_STANDARD_DEVIATION[name] ** 2,
             np.mean(frame["measurement_standard_deviation"] ** 2),
         )
         for lag in AUTOCORRELATION_LAGS:
@@ -467,7 +483,7 @@ def _sources(
         [np.isfinite(np.asarray(values)).all(axis=1) for values in predictions.values()],
         axis=0,
     )
-    vector = calibration.observation_vector(posterior)
+    vector = models.observation_vector(posterior)
     y = posterior.observations.flat_to_values(posterior.y)
     blocks = noise.noise_covariance_blocks(posterior)
     return {
@@ -631,12 +647,14 @@ def _slow_and_fast(daily: pd.Series) -> tuple[pd.Series, pd.Series]:
     return slow, daily - slow
 
 
-def _modeled_correlation(discrepancy: NEEDiscrepancy, measurement_variance: float):
+def _modeled_correlation(
+    memory: Memory, discrepancy_variance: float, measurement_variance: float
+):
     """The residuals' correlation at a lag under ``R``, as a function of the lag in days."""
-    variance = discrepancy.total_variance() + measurement_variance
+    share = discrepancy_variance / (discrepancy_variance + measurement_variance)
 
     def correlation(lag: float) -> float:
-        return float(discrepancy.covariance(np.array([0.0, lag]))[0, 1] / variance)
+        return float(share * memory.correlation(np.array([0.0, lag]))[0, 1])
 
     return correlation
 
@@ -648,7 +666,7 @@ def check_files_hold_the_observations(
     observed: dict[str, xr.Dataset], posterior: Posterior, vector_name: str
 ) -> None:
     """A predictive's observed values are the ones *posterior* conditions on."""
-    vector = calibration.observation_vector(posterior)
+    vector = models.observation_vector(posterior)
     y = posterior.observations.flat_to_values(posterior.y)
     held = all(
         name in observed
