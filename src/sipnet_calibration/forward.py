@@ -959,13 +959,18 @@ def _site_segments(
     site's observations together since they are sorted by site."""
     slices: dict[int, ObservationVector] = {}
     positions: dict[int, dict[str, slice]] = {}
+    site_levels = {
+        source: np.asarray(observation_vector[source].observation_labels.get_level_values(SITE))
+        for source in observation_vector.observation_source_names
+    }
     for site in observation_vector.sites:
         slices[site] = observation_vector.select(sites=[site])
         positions[site] = {}
         for source in slices[site].observation_source_names:
-            sites = observation_vector[source].observation_labels.get_level_values(SITE)
-            held = np.flatnonzero(np.asarray(sites) == site)
-            positions[site][source] = slice(int(held[0]), int(held[-1]) + 1)
+            level = site_levels[source]
+            positions[site][source] = slice(
+                int(np.searchsorted(level, site, side="left")), int(np.searchsorted(level, site, side="right"))
+            )
             check_site_slice_is_the_site_segment(
                 slices[site][source].observation_labels,
                 observation_vector[source].observation_labels[positions[site][source]],

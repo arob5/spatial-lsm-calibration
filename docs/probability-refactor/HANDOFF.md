@@ -30,9 +30,9 @@ and proofs are the design's §12; the column below is a summary.
 | P8 | `refactor/probability-p8-conjugacy` | merged #85 | P6 | `marginalize`, `full_conditional`, `theta_with` |
 | P9 | `refactor/probability-p9-foreign-laws` | merged #86 | P3 | numpyro and EnsKit `Gaussian` adapters; GPJax as an optional test group |
 | E1 | `refactor/probability-e1-enskit` | merged #88 | P9 | Re-pin from pyEKI to EnsKit's `main` (`TARPS-group/EnsKit`, package `enskit`), which moves JAX 0.8 to 0.10 and TFP's nightly with it; the `_linalg` shim on `enskit.linalg` and `enskit.distribution`; `GaussianLaw` and `as_law` on EnsKit's block `Gaussian`; `test_inference` and `test_smc` off the deleted `pyeki.eki`; P1's references rewritten if their bytes move; CLAUDE.md's companion table, upgrade command and pyEKI facts |
-| E2 | `refactor/probability-e2-enskit-eki` | open #89 | E1 | EnsKit's EKI driver: `eki_problem` in the terms of `enskit.algorithms.eki`; `initial_ensemble` an EnsKit `Ensemble` |
-| #69 | `feat/single-site-mcmc-vs-eki` | migrated, open #69 | P7, E2 | PR #69 migrates in its own session, onto the probability layer and EnsKit together |
-| R1 | `refactor/probability-r1-removal` | waiting | #69 migrated | Delete `parameters`, today's `ForwardModel`, the Flat API, the old `describe_calibration`; move the vocabulary into CLAUDE.md's glossary |
+| E2 | `refactor/probability-e2-enskit-eki` | merged #89 | E1 | EnsKit's EKI driver: `eki_problem` in the terms of `enskit.algorithms.eki`; `initial_ensemble` an EnsKit `Ensemble` |
+| #69 | `feat/single-site-mcmc-vs-eki` | migrated, merged #69 | P7, E2 | PR #69 migrates in its own session, onto the probability layer and EnsKit together |
+| R1 | `refactor/probability-r1-removal` | open #R1PR | #69 migrated | Delete `parameters`, today's `ForwardModel`, the Flat API, the old `describe_calibration`; move the vocabulary into CLAUDE.md's glossary |
 
 The plan allows P2 and P4 to run in parallel with P1. The workflow takes one PR
 at a time, in table order, unless Andrew starts a parallel session himself.
@@ -70,6 +70,27 @@ Decided by Andrew:
     imports no pyEKI, so it can run in E1's environment.
 
 ## Open questions for Andrew
+
+- **Reference files with no script (R1).** The scripts that wrote P1's
+  references (`tests/data/write_probability_references.py`) and PR #72's
+  (`tests/data/write_calibration_references.py`) read the parameter layer,
+  so R1 removes them; the files stay, read by the parity and equivalence
+  tests. A JAX or TFP upgrade that moves their bits means rerunning a script
+  from history (P1's at d89a336, PR #72's at cf6b9af) in the new
+  environment. Recommended: keep it so; the alternative is to regenerate
+  the references from the probability layer once and compare against
+  those, which would stop them pinning the old layer's numbers.
+- **A batch dim named like an output variable is refused late (R1).**
+  `SIPNETRuns.evaluate` refuses a crossed or batch dim named like a model
+  output variable (`wood_carbon`, `nee`) only when stacking the model
+  output, after every run has executed; `ForwardModel` refused it up front.
+  Recommended: add the refusal before the runs in a module cleanup; it costs
+  one wasted batch, never a wrong result.
+- **`check_fixed_law_reads_nothing` cannot be reached through a model (R1,
+  found while restoring coverage).** A factor passes a builder only what the
+  builder reads, and a fixed law reads nothing, so the check fires only when
+  a builder is called directly. Recommended: keep it as the guard on the
+  `Builder` call; its test calls the builder.
 
 - **The recommended decisions** (§13): D1, D2, D5, D7, D8, D9, D10, D11, D12,
   D13, D14, D18–D24.
@@ -221,9 +242,9 @@ data.
   LandTrendr ones, are zero in the local processed files. A
   `standard_deviation` is non-negative, and the covariance built from it must
   be positive definite.
-- **PR #69** touches only `experiments/` and has no tests. Every PR before R1
-  must leave its imports working (`parameters`, `ForwardModel`,
-  `ObservationVector.y`, `positions`, `flat`).
+- **PR #69** touches only `experiments/` and has no tests. Its experiment
+  migrated before R1 and uses none of what R1 removed; a library change that
+  breaks it shows only by running its entry points.
 
 ## Session log
 
@@ -1406,3 +1427,81 @@ discrepancy (as before).
 import none of what R1 deletes. Andrew's uncommitted
 `report/report.qmd` in #69's worktree still imports `inverse_problem` and
 `prior.calibration()`; it is his to update.
+
+### 2026-10-06: R1, the removal
+
+**Done.** #69 merged before this session started, so R1 began from a `main`
+holding the migrated experiment.
+
+- **Deleted:** `sipnet_calibration.parameters` and its seven test files;
+  `forward.ForwardModel`, `ForwardEvaluation`, `DOMAIN_CHECK_CORNERS` and
+  the corner check over a vector; the observation vector's `y`,
+  `dimension`, `index`, `positions`, `flat`, `fields`, `INDEX_LEVELS` and
+  `check_batch_dim_is_not_an_observation_source_name`, with the checks only
+  they used (`fields.check_at_most_one_batch_dim` among them); the two
+  reference-writing scripts and P1's byte test (see the open question). The
+  reference files stay.
+- **Per-source predictions.** `SIPNETRunsEvaluation.predictions` holds, per
+  observation vector, a read-only mapping `{prediction name: (R, n_k)}` in
+  each source's observation-dim order. A worker reads `predict`'s fields at
+  its site's labels per source, and the calling process writes them in the
+  site's segment of each observation dim, found by binary search on the
+  sorted site level and checked per site and source. `SIPNETSimulator`
+  passes them through, with no reordering from Flat. P1's
+  `forward_example` predictions are still reproduced bit for bit.
+- **`describe_calibration(posterior, sipnet_parameter_map)`**: a table per
+  component and input (but a simulator's outputs), with
+  `Posterior.describe()`'s role, the `ArraySpec`, the part's law, given and
+  provenance, and the SIPNET parameters depending on it through
+  deterministics and simulators; and the map's table with `role`
+  (`calibrated` meaning a dependence on a parameter of the posterior).
+  `example_calibration(site_dims)` returns `(prior_factors,
+  sipnet_parameter_map)`, so conftest's copy of the example's factors went.
+- **Restored:** `SIPNETRuns.evaluate` refuses an external input named like a
+  reserved name or the batch dim, as `ForwardModel` did
+  (`check_external_input_names_are_free`).
+- **Tests migrated:** `test_forward` to `SIPNETRuns` (89 tests at HEAD, 74
+  now; the deleted ones tested `ForwardModel` alone: theta coercion,
+  `__call__`, `predicted_fields`, the parameter-layer composition checks);
+  `test_observation_vector` off the Flat API (135 to 104); `test_calibration`,
+  `test_equivalence` (both calibrations declared again in the probability
+  layer, the single-site one twice, with `Compute` rules and with
+  deterministics, every reference quantity to 1e-12),
+  `test_sipnet_parameter_map`, `test_site_dims`, `test_initial_conditions`,
+  `test_probability_{layout,spec,support,parity}` and `test_package`. The
+  interval and simplex support tests, and the families' and builders'
+  refusals the parameter-layer tests had reached, moved to the probability
+  tests: a coverage comparison against the deleted tests' coverage found
+  about 50 lines of `probability/` reached only by them, and every one is
+  reached again. The same comparison for `forward.py`, `observation/`,
+  `sipnet_parameter_map.py`, `site_dims.py` and `fields.py` found nothing
+  lost but the vector's `__repr__`, now tested.
+- **Docs:** CLAUDE.md's glossary takes the design's §6 vocabulary in one
+  table (the parameter-layer rows retired: prior term, derived parameter,
+  membership, values by parameter, labeled natural values), the aliases,
+  the vector conventions (now `ObservationVector` and `Layout`), the
+  forward-model and observation-vector rules, the layout and the TFP notes;
+  the workflow says the refactor is complete once every row is merged. The
+  README, the module docstrings and `design.html` (§8.3 "As built in R1")
+  follow.
+
+Tests: 3105 passed and 96 skipped before; 2819 passed and 96 skipped after, the
+difference the 310 deleted tests of the parameter layer and its references,
+net of the migrations and the tests moved to the probability layer.
+
+**Review.** Solo, as the workflow sets for R1. Found and fixed:
+`_site_segments` scanned each source's whole site level once per site,
+O(sites x observations), which at the pool's 8,000 sites would have cost
+minutes per plan; it now binary-searches the sorted level. The agents that
+ported the tests also found three stale messages (the climate check's
+"parameter vector", the map's "derived parameters", the vector's
+"fields returns"), all fixed.
+
+**Deviations from the design.** `SIPNETRunsEvaluation.predictions` is per
+source rather than one `(R, N_k)` Flat per vector, which the Flat API's
+removal forces (recorded in `design.html` §8.3). `example_calibration`
+returns factors, which §11 does not say.
+
+**What the next session must know.** R1 is the plan's last row: once it
+merges, the refactor is complete, and the workflow's step 1 says to stop.
+The open items above are module-cleanup work, not refactor PRs.
