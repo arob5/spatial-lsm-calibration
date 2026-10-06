@@ -17,14 +17,16 @@ Sections, in order:
   observation source;
 - **the prior predictive**: the ensemble's size and seed, and what it
   writes;
-- **the noise model**: the measurement-error floors and the model-discrepancy
-  terms of the noise covariance;
-- **EKI**: the setup's name, the ensemble, the tempering ladder and the
-  update, the seeds, and the synthetic truth.
+- **the noise model**: the measurement-error floors, the discrepancy terms,
+  NEE's discrepancy size and the noise scales' prior (the error models are
+  ``model/nee_error.py``'s, the models ``models.py``'s);
+- **EKI**: where runs write, the ensemble, the tempering ladder, the seeds;
+- **importance sampling and SMC after EKI**, and **MCMC**: their settings.
 
 The parameterization and the prior are ``model/prior.py``'s.
 """
 
+import os
 from datetime import timedelta
 from pathlib import Path
 
@@ -36,7 +38,6 @@ from pysipnet.runner import ClimateStaging
 from sipnet_calibration.conventions import data_root
 from sipnet_calibration.observation import DEFAULT_OBS_OPS, ReduceOverRun
 
-from .model.discrepancy import NEEDiscrepancy
 from .model.operators import AverageRateOverWindows, ComputeAbovegroundBiomass
 
 __all__ = [
@@ -47,12 +48,9 @@ __all__ = [
     "CONSTRAINT_NAMES",
     "DRIVER_SOURCE_INDEX",
     "DRIVER_TIME_ZONE",
-    "EKI_DIRECTORY",
     "EKI_ENSEMBLE_SIZE",
     "EKI_ESS_FRACTION",
-    "EKI_RUN_NAME",
     "EKI_SEED",
-    "EKI_SYNTHETIC_TRUTH_SEED",
     "EXCLUDED_CONSTRAINTS",
     "EXPERIMENT_DIRECTORY",
     "FIGURE_DIRECTORY",
@@ -61,8 +59,15 @@ __all__ = [
     "LAI_STANDARD_DEVIATION_FLOOR",
     "LANDTRENDR_DISCREPANCY_STANDARD_DEVIATION",
     "LANDTRENDR_YEARS",
+    "MCMC_ADAPTATION_STEPS",
+    "MCMC_CHAINS_PER_WORKER",
+    "MCMC_DISCARDED_STEPS",
+    "MCMC_SEED",
+    "MCMC_STEPS",
     "MODEL_FLAGS",
-    "NEE_DISCREPANCY",
+    "NEE_DISCREPANCY_STANDARD_DEVIATION",
+    "NOISE_SCALE_SHAPE",
+    "NOISE_SCALED_SOURCES",
     "NEE_MINIMUM_MEASURED_FRACTION",
     "NEE_WINDOWS",
     "N_WORKERS",
@@ -74,10 +79,18 @@ __all__ = [
     "PRIOR_PREDICTIVE_OUTPUT_VARIABLE_NAMES",
     "PRIOR_PREDICTIVE_SEED",
     "RAW_DRIVERS_ROOT",
+    "REWEIGHTING_COVARIANCE_INFLATION",
+    "REWEIGHTING_DEFENSIVE_FRACTION",
+    "REWEIGHTING_DEGREES_OF_FREEDOM",
+    "REWEIGHTING_SEED",
+    "IMPORTANCE_SAMPLE_SIZE",
+    "RUNS_DIRECTORY",
+    "SMC_SAMPLE_SIZE",
     "SIPNET_TIMEOUT",
     "SITE",
     "SOIL_CARBON_DISCREPANCY_FRACTION",
     "SOIL_TEMPERATURE_TIMESCALE",
+    "SYNTHETIC_TRUTH_SEED",
     "VALIDATION_NEE_PERIOD",
     "VALIDATION_NEE_SERIES",
     "WOOD_CARBON_FRACTION",
@@ -162,13 +175,11 @@ SIPNET_TIMEOUT = timedelta(seconds=60)
 #: copied, since every run reads the same file.
 CLIMATE_STAGING = ClimateStaging.SYMLINK
 
-#: How many SIPNET runs execute at once on this machine: a fixed budget, not
-#: every processor, since other sessions run ensembles on the same machine.
-#: Each worker holds about 0.3 GB and the calling process about 0.8 GB (a
-#: 14-member evaluation peaked at 2.7 GB with 7 workers), so 3 keeps a run
-#: near 2 GB; with the 16 GB and 8 processors here, two such runs fit beside
-#: the desktop.
-N_WORKERS = 3
+#: How many SIPNET runs execute at once: ``$SIPNET_WORKERS``, which an SCC
+#: job sets to its slots, else 3 on the laptop, a fixed budget beside other
+#: sessions' ensembles. Each worker holds about 0.3 GB and the calling
+#: process about 0.8 GB.
+N_WORKERS = int(os.environ.get("SIPNET_WORKERS", "3"))
 
 # ── the observations: NEE ──
 
@@ -324,38 +335,27 @@ PRIOR_PREDICTIVE_OUTPUT_VARIABLE_NAMES = (
 # model/discrepancy.py; the LAI timescale is that of the exponential
 # correlation exp(-|t - t'| / tau).
 
-#: NEE's model discrepancy, per NEE observation source: the short and long
-#: terms of model/discrepancy.py (MODEL.md, "NEE error"), standard deviations
-#: in umol m-2 s-1 of CO2, and no recurring term. The values are the two-term
-#: fit of run/fit_nee_discrepancy.py to the residuals of the first
-#: calibration (EKI setup "single_term_discrepancy", observed data), rounded
-#: to three figures. The three-term fit, with a term recurring every year,
-#: was run as setup "three_term_discrepancy" and dropped: it let the posterior
-#: give up summer daytime uptake as a shared seasonal bias (MODEL.md).
-NEE_DISCREPANCY = frozendict(
-    {
-        "nee_night_centered": NEEDiscrepancy(
-            short_standard_deviation=0.603,
-            short_timescale=timedelta(days=0.740),
-            long_standard_deviation=1.20,
-            long_timescale=timedelta(days=57.2),
-            provenance=(
-                "two-term fit to the residuals of EKI run "
-                "single_term_discrepancy, observed data"
-            ),
-        ),
-        "nee_day_centered": NEEDiscrepancy(
-            short_standard_deviation=1.96,
-            short_timescale=timedelta(days=1.72),
-            long_standard_deviation=2.30,
-            long_timescale=timedelta(days=36.5),
-            provenance=(
-                "two-term fit to the residuals of EKI run "
-                "single_term_discrepancy, observed data"
-            ),
-        ),
-    }
+#: The standard deviation of NEE's discrepancy at one window, per NEE source,
+#: in umol m-2 s-1 of CO2: the same in every error model, so that the error
+#: models differ only in memory (model/nee_error.py). It is the first
+#: calibration's residual standard deviation beyond measurement error,
+#: MODEL.md's s_hat_k.
+NEE_DISCREPANCY_STANDARD_DEVIATION = frozendict(
+    {"nee_night_centered": 1.43, "nee_day_centered": 2.99}
 )
+
+#: The sources whose noise covariance has an unknown scale s_k, R_k = s_k C_k,
+#: in a model with inferred noise; LandTrendr (6 values) and SoilGrids (1)
+#: are too few to inform one and keep theirs fixed.
+NOISE_SCALED_SOURCES = (
+    "nee_night_centered",
+    "nee_day_centered",
+    "modis_leaf_area_index",
+)
+
+#: The shape a of each scale's inverse-gamma prior, IG(a, b); b is set so
+#: that the prior median is 1, the scale a model with fixed noise holds.
+NOISE_SCALE_SHAPE = 2.0
 
 #: The smallest standard deviation a MODIS LAI observation is given, in
 #: m2 m-2: the reanalysis's floor (data/README.md open question 22). The
@@ -390,16 +390,9 @@ SOIL_CARBON_DISCREPANCY_FRACTION = 0.25
 # (the posterior) by EnsKit's perturbed-observation (Matheron) update, the
 # increments chosen adaptively. run/eki.py runs it and figures/eki.py draws it.
 
-#: The name of the current EKI setup. Each setup's runs are kept under their
-#: own name, so a change to the noise model or the algorithm leaves the
-#: earlier runs' outputs in place. The first calibration, under the
-#: single-term NEE discrepancy, is "single_term_discrepancy"; the run under
-#: the three-term one, "three_term_discrepancy".
-EKI_RUN_NAME = "two_term_discrepancy"
-
-#: Where the current setup's EKI runs write, one directory per data set:
-#: ``synthetic`` or ``observed``.
-EKI_DIRECTORY = OUTPUT_DIRECTORY / "eki" / EKI_RUN_NAME
+#: Where every calibration run writes: ``<nee error model>/<noise>/<algorithm>/``.
+#: ``$HF_RUNS_DIRECTORY`` moves it, for a smoke test.
+RUNS_DIRECTORY = Path(os.environ.get("HF_RUNS_DIRECTORY", OUTPUT_DIRECTORY / "runs"))
 
 #: The number of ensemble members, J. Every iterate lies in the affine span of
 #: the initial ensemble, so J - 1 must exceed theta's 15 entries with room to
@@ -416,4 +409,50 @@ EKI_ESS_FRACTION = 0.5
 
 #: The seed of the synthetic truth: one prior draw theta*, and the noise
 #: realization added to its predictions to make the synthetic observations.
-EKI_SYNTHETIC_TRUTH_SEED = 20260931
+SYNTHETIC_TRUTH_SEED = 20260931
+
+# ── importance sampling and SMC after EKI ──
+#
+# A Student-t fitted to an EKI run's final ensemble, mixed with the prior,
+# is the base density q; importance sampling draws from q once, tempered SMC
+# moves from q to the posterior (MODEL.md, "IS and SMC after EKI").
+
+#: The degrees of freedom of the Student-t fitted to the EKI ensemble.
+REWEIGHTING_DEGREES_OF_FREEDOM = 5.0
+
+#: The factor the EKI ensemble's covariance is inflated by in the Student-t.
+REWEIGHTING_COVARIANCE_INFLATION = 1.5
+
+#: The prior's share of the base density, which bounds the weights.
+REWEIGHTING_DEFENSIVE_FRACTION = 0.1
+
+#: The number of draws importance sampling makes.
+IMPORTANCE_SAMPLE_SIZE = 1000
+
+#: The number of samples tempered SMC carries.
+SMC_SAMPLE_SIZE = 500
+
+#: The seed of the base density's draws and of SMC's moves.
+REWEIGHTING_SEED = 20261006
+
+# ── MCMC ──
+#
+# Parallel random-walk Metropolis on the posterior of theta (the scales
+# integrated out where they are inferred), started from an importance-
+# sampling run's resampled draws, its proposal covariance theirs, adapted
+# from the chains during the first steps and then frozen.
+
+#: Chains per worker: the chains advance together, one batch of runs a step.
+MCMC_CHAINS_PER_WORKER = 2
+
+#: The number of steps each chain takes.
+MCMC_STEPS = 2000
+
+#: The steps during which the proposal covariance is re-estimated.
+MCMC_ADAPTATION_STEPS = 500
+
+#: The steps discarded from the start of every chain, adaptation included.
+MCMC_DISCARDED_STEPS = 1000
+
+#: The seed of the chains' proposals and starting draws.
+MCMC_SEED = 20261007

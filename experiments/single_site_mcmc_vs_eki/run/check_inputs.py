@@ -41,7 +41,8 @@ from sipnet_calibration.observation import ObservationSource
 from sipnet_calibration.validation import range_summary
 
 from .. import config
-from ..model import calibration, inputs, noise
+from .. import models
+from ..model import inputs, noise
 
 __all__ = ["main"]
 
@@ -50,16 +51,18 @@ __all__ = ["main"]
 
 
 def main() -> int:
-    """Print the three reports, or the error that stopped one."""
+    """Print the three reports, the noise under every NEE error model, or the
+    error that stopped one."""
     try:
         describe_inputs()
         posteriors = {
-            "calibration": calibration.calibration_posterior(),
-            "validation": calibration.validation_posterior(),
+            f"{name}, calibration": models.fixed_posterior(models.Model(name, "fixed"))
+            for name in models.NEE_ERROR_MODELS
         }
+        posteriors["held-out"] = models.heldout_posterior(models.Model("long_memory", "fixed"))
         with pd.option_context("display.width", 200, "display.max_columns", 20):
             describe_observations(
-                *(calibration.observation_vector(p) for p in posteriors.values())
+                *(models.observation_vector(p) for p in list(posteriors.values())[-2:])
             )
             describe_noise(posteriors)
     except (FileNotFoundError, KeyError, ValueError) as error:
@@ -123,7 +126,7 @@ def describe_noise(posteriors: dict) -> None:
     """What each observation source contributes to each posterior's ``R``."""
     summaries = pd.concat(
         {
-            name: noise.noise_summary(posterior, calibration.observation_vector(posterior))
+            name: noise.noise_summary(posterior, models.observation_vector(posterior))
             for name, posterior in posteriors.items()
         },
         names=["vector"],

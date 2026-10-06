@@ -1,34 +1,29 @@
-# The calibration's model: observations, noise and prior
+# The calibration's models: observations, error models, noise, prior and algorithms
 
 The mathematics of the single-site calibration: what is observed and how the
-model predicts it, the noise covariance, the parameterization and prior, the
-diagnostics every run is checked by, NEE's error (the first calibration's
-test of it and the revised models), and what the three EKI setups show
-about the error model and a trade-off within SIPNET.
-`README.md` says how to run it and records the decisions; the code is in
-`model/`, and every constant named here is `config.py`'s.
+model predicts it, the NEE error models, the noise model with its scales,
+the six models, the parameterization and prior, the algorithms, the
+diagnostics and metrics every run is checked by, and how the earlier
+calibrations led to this design. `README.md` says how to run it; the code is
+in `models.py`, `model/` and `algorithms/`, and every constant named here is
+`config.py`'s.
 
 ## The observation model
 
 The calibration conditions on a vector $y \in \mathbb{R}^N$ through
 
 $$
-y = \mathcal{H}\big(\mathcal{M}(\theta)\big) + \varepsilon, \qquad \varepsilon \sim \mathcal{N}(0, R),
+y = \mathcal{H}\big(\mathcal{M}(\theta)\big) + \varepsilon, \qquad \varepsilon \sim \mathcal{N}\big(0, R(s)\big),
 $$
 
 where $\mathcal{M}(\theta)$ is one SIPNET run over the prepared drivers at
 parameters $\theta$, $\mathcal{H}$ stacks the observation operators of the
-$K = 5$ observation sources below, and $R$ is the noise covariance. The
+$K = 5$ observation sources below, and $R(s)$ is the noise covariance, block
+diagonal over the sources with a scale per source ("The noise model"). The
 sources, their observed values and measurement errors, and the operators are
 `model/observations.py`'s `calibration_observation_vector()`; each operator
 is bound to its source in `config.OBSERVATION_OPERATORS`. $y$ is ordered by
-source in the order below, then by site and time. This section states each
-source's data, its operator and its measurement error exactly, and then the
-noise model assembling $R$, which `model/noise.py` declares. The whole model,
-the prior, $\mathcal{H}(\mathcal{M}(\cdot))$ as a simulator and one Gaussian
-noise factor per source, is joined, bound at the site and conditioned on $y$
-in one place, `model/calibration.py`, as the posterior every algorithm
-reads.
+source in the order below, then by site and time.
 
 ### Notation
 
@@ -203,85 +198,383 @@ added to is the noise model below.
 - **SoilGrids.** $\sigma$ is the raw file's `sd`, carried with the value
   through the assembly; how it was derived from SoilGrids is not recorded.
 
-### Noise model
+## The NEE error model
 
-$R$ is fixed, not a function of $\theta$, so that MCMC and EKI target the same
-posterior, and block-diagonal over the sources, no two sources' errors
-correlated:
+This section builds the error model of one NEE source one assumption at a
+time, with each formula beside its reason. "The noise model" below assembles
+every source's.
 
-$$
-R = \operatorname{diag}(R_1, \dots, R_K), \qquad R_k = \Sigma^{\mathrm{obs}}_k + \Sigma^{\delta}_k .
-$$
+### Two sources of error
 
-$\Sigma^{\mathrm{obs}}_k$ is built from the measurement errors above;
-$\Sigma^{\delta}_k$ is model discrepancy and representation error, how far a
-point SIPNET can be from the observed quantity at the best $\theta$. The log
-likelihood is
+For a window $W$, let $f_W$ be the true mean NEE of the tower's footprint
+over $W$. The residual at parameters $\theta$ splits as
 
 $$
-\log p(y \mid \theta) = -\tfrac12 \big(y - \mathcal{H}(\mathcal{M}(\theta))\big)^{\!\top} R^{-1} \big(y - \mathcal{H}(\mathcal{M}(\theta))\big) - \tfrac12 \log\det R - \tfrac{N}{2} \log 2\pi,
+y_W - \mathcal H_W\big(\mathcal M(\theta)\big)
+= \underbrace{\big(y_W - f_W\big)}_{e_W:\ \text{measurement}}
++ \underbrace{\big(f_W - \mathcal H_W(\mathcal M(\theta))\big)}_{\delta_W:\ \text{discrepancy}} .
 $$
 
-the posterior's log likelihood (`model/calibration.py`). Each source is a
-noise factor, its observed values Gaussian about its prediction with
-covariance $R_k$, a covariance spec of the probability layer: the sum of a
-measurement and a discrepancy term, one block per site for a dated source
-(`model/noise.py`). $R$ depends on no parameter, so it is built and
-factored once, when the posterior is conditioned; a sample whose run fails
-scores $-\infty$. The constants below are `config`'s "noise model"
-section. The temporal correlation below is
-$c_\tau(t, t') = \exp(-|t - t'| / \tau)$, with $t$ in days.
+Both are taken Gaussian, independent of each other, and independent of
+$\theta$ near the best $\theta$, so $C = \Sigma^{\mathrm{obs}} +
+\Sigma^\delta$. The measurement error is known from the tower ("Measurement
+error" above: diagonal, a median of about 0.7 µmol m⁻² s⁻¹ at night and 1.0
+by day). The residuals are about 1.6 and 3.2, so almost all of the error is
+discrepancy.
 
-- **NEE**, for each of the two sources separately, the two independent: the
-  measurement error on the diagonal plus a discrepancy of two terms,
+### Discrepancy: a process in time
 
-  $$
-  R_{WW'} = \big(\sigma^{\mathrm{obs}}_W\big)^2 \mathbf{1}[W = W'] + \big(\Sigma^\delta\big)_{WW'},
-  $$
+$\delta_W$ is what SIPNET gets wrong: its structure, the drivers, and the
+footprint against the pixel. Those errors come from states that change
+slowly (leaf area, phenology timing, soil water) and from processes that
+follow the weather, so nearby windows err alike. The simplest model with
+that property is a stationary Gaussian process in the window ends $t_W$, in
+days:
 
-  $\Sigma^\delta$ a short and a long exponential term in the window ends
-  $t_W = w^+$ (`model/discrepancy.py`), whose form, parameters and fit are
-  "NEE error" below. The parameters are `config.NEE_DISCREPANCY`'s (EKI
-  setup `two_term_discrepancy`):
+$$
+\operatorname{Cov}(\delta_W, \delta_{W'}) = v^\delta\, \rho(t_W - t_{W'}), \qquad \rho(0) = 1,
+$$
 
-  | Source | $\sigma_{\mathrm s}$ | $\tau_{\mathrm s}$ (d) | $\sigma_\ell$ | $\tau_\ell$ (d) |
-  |---|---|---|---|---|
-  | `nee_night_centered` | 0.603 | 0.740 | 1.20 | 57.2 |
-  | `nee_day_centered` | 1.96 | 1.72 | 2.30 | 36.5 |
+$v^\delta$ the discrepancy variance of one window and $\rho$ its memory,
+a weighted sum of
 
-  with the standard deviations in µmol m⁻² s⁻¹. Two earlier setups are
-  recorded in "NEE error". The first calibration (`single_term_discrepancy`)
-  ran with the short term alone, $\sigma_\delta^2 \, c_\tau(w^+, w'^+)$,
-  $\sigma_\delta = 1.0$ at night and 1.8 by day and $\tau = 2$ days:
-  $\sigma_\delta$ 0.7 times the standard deviation of the observed windows'
-  anomalies from their seasonal cycle (1.43 and 2.55), $\tau$ a correlation
-  of 0.61 between consecutive days, where the observed anomalies' is
-  0.45-0.50. That calibration rejected it. The second
-  (`three_term_discrepancy`) added a term recurring every year, which was
-  dropped for the reason "The three-term run" gives.
+$$
+\kappa_\tau(\Delta) = e^{-|\Delta|/\tau}
+\qquad\text{and}\qquad
+\kappa^{\mathrm{per}}_\lambda(\Delta) = \exp\!\Big(-\frac{2\sin^2(\pi\Delta/P)}{\lambda^2}\Big),\ P = 365.25\ \text{d}:
+$$
+
+a short exponential ($\tau$ about a day) for weather-scale error, a long one
+($\tau$ of weeks) for an anomaly that lasts a season, and the periodic
+kernel for a bias that recurs at the same time every year.
+
+### Why memory matters
+
+If $n$ windows share one bias $b \sim \mathcal N(0, \sigma_b^2)$ on top of
+independent errors of variance $\sigma_e^2$, then $C = \sigma_e^2 I +
+\sigma_b^2 \mathbf 1\mathbf 1^\top$ and the information about a constant
+shift of the predictions is
+
+$$
+\mathbf 1^\top C^{-1} \mathbf 1 = \frac{n}{\sigma_e^2 + n\sigma_b^2} \;\xrightarrow[n\to\infty]{}\; \frac{1}{\sigma_b^2}:
+$$
+
+however many windows there are, the posterior variance of the shift stays
+above $\sigma_b^2$. The same holds along any direction $v$ in which a
+parameter moves the predictions, such as the seasonal shape $Q_{10}$
+changes: an error of variance $\sigma^2$ along $v$ caps $v^\top C^{-1} v$
+at $\|v\|^2/\sigma^2$ (Sherman–Morrison). The effective number of windows
+along $v$,
+
+$$
+n_{\mathrm{eff}}(v) = \bar\sigma^2\, \frac{v^\top C^{-1} v}{\|v\|^2/n},
+\qquad \bar\sigma^2 = \operatorname{mean}_W C_{WW},
+$$
+
+is the number of independent windows of the same variance that would carry
+the same information. For the day-centered source ($n = 1819$), at the same
+per-window variance, a seasonal cosine counts as about 850 windows under
+short memory, 115 under short and long memory, and 50 with the recurring
+term added.
+
+The same idea by frequency: for a stationary error the likelihood's
+quadratic form is approximately (Whittle)
+
+$$
+r^\top C^{-1} r \approx \sum_j \frac{|\hat r(\omega_j)|^2}{S(\omega_j)},
+\qquad S_{v\kappa_\tau}(\omega) = \frac{2 v \tau}{1 + \omega^2\tau^2},
+$$
+
+so a misfit is cheap at the frequencies where the error's spectrum $S$ is
+large. A short exponential's spectrum is nearly flat, and a slow misfit (a
+missed seasonal amplitude) costs as much as a fast one of the same energy; a
+long term raises the spectrum at low frequencies and makes slow misfits
+cheap; the periodic term makes a misfit repeating every year cheaper still.
+SIPNET cannot match both the summer amplitude and the day-to-day variation
+of daytime NEE ("How we got here"), so the error model decides which one the
+calibration gives up.
+
+### The three NEE error models
+
+For NEE source $k$ under error model $L$,
+
+$$
+C^L_k = \Sigma^{\mathrm{obs}}_k + v^\delta_k P^L_k, \qquad
+(P^L_k)_{WW'} = \rho^L_k(t_W - t_{W'}), \qquad
+\rho^L_k = \sum_m w_m \kappa_m,\ \ w_m = \frac{\sigma_m^2}{\sum_{m'}\sigma_{m'}^2},
+$$
+
+with $v^\delta_k$ the same for every $L$, $1.43^2$ at night and $2.99^2$ by
+day (`config.NEE_DISCREPANCY_STANDARD_DEVIATION`: the first calibration's
+residual standard deviation beyond measurement error, $\hat s_k$ of "How we
+got here"), so the error models differ in memory alone
+(`model/nee_error.py`). The terms' standard deviations $\sigma_m$ and
+timescales are the maximum-likelihood fits of `run/fit_nee_discrepancy.py`
+to the first calibration's residuals, used for their shape only:
+
+| Error model | night: terms ($\sigma$, $\tau$ or $\lambda$) | day: terms | what it says |
+|---|---|---|---|
+| `short_memory` | short ($\tau$ 0.74 d) | short (1.72 d) | errors forget within days |
+| `long_memory` | short (0.60, 0.74 d), long (1.20, 57.2 d) | short (1.96, 1.72 d), long (2.30, 36.5 d) | plus season-long anomalies |
+| `recurring_bias` | short (0.69, 1.17 d), long (0.79, 64.2 d), recurring (0.72, $\lambda$ 0.437) | short (2.02, 1.78 d), long (1.68, 46.6 d), recurring (1.30, 0.208) | plus a bias repeating every year |
+
+The weights are then 0.20 and 0.80 (night) and 0.42 and 0.58 (day) for
+`long_memory`, and 0.29, 0.39, 0.32 (night) and 0.48, 0.33, 0.20 (day) for
+`recurring_bias`. The models nest: the short term of `short_memory` is
+`long_memory`'s.
+
+## The noise model
+
+$R$ is block-diagonal over the sources, no two sources' errors correlated,
+and each block is a reference covariance $C_k$ times a scale:
+
+$$
+R(s) = \operatorname{diag}\big(s_1 C_1, \dots, s_K C_K\big), \qquad
+s_k \overset{\mathrm{ind}}{\sim} \mathrm{IG}(a, b),\ a = 2,\ b = \operatorname{median}\mathrm{Gamma}(2, 1) = 1.678,
+$$
+
+so that $\operatorname{median} s_k = 1$, with 90% of the prior in $[0.35,
+4.7]$ (the noise standard deviation multiplied by 0.59 to 2.2). The scales
+are those of NEE by night, NEE by day and MODIS LAI
+(`config.NOISE_SCALED_SOURCES`); LandTrendr (6 values) and SoilGrids (1) are
+too few to inform one, and their $s_k$ is 1. A **model with fixed noise**
+holds every $s_k$ at 1, its prior median; a **model with inferred noise**
+leaves them unknown. In the code (`model/noise.py`, `models.py`) each source
+is a Gaussian noise factor whose covariance is a covariance spec,
+`ScaledSpec` over the sum of its terms, one block per site, and holding a
+scale is observing it at 1.
+
+The reference covariances:
+
+- **NEE**: $C^L_k = \Sigma^{\mathrm{obs}}_k + v^\delta_k P^L_k$, above, in
+  the window ends $t_W = w^+$.
 - **MODIS LAI**:
-
-  $$
-  R_{ii'} = \max(\sigma_i, 0.66)^2 \, \mathbf{1}[i = i'] + \sigma_\delta^2 \, c_{\tau}(t_i, t_{i'}) \, \mathbf{1}[\mathrm{year}(t_i) = \mathrm{year}(t_{i'})],
-  $$
-
-  with $\sigma_\delta = 0.5$ m² m⁻² and $\tau = 30$ days: correlated within a
-  summer, independent across summers. The 0.66 floor is the reanalysis's
-  (`data/README.md` open question 22).
-- **LandTrendr**, with $\sigma = (\sigma_j)_j$ and $y = (y_j)_j$ as vectors:
-
-  $$
-  R = \sigma \sigma^{\top} + \kappa^2 \, y y^{\top} + \sigma_\delta^2 I,
-  \qquad \kappa = \frac{0.02}{0.48},\ \sigma_\delta = 5\ \mathrm{Mg\,ha^{-1}}.
-  $$
-
-  The first term is LandTrendr's error, taken as shared by every year, since
-  its trajectories are fitted per pixel; the second is the carbon fraction's
-  uncertainty, the IPCC range 0.46-0.50 about 0.48, also shared; the third is
-  independent year-to-year discrepancy.
-- **SoilGrids**: $R = \sigma^2 + (0.25\, y)^2$, the second term for the depth
+  $C_{ii'} = \max(\sigma_i, 0.66)^2\, \mathbf 1[i = i'] + 0.5^2\,
+  e^{-|t_i - t_{i'}|/30}\, \mathbf 1[\mathrm{year}(t_i) = \mathrm{year}(t_{i'})]$:
+  the floored product spread, plus discrepancy correlated within a summer
+  (the 0.66 floor is the reanalysis's, `data/README.md` open question 22).
+- **LandTrendr**, with $\sigma = (\sigma_j)_j$ and $y = (y_j)_j$:
+  $C = \sigma\sigma^\top + \kappa^2 yy^\top + 5^2 I$, $\kappa = 0.02/0.48$:
+  LandTrendr's error and the carbon fraction's uncertainty (IPCC 0.46-0.50),
+  each shared by every year, plus independent discrepancy.
+- **SoilGrids**: $C = \sigma^2 + (0.25\, y)^2$, the second term for the depth
   and definition SIPNET's single soil pool does not share with a 0-200 cm
   stock (`data/README.md` open question 21).
+
+### Two closed forms
+
+Write $r_k = y_k - \mathcal G_k(\theta)$ and $q_k(\theta) = r_k^\top
+C_k^{-1} r_k$. With the likelihood raised to a tempering power $\varphi
+\in [0, 1]$,
+
+$$
+\mathcal N(y_k; \mathcal G_k, s_k C_k)^{\varphi}\, \mathrm{IG}(s_k; a, b)
+\propto s_k^{-(a + \varphi n_k/2) - 1} \exp\!\Big(-\frac{b + \varphi q_k/2}{s_k}\Big)
+\;\Rightarrow\;
+s_k \mid \theta, y \sim \mathrm{IG}\Big(a + \frac{\varphi n_k}{2},\ b + \frac{\varphi q_k(\theta)}{2}\Big),
+$$
+
+an exact Gibbs step that needs no SIPNET run, and
+
+$$
+p(y_k \mid \theta) = \int \mathcal N(y_k; \mathcal G_k, s C_k)\,\mathrm{IG}(s; a, b)\,ds
+= t_{2a}\Big(y_k;\ \mathcal G_k(\theta),\ \frac{b}{a} C_k\Big)
+\propto |C_k|^{-1/2}\Big(b + \frac{q_k(\theta)}{2}\Big)^{-(a + n_k/2)},
+$$
+
+the likelihood of $\theta$ with the scale integrated out, so that the
+posterior of $\theta$ alone ($D = 15$) is the target of importance
+sampling, SMC and MCMC under inferred noise. `model/likelihood.py` computes
+both from the predictions; its values equal the library's own posteriors'
+(the fixed posterior's Gaussian and `FactoredDistribution.marginalize`'s
+Student-t) to rounding.
+
+The data dominate each scale: its conditional has shape $a + n_k/2$ (402 at
+night, 912 by day, 46 for LAI), a relative standard deviation of about
+$\sqrt{2/n_k}$. So a model with inferred noise behaves much like one fixed
+at $\hat s_k \approx q_k(\hat\theta)/n_k$: it rescales each source's weight
+by $1/\hat s_k$, widening or narrowing the posterior and shifting the
+balance between NEE, LAI and the pools, but it does not change which
+timescales are cheap, which is $\rho^L$'s.
+
+An inverse-Wishart prior on a whole $C_k$ is not used: with one realization
+of $y_k$ it updates to $\mathrm{IW}(\nu + 1, \Psi + r_k r_k^\top)$, a
+rank-one change to a matrix of side up to 1819. A scale on the discrepancy
+term alone, $\Sigma^{\mathrm{obs}}_k + s_k v^\delta_k P_k$, would be more
+physical (the measurement error is known) but is not conjugate; $s_k$ here
+also scales the measurement error, about 19% of $C_{WW}$ at night and 10% by
+day.
+
+## The models
+
+A model is an NEE error model crossed with a noise treatment
+(`models.py`), six in all:
+
+$$
+\theta \sim \pi_0, \qquad
+y_k \mid \theta, s \sim \mathcal N\big(\mathcal G_k(\theta),\ s_k C^L_k\big),
+\qquad s_k \sim \mathrm{IG}(a, b) \text{ (inferred) or } s_k = 1 \text{ (fixed)},
+$$
+
+named `<error model>/<noise>`, such as `long_memory/inferred`. Every model
+shares the prior $\pi_0$ ("Parameterization and prior"), the forward map
+$\mathcal G = \mathcal H \circ \mathcal M$, and the noise of the unscaled
+sources. The held-out vector, US-xHA's NEE windows of 2021-2024, has the
+same error model with its own measurement errors.
+
+## The algorithms
+
+`algorithms/`; every run writes its samples, their weights and its cost in
+one format (`algorithms/records.py`).
+
+### EKI (fixed noise)
+
+An ensemble of $J = 100$ prior draws moves through the tempered posteriors
+$\pi_\varphi(\theta) \propto \pi_0(\theta)\, \mathcal N(y; \mathcal
+G(\theta), R)^{\varphi}$ by the perturbed-observation update
+
+$$
+\theta_j \leftarrow \theta_j + \hat C_{\theta g}\big(\hat C_{gg} + R/\Delta\varphi\big)^{-1}\big(y - \mathcal G(\theta_j) - \eta_j\big),
+\qquad \eta_j \sim \mathcal N(0, R/\Delta\varphi),
+$$
+
+each increment the largest $\Delta\varphi \le 1 - \varphi$ with
+$\mathrm{ESS}(e^{-\Delta\varphi\, \Phi_j}) \ge J/2$, until $\varphi = 1$
+(EnsKit's driver, `AdaptiveESSSchedule` and `Matheron`). The final ensemble
+is evaluated once more, for its predictions.
+
+### EKI with Gibbs noise updates (inferred noise)
+
+The tempered target is joint,
+
+$$
+\pi_\varphi(\theta, s) \propto \pi_0(\theta) \prod_k \mathrm{IG}(s_k; a, b) \prod_k \mathcal N\big(y_k; \mathcal G_k(\theta), s_k C_k\big)^{\varphi},
+$$
+
+and each stage $\varphi \to \varphi' = \varphi + \Delta\varphi$, at an
+ensemble $(\theta_j, s_j)$ with known predictions $g_j$ (Botha et al. 2023,
+*Inverse Problems* 39, 125014, with their noise step made an exact draw):
+
+1. **Increment**, from the ratio of the $s$-marginal targets: with
+   $A_k(\varphi) = a + \varphi n_k/2$ and $B_{jk}(\varphi) = b + \varphi
+   q_{jk}/2$,
+   $$
+   \log w_j = \sum_{k\ \mathrm{scaled}}\big[A_k(\varphi)\log B_{jk}(\varphi) - A_k(\varphi')\log B_{jk}(\varphi')\big] - \frac{\Delta\varphi}{2}\sum_{k\ \mathrm{unscaled}} q_{jk},
+   $$
+   $\Delta\varphi$ the largest with $\mathrm{ESS} \ge J/2$. The weights
+   are the ratio $\pi_{\varphi'}(\theta_j)/\pi_\varphi(\theta_j)$ of the
+   targets actually tempered, so they carry the $\log\det$ terms that
+   per-particle scales bring; EnsKit's schedule on whitened residuals would
+   drop them.
+2. **Theta step**, the perturbed-observation update over $\Delta\varphi$,
+   in one of two versions (below).
+3. **Evaluate** $g_j = \mathcal G(\theta_j)$: the stage's one batch of runs.
+4. **Scale step**, exact Gibbs for $\pi_{\varphi'}$:
+   $s_{jk} \sim \mathrm{IG}(a + \varphi' n_k/2,\ b + \varphi' q_{jk}/2)$.
+
+At $\varphi = 0$ the ensemble is a prior draw of both.
+
+**The two theta steps.** Write $T$ and $U$ for the centered ensembles of
+$\theta$ and $g$ over $\sqrt{J-1}$ (rows are particles), so $\hat C_{\theta
+g} = T^\top U$ and $\hat C_{gg} = U^\top U$:
+
+$$
+\textbf{common:}\ \ \theta_j' = \theta_j + T^\top U\big(U^\top U + R(\bar s)/\Delta\varphi\big)^{-1}(y - g_j - \eta_j),\ \ \eta_j \sim \mathcal N\big(0, R(\bar s)/\Delta\varphi\big),\ \ \bar s_k = \Big(\tfrac1J\textstyle\sum_j s_{jk}^{-1}\Big)^{-1};
+$$
+
+$$
+\textbf{per-particle:}\ \ \theta_j' = \theta_j + T^\top U\big(U^\top U + R(s_j)/\Delta\varphi\big)^{-1}(y - g_j - \eta_j),\ \ \eta_j \sim \mathcal N\big(0, R(s_j)/\Delta\varphi\big),
+$$
+
+the latter with the parts of $T$ and $U$ explained by $\log s_j$ first
+regressed out. Neither is exact even for a linear $\mathcal G$: for fixed
+$s$ the update carries $\pi_\varphi(\theta \mid s)$ exactly to
+$\pi_{\varphi'}(\theta \mid s)$ only with a gain built from
+$\operatorname{Cov}(\theta, g \mid s)$, and the ensemble estimates the
+marginal covariance, which by the law of total covariance exceeds
+$\mathbb E[\operatorname{Cov}(\theta \mid s)]$ by
+$\operatorname{Cov}(\mathbb E[\theta \mid s])$. The per-particle gain uses
+the right $R(s_j)$ but too large a covariance, and particles with different
+$s_j$ move by different amounts, so it tends to over-disperse; regressing
+out $\log s$ estimates the conditional covariance. The common gain ignores
+the spread of $s$ and tends to under-disperse; $\bar s$ is the mean
+precision because the gain reads $R^{-1}$. The two coincide as
+$\operatorname{Var}(s \mid y)$ shrinks, which here is fast. Both share a
+lag: after the theta step the pairs are near $\pi_\varphi(s)\,
+\pi_{\varphi'}(\theta \mid s)$, and one Gibbs draw moves them toward
+$\pi_{\varphi'}(\theta, s)$ but not all the way. Importance sampling
+afterwards corrects what remains.
+
+By the push-through identity both are computed per particle with a $J
+\times J$ solve,
+
+$$
+\theta_j' = \theta_j + T^\top\Big(I_J + \Delta\varphi \sum_k \frac{1}{s_{jk}} M_k\Big)^{-1}
+\Delta\varphi \sum_k \frac{1}{s_{jk}}\, U_k C_k^{-1} d_{jk},
+\qquad M_k = U_k C_k^{-1} U_k^\top,\ d_j = y - g_j - \eta_j,
+$$
+
+$U_k$ source $k$'s columns of $U$ and $s_{jk} = \bar s_k$ for the common
+gain.
+
+### Importance sampling and SMC after EKI
+
+EKI's ensemble is not a draw from a known density, so a density is fitted to
+it and fresh draws are corrected. The target is the model's posterior of
+$\theta$, $\pi(\theta) \propto \pi_0(\theta)\, p(y \mid \theta)$, Gaussian
+at $s = 1$ for fixed noise and the Student-t marginal for inferred noise.
+The base density is
+
+$$
+q = 0.9\; t_5\big(\hat m, 1.5\, \hat C\big) + 0.1\; \pi_0,
+$$
+
+the Student-t fitted to the seed EKI run's valid final ensemble, mixed with
+the prior, which bounds the weights by $10\,\pi/\pi_0$. **Importance
+sampling** draws $\theta_m \sim q$, $m = 1, \dots, 1000$, with
+
+$$
+\log \tilde w_m = \log\pi_0(\theta_m) + \log p(y \mid \theta_m) - \log q(\theta_m),
+\qquad W_m = \tilde w_m / \textstyle\sum_{m'} \tilde w_{m'},
+$$
+
+and reports $\mathrm{ESS} = 1/\sum W_m^2$, the PSIS $\hat k$ and
+$\log\hat Z = \log\frac1M\sum\tilde w_m$. **Tempered SMC** (500 samples)
+moves through $\pi_\beta \propto q^{1-\beta}(\pi_0 L)^\beta$ from the same
+$q$, each increment keeping the conditional ESS at half, each stage
+resampling and then moving every sample by Metropolis-Hastings (an
+independent $t_5$ or a random walk) until 99% have moved (`smc.py`).
+Under inferred noise the scales' posterior follows from the stored
+predictions with no new run,
+$p(s_k \mid y) \approx \sum_m W_m\, \mathrm{IG}(s_k; a + n_k/2, b + q_k(\theta_m)/2)$,
+and each sample carries one draw of it.
+
+### MCMC
+
+The target is the same $\pi(\theta)$. $C$ chains ($2 \times$ the workers)
+advance in lockstep, so each step is one batch of runs:
+
+$$
+\theta'_c = \theta_c + \frac{2.38}{\sqrt D} L z_c,\quad z_c \sim \mathcal N(0, I),
+\qquad \text{accepted with probability } \min\big(1, \pi(\theta'_c)/\pi(\theta_c)\big).
+$$
+
+The chains start from an importance-sampling run's draws, resampled by
+weight among those whose runs succeeded, and $LL^\top$ starts as that run's
+weighted covariance. During the first 500 steps it is re-estimated every 50
+from the second half of all chains' history, then frozen; the first 1000 of
+the 2000 steps are discarded, so the kept draws are a Metropolis chain with
+a fixed kernel. Under inferred noise each kept draw carries one draw of the
+scales from their conditional.
+
+### Cost
+
+Every run records, per phase, the SIPNET runs, the forward-map calls (each
+one batch through PyEns), the wall time, the workers and the node
+(`cost.json`). A run seeded by another (IS and SMC by EKI, MCMC by IS)
+copies its seed's phases, so its total is the whole pipeline's and the
+seed's share is separate. SIPNET runs are the primary measure, since wall
+time depends on the node; every SCC job asks for the same 28 slots.
 
 ## Parameterization and prior
 
@@ -426,29 +719,23 @@ allocation times NPP over turnover whatever it starts at.
   which a closed deciduous canopy does not reach in midsummer; likely cloud or
   quality contamination. A screening rule should come from the product's
   quality layers rather than a floor chosen by eye.
-- **The NEE discrepancy.** The best prior runs' residuals are about twice the
-  noise model's standard deviations and seasonally structured, which a
-  two-day correlation cannot represent. Revisit `config.NEE_DISCREPANCY_*`
-  after a first calibration, not against the prior: "NEE error" below does.
 
 ## Diagnostics
 
 Every run of the experiment is diagnosed the same way, so that runs compare
-directly: `run/diagnose.py --run <run>` computes the quantities below
-(`model/diagnostics.py`) and writes them as tables under the run's
-`diagnostics/`, and `figures/diagnostics.py --run <run>` draws them. A run
-is the prior predictive (`prior`) or an EKI run (`synthetic`, `observed`)
-of the current setup, `config.EKI_RUN_NAME`. $R$ is the one `config` sets
-when the diagnostics run; the script says when that differs from what the
-run's `provenance.json` records, since a run diagnosed under another $R$
-than it ran with is scored against the wrong reference.
+directly, under its own model's $R$: for inferred noise, at the posterior
+median of each scale. A run is diagnosed from its posterior predictive
+(`run/predict.py`): `run/diagnose.py --model <model> --run <run>` computes
+the quantities below (`model/diagnostics.py`) and writes them as tables
+under the run's `diagnostics/`; `--run prior` diagnoses the prior
+predictive.
 
 ### Notation
 
 A diagnosis reads an ensemble $\theta_1, \dots, \theta_J$ and its
-predictions of one observation vector: the final EKI ensemble, of the
-calibration vector from its last step and of the validation vector from the
-posterior predictive, or the prior predictive's draws. The residual of
+predictions of one observation vector, from a run's posterior predictive:
+up to 300 of its samples (drawn by weight from a weighted run), or the prior
+predictive's draws. The residual of
 observation $i$ at parameters $\theta$, the misfit of the whole vector and
 of source $k$ are
 
@@ -531,19 +818,19 @@ Four cautions come with the check:
   p-value near 0 is strong evidence against the model; a moderate one is
   weak evidence for it. On held-out data, which did not form the posterior,
   it is not conservative.
-- **The draws are approximate.** The $\theta_j$ are an EKI ensemble, which
-  approximates the posterior. The same check on synthetic data, where the
-  model is right by construction, shows whether that approximation can fail
-  the check by itself.
+- **The draws may be approximate.** EKI's $\theta_j$ approximate the
+  posterior; importance sampling, SMC and MCMC correct them, and comparing
+  the check across a model's runs shows how much the approximation moves
+  it.
 - **On the prior predictive** the same computation, with prior draws, is a
   prior predictive check, which asks whether the prior's draws could have
   produced the data, not whether the fitted model describes them.
 - **It tests consistency with $R$, and nothing more.** An $R$ that makes a
   bias cheap, such as one shared by every year, passes a fit that has the
   bias. The check is read with the coverage, the seasonal means of the
-  residuals and the weekly residuals ("NEE's residuals"), never alone: "The
-  three-term run" in "NEE error" is a calibration that passed it and missed
-  the summer uptake by half.
+  residuals and the weekly residuals ("NEE's residuals"), never alone: the
+  three-term run of "How we got here" passed it and missed the summer
+  uptake by half.
 
 ### NEE's residuals
 
@@ -677,444 +964,96 @@ and the model's error $f_W - \mathcal H_W(\mathcal M(\theta))$, common to
 both towers, cancels in $d_W$. The towers give a floor on the discrepancy,
 not an estimate of it.
 
-## NEE error
+### The held-out score
 
-The first calibration, EKI on the observed data under the single-term NEE
-discrepancy (EKI setup `single_term_discrepancy`, recorded in
-`output/eki/single_term_discrepancy/` with its `provenance.json`), tests
-the noise model, and its NEE terms fail the test. This section gives the
-diagnostics of that run and of its synthetic twin, all under the $R$ they
-ran with, says what they show is wrong, and states the revised model for
-NEE's error, how its parameters are estimated, and the fit, which
-`config.NEE_DISCREPANCY` now holds.
+The expected log predictive density of US-xHA's NEE windows of 2021-2024,
+which no calibration saw, is a proper score, so it ranks models and
+algorithms. For held-out source $k$ and the $K$ samples a predictive runs,
 
-### The first calibration's predictive check
+$$
+\mathrm{ELPD}^{\mathrm{val}}_k = \log \frac1K \sum_{m=1}^{K} \mathcal N\big(y^{\mathrm{val}}_k;\ \mathcal G^{\mathrm{val}}_k(\theta_m),\ s_{mk} C^{L,\mathrm{val}}_k\big),
+$$
 
-With $N = 2715$, $N/2 = 1357.5$ and $\sqrt{N/2} = 36.8$. Per source,
-$\Phi_k$ is the median over the $J = 100$ members, and $p$ the average of
-"The posterior predictive check":
+$s_{mk} = 1$ under fixed noise, reported per source with its Monte Carlo
+standard error (`predictive/heldout_scores.csv`).
 
-| | $n_k$ | $n_k/2$ | synthetic: $\Phi_k$ | $p$ | observed: $\Phi_k$ | $2\Phi_k/n_k$ | $p$ |
-|---|---|---|---|---|---|---|---|
-| NEE, night-centered | 800 | 400 | 419 | 0.17 | 558 | 1.39 | 1 × 10⁻¹⁰ |
-| NEE, day-centered | 1819 | 909.5 | 887 | 0.77 | 1708 | 1.88 | 1 × 10⁻⁹⁵ |
-| MODIS LAI | 89 | 44.5 | 40.5 | 0.70 | 218 | 4.89 | 1 × 10⁻⁴⁵ |
-| LandTrendr biomass | 6 | 3 | 1.3 | 0.79 | 7.6 | 2.52 | 0.04 |
-| SoilGrids soil carbon | 1 | 0.5 | 0.2 | 0.60 | 0.4 | 0.72 | 0.41 |
-| all sources | 2715 | 1357.5 | 1343 to 1361 | 0.59 | 2476 to 2509 | 1.84 | 1 × 10⁻¹³⁵ |
+### Comparing algorithms
 
-The last row's $\Phi$ is the range over members. On synthetic data every
-source passes, with p-values near $\tfrac12$ as the first caution leads one
-to expect, and the ensemble's misfits bracket the truth's, 1344: the
-approximation does not fail the check by itself. On the observed data the
-check fails, overall and for NEE by day and night and for LAI, by margins no
-conservativeness or approximation accounts for: every member's misfit is
-about 31 standard deviations above $N/2$, and the whitened residuals
-$R^{-1/2}\rho(\theta_j)$ have mean square 1.82 to 1.85 where the model says
-1. On the held-out tower, US-xHA in 2021-2024, the day-centered windows fail
-too (943 windows in all; by day $2\Phi_k/n_k = 1.86$, $p = 1 \times
-10^{-31}$), and the night-centered ones narrowly ($1.18$, $p = 0.02$).
+Against a reference run of the same model (MCMC, else SMC), with mean
+$m^{\mathrm{ref}}$ and covariance $\Sigma^{\mathrm{ref}}$: per parameter,
+in natural units, the mean error $|m_i - m^{\mathrm{ref}}_i|/\sigma^{\mathrm{ref}}_i$
+and the ratio $\sigma_i/\sigma^{\mathrm{ref}}_i$; over all of $\theta$, the
+Gaussian Kullback-Leibler divergence
 
-So no $\theta$ the calibration reached makes the residuals as small as $R$
-says they are. For the likelihood, "$R$ is too small" and "SIPNET cannot
-reproduce the data at any such $\theta$" are the same statement; the
-discrepancy $\Sigma^\delta$ is where it is accounted for. One qualification:
-every EKI iterate lies in the affine span of the initial ensemble, so a
-$\theta$ outside it could fit better; an MCMC run on the same problem would
-settle it. NEE by day and LAI fail by the most; this section is about NEE,
-whose windows are 96% of $y$.
+$$
+\mathrm{KL}\big(\mathcal N(m^{\mathrm{ref}}, \Sigma^{\mathrm{ref}}) \,\|\, \mathcal N(m, \Sigma)\big)
+= \tfrac12\Big[\operatorname{tr}(\Sigma^{-1}\Sigma^{\mathrm{ref}}) + (m - m^{\mathrm{ref}})^\top \Sigma^{-1}(m - m^{\mathrm{ref}}) - D + \log\frac{|\Sigma|}{|\Sigma^{\mathrm{ref}}|}\Big];
+$$
 
-### What the residuals show
+beside them the cost ("The algorithms", "Cost"), and for importance sampling
+and SMC the ESS, $\hat k$ and $\log\hat Z$.
 
-"NEE's residuals" in "Diagnostics", of the first calibration.
 
-**Size.** In µmol m⁻² s⁻¹ for standard deviations and their squares for
-variances:
+## How we got here
 
-| Source | $\widehat{\operatorname{Var}}(\hat\rho_W)$ | $\bar v_k$ | $\hat s_k$ | $\sigma_\delta$ of the run |
-|---|---|---|---|---|
-| night-centered | 2.51 | 0.47 | 1.43 | 1.0 |
-| day-centered | 10.01 | 1.05 | 2.99 | 1.8 |
+Three EKI calibrations with fixed $R$, before the present models, each
+recorded with its `provenance.json`, showed why the NEE error model is a
+choice the experiment varies. Their numbers are the evidence for the error
+models above.
 
-**A recurring seasonal part.**
+**The first calibration failed its check.** Its NEE discrepancy was a single
+exponential term, $\sigma_\delta$ of 1.0 at night and 1.8 by day over
+$\tau = 2$ days. On the observed data every member's misfit was about 31
+standard deviations above $N/2$ ($2\Phi/N = 1.84$, $p \approx 10^{-135}$),
+while its synthetic twin passed: no $\theta$ EKI reached made the residuals
+as small as $R$ said. The residuals, in µmol m⁻² s⁻¹:
 
-| Source | mean of $\hat\rho_W$, DJF / MAM / JJA / SON | recurring share of the variance | year-to-year correlation, median (range) |
-|---|---|---|---|
-| night-centered | 0.02 / 0.84 / 1.38 / 0.88 | 0.18 | 0.37 (0.11 to 0.54) |
-| day-centered | −0.27 / −1.40 / −1.94 / −0.46 | 0.10 | 0.36 (0.23 to 0.60) |
-
-NEE is positive to the atmosphere, so from spring to autumn the observed
-night respiration exceeds the model's and the observed daytime uptake
-exceeds the model's, the same way in every year.
-
-**Long memory.** The residuals' autocorrelation, with and without the
-recurring part, against the correlation the run's $R$ implies:
-
-| Lag $\ell$ (days) | 1 | 2 | 5 | 10 | 30 |
+| Source | $\widehat{\operatorname{Var}}(\hat\rho)$ | mean measurement variance | $\hat s_k$ | mean residual DJF / MAM / JJA / SON | autocorrelation at 1, 5, 30 days |
 |---|---|---|---|---|---|
-| night-centered, $\hat\rho$ | 0.62 | 0.54 | 0.54 | 0.48 | 0.34 |
-| night-centered, $\hat\rho^{\mathrm{rem}}$ | 0.50 | 0.36 | 0.33 | 0.35 | 0.20 |
-| night-centered, $c^R(\ell)$ | 0.41 | 0.25 | 0.06 | 0.005 | 0.000 |
-| day-centered, $\hat\rho$ | 0.63 | 0.53 | 0.39 | 0.30 | 0.12 |
-| day-centered, $\hat\rho^{\mathrm{rem}}$ | 0.57 | 0.46 | 0.31 | 0.22 | 0.13 |
-| day-centered, $c^R(\ell)$ | 0.46 | 0.28 | 0.06 | 0.005 | 0.000 |
+| night-centered | 2.51 | 0.47 | 1.43 | 0.02 / 0.84 / 1.38 / 0.88 | 0.62, 0.54, 0.34 |
+| day-centered | 10.01 | 1.05 | 2.99 | −0.27 / −1.40 / −1.94 / −0.46 | 0.63, 0.39, 0.12 |
 
-The correlation drops over the first day or two and then decays over weeks:
-at least two timescales, where the run's term has one of two days.
+The error was about twice the model's, biased the same way every spring to
+autumn (observed night respiration and day uptake both above the model's),
+and correlated over weeks where $R$'s correlation vanished within a week.
+The two towers, US-Ha1 and US-xHA in one pixel, put a floor of 0.63 and 1.30
+on the representativeness error, a fifth of $\hat s_k^2$: the rest is the
+model's.
 
-**Night and day.** The two sources' residuals of one day correlate at 0.10
-(643 days), and a day's with the next night's at 0.17 (631 days): weakly,
-so the two blocks stay independent.
-
-**Why the structure matters, not only the size.** A shift of the residuals
-along a direction $v$ (the shape a parameter such as $Q_{10}$ changes the
-seasonal cycle by) is informed by $v^{\top} R^{-1} v$. If the error has a
-component along $v$ of variance $\sigma^2$, $R = A + \sigma^2 v v^{\top}$ with
-$A$ positive definite and $v$ of unit norm, then by the Sherman-Morrison
-formula
-
-$$
-v^{\top} R^{-1} v = \frac{a}{1 + \sigma^2 a} < \frac{1}{\sigma^2},
-\qquad a = v^{\top} A^{-1} v,
-$$
-
-however many windows there are. An error that recurs every year, or persists
-for weeks, bounds the evidence the data carry in its directions. The run's
-$R$ has no such component: its correlation vanishes within about a week, so
-each week, and each year's repeat of the same seasonal bias, counts as new
-evidence, and the evidence grows with $n_k$. That is how nine springs of one
-structural bias can move $Q_{10}$ to 1.0 and the optimum photosynthesis
-temperature to 30 °C, both far outside their priors.
-
-**A data point to review.** Five day-centered windows of January-February
-2015 hold observed NEE of 9.7 to 17 µmol m⁻² s⁻¹, where the season's
-other windows are near 1-2 and the model's 1.5; they are measured windows,
-not gap-filled ones. They are kept: they are a few percent of the
-day-centered residuals' sum of squares, and whether to screen them is a
-question about the data, not the noise model.
-
-### What the two towers show
-
-"The two towers" in "Diagnostics". Over the windows both towers keep, which
-fall in 2019-2020 only:
-
-| Source | windows | $\widehat{\operatorname{Var}}(d_W)$ | mean $\sum_i \big(\sigma^{\mathrm{obs},(i)}_W\big)^2$ | $\hat\sigma_r$ | $\hat\sigma_r^2 / \hat s_k^2$ |
-|---|---|---|---|---|---|
-| night-centered | 52 | 1.22 | 0.42 | 0.63 | 0.20 |
-| day-centered | 135 | 5.12 | 1.73 | 1.30 | 0.19 |
-
-The difference is also systematic: by day in July-September its mean is
-$+1.75$ µmol m⁻² s⁻¹ (47 windows), US-xHA measuring more uptake than
-US-Ha1, so part of $r^{(i)}$ is a seasonal bias of each tower. By the last
-column, the towers account for about a fifth of the non-measurement
-variance; the rest is the model's, which the towers cannot see.
-
-### A revised error model for NEE
-
-The measurement error $\Sigma^{\mathrm{obs}}_k$ stays as it is. The
-discrepancy of each NEE source becomes the sum of three terms, one per
-feature above:
-
-$$
-\big(\Sigma^\delta_k\big)_{WW'} =
-\sigma_{\mathrm s}^2 \, e^{-|t_W - t_{W'}| / \tau_{\mathrm s}}
-+ \sigma_{\ell}^2 \, e^{-|t_W - t_{W'}| / \tau_{\ell}}
-+ \sigma_{\mathrm p}^2 \exp\!\Big(-\frac{2 \sin^2\!\big(\pi (t_W - t_{W'}) / P\big)}{\lambda^2}\Big),
-\qquad P = 365.25 \text{ days},
-$$
-
-each term's parameters separate for the two sources, which stay independent
-of each other:
-
-- a **short** term, $\tau_{\mathrm s}$ of order a day: the weather-scale
-  errors behind the drop in correlation over the first lags;
-- a **long** term, $\tau_\ell$ of order weeks: the anomalies of one year,
-  such as the timing of leaf-on or a dry spell, that persist but do not
-  recur;
-- a **recurring** term, periodic in the day of the year: the seasonal bias
-  that repeats every year. $\lambda$ sets its width in the season (for small
-  $\lambda$, the correlation falls to $e^{-1/2}$ at a separation of about
-  $\lambda P / (2\pi)$ days of the year); two windows a whole number of years
-  apart are perfectly correlated. Its Fourier expansion has a constant term,
-  so it also carries a bias common to every season.
-
-The parameters of source $k$ are
-$\phi_k = (\sigma_{\mathrm s}, \tau_{\mathrm s}, \sigma_\ell, \tau_\ell,
-\sigma_{\mathrm p}, \lambda)$. It is compared with two variants that bracket
-it: the first calibration's single term, the special case $\sigma_\ell = \sigma_{\mathrm
-p} = 0$, refitted; and a recurring term that drifts from year to year, its
-periodic factor multiplied by $e^{-|t_W - t_{W'}|/\tau_{\mathrm p}}$ with
-$\tau_{\mathrm p}$ in years, of which the model above is the limit
-$\tau_{\mathrm p} \to \infty$.
-
-The two NEE blocks stay independent of each other: the night and day
-windows of one day could share a respiration error, but their residuals
-correlate at only 0.10 ("What the residuals show").
-
-### Estimating the parameters
-
-$R$ must be fixed for EKI, and fixed alike for MCMC so the two target one
-posterior, so $\phi_k$ is estimated before the calibration that uses it, by
-maximum marginal likelihood (type-II maximum likelihood) on the residuals of
-a first calibration, as follows.
-
-1. **Residuals.** From the current calibration's final ensemble,
-   $\hat\rho_k = y_k - \hat g_k$ for each NEE source.
-2. **Fit.** With $R_k(\phi) = \Sigma^{\mathrm{obs}}_k + \Sigma^\delta_k(\phi)$,
-   maximize the Gaussian log likelihood of the residuals,
-
-   $$
-   \hat\phi_k = \arg\max_{\phi} \; \ell_k(\phi),
-   \qquad
-   \ell_k(\phi) = -\tfrac12\, \hat\rho_k^{\top} R_k(\phi)^{-1} \hat\rho_k - \tfrac12 \log\det R_k(\phi) - \tfrac{n_k}{2} \log 2\pi ,
-   $$
-
-   over the logarithms of the parameters, by L-BFGS-B with the gradient from
-   JAX, within bounds on each (`run/fit_nee_discrepancy.py`'s `BOUNDS`),
-   from the starts of its `VARIANTS` (three for the three-term model, their
-   standard deviations fractions of $\hat s_k$ and their timescales from
-   half a day to two months), keeping the best. Each evaluation is one Cholesky
-   factorization of $R_k$, of side $n_k \le 1819$; no SIPNET run is needed.
-   The residuals are modeled as zero-mean, their bias carried by the
-   recurring term, whose constant Fourier term is a bias common to every
-   season.
-3. **The tower floor.** The total discrepancy variance of each source is at
-   least the towers' estimate of the representativeness error alone,
-
-   $$
-   \sigma_{\mathrm s}^2 + \sigma_\ell^2 + \sigma_{\mathrm p}^2 \;\ge\; \hat\sigma_r^2 ,
-   $$
-
-   checked at $\hat\phi_k$. With $\hat s_k$ five times $\hat\sigma_r$ in
-   variance, it is not expected to bind; if it does, the fit is redone with
-   it as a constraint.
-4. **The check on held-out data.** $\hat\phi_k$ is fitted to the residuals of
-   the data the calibration saw, so it is judged on data neither saw: the
-   validation vector, US-xHA in 2021-2024, with $R^{\mathrm{val}}_k$ built
-   from $\hat\phi_k$ and US-xHA's own measurement errors. The posterior
-   predictive check of "Diagnostics", applied to the validation vector,
-   should pass:
-   $2\,\Phi^{\mathrm{val}}_k / n^{\mathrm{val}}_k$ near 1, within about
-   $\sqrt{2 / n^{\mathrm{val}}_k}$, and the predictive intervals covering at
-   their nominal rates. On held-out data the check is not conservative, since
-   those data did not form the posterior. The three variants are ranked by
-   the held-out log predictive density, over the members of the calibration
-   whose residuals were fitted,
-
-   $$
-   \log p\big(y^{\mathrm{val}} \mid y\big) \approx \log \frac1J \sum_{j=1}^{J} \mathcal N\big(y^{\mathrm{val}};\, G^{\mathrm{val}}(\theta_j),\, R^{\mathrm{val}}\big),
-   $$
-
-   and by $\ell_k(\hat\phi_k)$ with a penalty for the parameters added
-   (AIC), which have to agree for the choice to stand.
-5. **One iteration.** The residuals of step 1 came from a calibration with
-   the old $R$. EKI is rerun with $R(\hat\phi)$, and steps 1-2 repeated on its
-   residuals; if every $\hat\sigma$ and $\hat\tau$ moves by less than about
-   10%, $\hat\phi$ stands, and otherwise the loop runs once more. The loop
-   is not safe on its own: a term that can absorb a bias the parameters
-   should explain lets the calibration leave the bias in the residuals, the
-   refit then asks for more of the term, and the discrepancy grows with each
-   round. Each round is therefore checked on the residuals themselves, their
-   seasonal means and coverage, before its fit is adopted ("The three-term
-   run").
-
-This fits the discrepancy to the same data the calibration then conditions
-on, which the held-out check guards against. The principled version infers
-$\phi$ with $\theta$, $p(\theta, \phi \mid y) \propto p(y \mid \theta, \phi)
-\, p(\theta)\, p(\phi)$: given the predictions $G(\theta)$, the likelihood's
-dependence on $\phi$ costs only the Cholesky factorizations above, so an
-MCMC sampler can update $\phi$ at no extra SIPNET cost. EKI conditions on a
-fixed $R$ and cannot. That is a natural part of the MCMC-against-EKI
-comparison.
-
-What this changes and what it does not: it makes $R$ describe the errors
-the residuals show, so the posterior's width reflects them and a recurring
-bias counts as one piece of evidence rather than nine. It does not remove
-the bias. The model's spring respiration and its abrupt leaf-on, against
-the observed gradual onset of uptake, remain structural errors of SIPNET or
-of its configuration (see "Recommended, not adopted").
-
-### The fit
-
-`run/fit_nee_discrepancy.py --data observed`, on the first
-calibration's residuals, recorded in its run directory as
-`nee_discrepancy_fit.csv`. The held-out columns score each fitted $R$ on the
-first calibration's posterior predictive of US-xHA: they rank the error
-models given that one posterior, not posteriors formed under each.
-
-| Source | variant | $k$ | $\ell_k(\hat\phi_k)$ | AIC | held-out $\log p(y^{\mathrm{val}} \mid y)$ | held-out $2\Phi/n$ |
-|---|---|---|---|---|---|---|
-| night-centered | single | 2 | −1239.6 | 2483.1 | −422.1 | 1.11 |
-| | two-term | 4 | −1197.5 | 2403.0 | −408.3 | 0.92 |
-| | three-term | 6 | −1184.2 | 2380.3 | −399.8 | 0.88 |
-| | drifting | 7 | −1181.1 | 2376.2 | −401.3 | 0.92 |
-| day-centered | single | 2 | −4144.2 | 8292.3 | −1359.4 | 1.14 |
-| | two-term | 4 | −4094.8 | 8197.5 | −1351.5 | 1.15 |
-| | three-term | 6 | −4073.0 | 8158.1 | −1335.5 | 1.12 |
-| | drifting | 7 | −4070.9 | 8155.9 | −1334.6 | 1.12 |
-
-The refitted single term is $\sigma_\delta = 1.39$ over $\tau = 13.7$ days at
-night and 3.07 over 5.5 days by day: larger and longer than the first
-calibration's, and still far worse than three terms. Against it the
-three-term model gains 55 and 71 in log likelihood for four parameters, and
-22 and 24 nats on the held-out tower; the two criteria agree. Between the
-three-term model and the drifting one they do not separate: at night AIC
-favors the drifting variant by 4.2 and the held-out density the three-term
-one by 1.4 nats, by day the drifting variant by 2.2 and 0.9, and its fitted
-drift is slow, $\tau_{\mathrm p}$ of 7.9 years at night and 4.7 by day. The
-three-term model was adopted for both sources, the simpler of two the data
-do not tell apart, and run as setup `three_term_discrepancy`. Every fit holds
-the towers' floor: the three-term discrepancy's standard deviation at one
-window is 1.28 at night and 2.93 by day, against $\hat\sigma_r$ of 0.63 and
-1.30. The two-term variant, the short and long terms without the recurring
-one, was fitted after that run, by `--setup single_term_discrepancy`: it
-fits the residuals less well than three terms and better than one, and is
-the one adopted now, for the reason below.
-
-### The three-term run
-
-EKI under the three-term $R$ (setup `three_term_discrepancy`, observed data)
-passed the posterior predictive check and gave the summer uptake up:
-
-| | first calibration | three-term run |
-|---|---|---|
-| all sources, $2\Phi/N$ ($p$) | 1.84 ($10^{-135}$) | 1.05 (0.03) |
-| NEE day, $2\Phi_k/n_k$; coverage | 1.88; 0.74 | 0.86; 0.67 |
-| NEE night, $2\Phi_k/n_k$; coverage | 1.39; 0.83 | 1.10; 0.88 |
-| held-out tower, $2\Phi/n$ | 1.61 | 0.85 |
-| NEE day, residual variance; non-measurement sd | 10.0; 2.99 | 20.0; 4.36 |
-| NEE day, mean residual MAM / JJA / SON | −1.40 / −1.94 / −0.46 | −2.23 / −8.91 / −3.02 |
-| NEE day, recurring share of the residual variance | 0.10 | 0.65 |
-
-The posterior predictive puts summer daytime NEE near −6 µmol m⁻² s⁻¹
-where the weekly observed means reach −17. The posterior moved to less
-uptake: photosynthetic capacity 182-228 (the first calibration's 255-283),
-half-saturation light 23-37 (prior 90% 6-26), the foliar respiration share
-0.028-0.054 (prior 0.051-0.164), and the wood respiration rate at 10 °C
-0.026-0.044 (prior 0.006-0.030). Soil $Q_{10}$ moved off 1.0 (0.97-1.61) and
-the optimum photosynthesis temperature stayed out of its prior (28.3-30.3
-°C). The refit on its residuals kept the night terms and asked, by day, for
-a recurring standard deviation of 4.56 over a width $\lambda$ of 0.95, 3.5
-and 4.6 times the run's.
-
-The recurring term is perfectly correlated across years, so by the argument
-of "Why the structure matters" the evidence against a bias that repeats in
-every summer is capped at about $1/\sigma_{\mathrm p}^2$ in its direction,
-however many summers there are. That is what the term was meant to do for
-the first calibration's small recurring bias; it also made a large one
-cheap, and the calibration took it, trading the summer uptake for the rest
-of the fit. The refit then read the larger bias as a larger recurring term,
-the runaway step 5 now warns of. This is the confounding of a discrepancy
-with the parameters (Brynjarsdóttir and O'Hagan 2014, *Inverse Problems* 30,
-114007): a discrepancy flexible enough to absorb what the parameters should
-explain needs an informative prior, or it takes the signal.
-
-The recurring term is therefore dropped. The long term remains: with
-$\tau_\ell$ of 36-57 days it correlates the windows of one season but not
-the same season of different years, so each year's miss of the summer
-uptake counts as its own evidence. The run under the two-term $R$ is setup
-`two_term_discrepancy`. It also gave most of the summer uptake up, which
-showed that the recurring term was not the cause: "The error model and the
-fast-slow trade-off" below is what the three runs show together. The
-principled form, a discrepancy inferred with $\theta$ under an informative
-prior on its parameters, is for MCMC, which can update $\phi$ at no extra
-SIPNET cost.
-
-## The error model and the fast-slow trade-off
-
-The three EKI setups differ only in the NEE discrepancy of $R$: the same
-prior, observations, forward model and algorithm (100 members, the
-perturbed-observation update, the adaptive ladder to $\beta = 1$). They are
-therefore an experiment on the error model. `figures/comparison.py` draws
-them (`output/figures/comparison/`).
-
-| Setup | NEE discrepancy, per source |
-|---|---|
-| `single_term_discrepancy` | short term, $\sigma_\delta$ 1.0 (night) and 1.8 (day) over 2 days |
-| `three_term_discrepancy` | short, long and recurring terms, fitted to the first setup's residuals |
-| `two_term_discrepancy` | short and long terms, fitted to the first setup's residuals |
-
-### What changes
-
-**The summer uptake.** The first setup's posterior predictive follows the
-seasonal cycle of daytime NEE; the other two fall well short of the summer
-uptake (`comparison_seasonal_cycles`). Night NEE differs little.
+**Fitted discrepancies, and the trade-off they exposed.** Short, long and
+recurring terms were fitted by maximum likelihood to those residuals
+(`run/fit_nee_discrepancy.py`; three terms beat one by 55 and 71 in log
+likelihood and by 22 and 24 nats on the held-out tower). Calibrating under
+the three-term fit (setup `three_term_discrepancy`) and the two-term fit
+(`two_term_discrepancy`) then passed the predictive check ($2\Phi/N$ 1.05
+and 1.08) and gave up most of the summer daytime uptake:
 
 | | one term | three terms | two terms |
 |---|---|---|---|
 | day residual, mean over June-August | −1.9 | −8.9 | −7.4 |
-| day residual, $\operatorname{Var}(\hat\rho^{\mathrm{slow}})$ | 3.8 | 16.5 | 11.9 |
-| day residual, $\operatorname{Var}(\hat\rho^{\mathrm{fast}})$ | 5.7 | 3.7 | 3.9 |
-| day, $\operatorname{corr}(y^{\mathrm{fast}}, \hat g^{\mathrm{fast}})$ | 0.41 | 0.45 | 0.46 |
-| day, $\operatorname{sd}(\hat g^{\mathrm{fast}}) / \operatorname{sd}(y^{\mathrm{fast}})$ | 1.09 | 0.68 | 0.76 |
-| night, $\operatorname{sd}(\hat g^{\mathrm{fast}}) / \operatorname{sd}(y^{\mathrm{fast}})$ | 0.24 | 0.18 | 0.18 |
-| all sources, $2\Phi/N$ under the setup's own $R$ | 1.84 | 1.05 | 1.08 |
-| day coverage, calibration / held-out tower | 0.74 / 0.82 | 0.67 / 0.70 | 0.72 / 0.74 |
+| day residual, $\operatorname{Var}(\hat\rho^{\mathrm{slow}})$ / $\operatorname{Var}(\hat\rho^{\mathrm{fast}})$ | 3.8 / 5.7 | 16.5 / 3.7 | 11.9 / 3.9 |
+| day, $\operatorname{sd}(\hat g^{\mathrm{fast}})/\operatorname{sd}(y^{\mathrm{fast}})$ | 1.09 | 0.68 | 0.76 |
+| photosynthetic capacity $P$, median | 268 | 207 | 221 |
+| half-saturation light, median | 15.4 | 29.0 | 25.7 |
 
-**The parameters.** Median and 90% interval (`comparison_parameters`):
+One parameter set does not give SIPNET both the observed summer uptake and
+the observed day-to-day variation of daytime NEE. Short memory weighs slow
+and fast errors alike, and the calibration fits the seasonal amplitude at
+the cost of daily NEE that varies more than the observed; long or recurring
+memory makes slow errors cheap, and the calibration damps the light
+response to fit the fast variation, at the cost of the summer mean. The
+recurring term, perfectly correlated across years, made a shared summer
+bias nearly free, and the refit on that run's residuals asked for 3.5 times
+more of it: a discrepancy flexible enough to absorb what the parameters
+should explain takes the signal (Brynjarsdóttir and O'Hagan 2014, *Inverse
+Problems* 30, 114007). In every setup, the model's day-to-day variation of
+night NEE stayed a fifth of the observed and the optimum photosynthesis
+temperature near 29-30 °C, far above its prior: properties of SIPNET's
+configuration at the site, not of $R$.
 
-| Parameter | prior | one term | three terms | two terms |
-|---|---|---|---|---|
-| photosynthetic capacity $P$ | 257 (157-399) | 268 (255-283) | 207 (182-228) | 221 (198-240) |
-| half-saturation light | 12.0 (6.0-26.1) | 15.4 (14.1-17.3) | 29.0 (23.0-36.7) | 25.7 (21.2-30.5) |
-| foliar respiration share $\rho$ | 0.094 (0.051-0.164) | 0.069 (0.060-0.080) | 0.040 (0.028-0.054) | 0.041 (0.029-0.053) |
-| wood respiration at 10 °C | 0.014 (0.006-0.030) | 0.020 (0.014-0.025) | 0.037 (0.026-0.044) | 0.033 (0.025-0.040) |
-| optimum photosynthesis temperature | 21.9 (18.6-25.8) | 30.2 (29.8-30.7) | 29.1 (28.3-30.3) | 29.6 (28.7-30.6) |
-| soil $Q_{10}$ | 1.91 (1.41-2.83) | 1.00 (0.92-1.09) | 1.19 (0.97-1.61) | 1.07 (0.90-1.35) |
-
-### What it shows
-
-**A trade-off within SIPNET.** One parameter set does not give SIPNET both
-the observed summer uptake and the observed day-to-day variation of daytime
-NEE. The first setup's posterior reaches the summer uptake with a high
-capacity and a low half-saturation light, and its daily NEE then varies
-more than the observed ($\operatorname{sd}$ ratio 1.09) and misses more of
-the day-to-day variation ($\operatorname{Var}(\hat\rho^{\mathrm{fast}})$ 5.7).
-The other two damp the light response, a lower capacity and a higher
-half-saturation light, and fit the day-to-day variation better (3.7 to 3.9)
-at the cost of the summer mean. Scored under one $R$, the two-term one, the
-first setup's posterior misfits the daytime windows by 998 and the two-term
-setup's by 806, the latter's lower prior density notwithstanding (median
-$-\log$ prior 14.8 against 17.2): under that $R$, damping the light response
-is the better fit.
-
-**The error model chooses the point on the trade-off.** A discrepancy with
-only a short timescale weighs a slow error and a fast one alike, window by
-window, and the calibration fits the seasonal amplitude. A discrepancy with
-a long or a recurring term makes a slow error cheaper, by the argument of
-"Why the structure matters", and the calibration fits the fast variation
-instead. Neither choice is wrong about the residuals; each is a statement
-of which features of the data the calibration should reproduce, and it
-moves the parameters that carry physical meaning (capacity, light response,
-respiration) by more than their posterior widths.
-
-**So $R$ cannot be fitted to the calibration's residuals and adopted.** Each
-setup's residuals carry the trade-off it chose, and a discrepancy fitted to
-them grows the part it made cheap. The refits on the three-term and
-two-term runs' residuals asked, by day, for a recurring term 3.5 times the
-run's (1.30 to 4.56) and a long term twice the run's over five times the
-timescale (2.30 over 36 days to 4.54 over 180), while the night terms held.
-Nor does the posterior predictive check arbitrate: it tests consistency with
-the $R$ the calibration ran under, and passes both kinds of fit that the
-lenient $R$ allows.
-
-**What no error model changes.** In every setup the model's day-to-day
-variation of night NEE is a fifth of the observed (sd ratio 0.18 to 0.24),
-and the optimum photosynthesis temperature sits near 29-30 °C, far above its
-prior. These are properties of SIPNET's configuration at the site, the
-respiration's response to daily weather and the photosynthesis temperature
-curve, not of $R$.
-
-### Consequences for the calibration
-
-- $R$ is part of the calibration's specification, stated for what the
-  calibration is to reproduce, and recorded with every result (each run's
-  `provenance.json` holds `config.NEE_DISCREPANCY`).
-- The comparison of MCMC with EKI is made under one fixed $R$, so that the
-  two differ by the algorithm alone; which $R$ is a choice to make and state
-  before the comparison runs.
-- A discrepancy inferred jointly with $\theta$ needs an informative prior on
-  its timescales and sizes, since the data alone move it towards whichever
-  features the parameters cannot fit.
-- The diagnostics report the slow and fast parts for every run, so the
-  trade-off is visible for any $R$ ("Slow and fast" in "Diagnostics").
+**Consequences, which the present design follows.** $R$ is part of the
+model's specification, stated for what the calibration should reproduce,
+and is not refitted to a calibration's residuals. The experiment therefore
+compares error models of one per-window size and different memory, takes
+their shapes from the first calibration's fits, and lets the data set the
+size only through a scale with a prior.

@@ -47,7 +47,8 @@ from sipnet_calibration.io import file_md5, utc_timestamp
 from sipnet_calibration.probability import Posterior
 
 from .. import config
-from ..model import calibration, prior
+from ..model import prior
+from ..models import SIMULATOR_NAME
 
 __all__ = [
     "CALIBRATION_FILE_NAMES",
@@ -88,7 +89,7 @@ def write_provenance(path: Path, *, input_files: Iterable[Path]) -> None:
 
 def write_calibration(directory: Path, posterior: Posterior) -> None:
     """Write the calibration's record, :data:`CALIBRATION_FILE_NAMES`, to *directory*."""
-    simulator = posterior.simulators[calibration.SIMULATOR_NAME]
+    simulator = posterior.simulators[SIMULATOR_NAME]
     tables = (
         posterior.model.describe(),
         posterior.describe(),

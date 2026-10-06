@@ -1,30 +1,37 @@
 """The noise model: each observation source's error as a Gaussian noise factor.
 
-``MODEL.md``, "Noise model", states the model exactly; this module declares
-it. Source :math:`k`'s observed values :math:`y_k` are Gaussian about its
-prediction :math:`m_k`, independent of every other source's,
+``MODEL.md``, "The noise model", states the model exactly; this module
+declares it. Source :math:`k`'s observed values :math:`y_k` are Gaussian
+about its prediction :math:`m_k`, independent of every other source's,
 
 .. math::
 
-    y_k \\mid m_k \\sim \\mathcal N(m_k,\\ R_k), \\qquad
-    R_k = \\Sigma^{\\mathrm{obs}}_k + \\Sigma^{\\delta}_k,
+    y_k \\mid m_k \\sim \\mathcal N(m_k,\\ s_k C_k), \\qquad
+    C_k = \\Sigma^{\\mathrm{obs}}_k + \\Sigma^{\\delta}_k, \\qquad
+    s_k \\sim \\mathrm{IG}(a, b),\\ \\operatorname{median} s_k = 1,
 
-so that :math:`R = \\operatorname{diag}(R_1, \\dots, R_K)`. Each
-:math:`R_k` is a covariance spec, the sum of the measurement error
+so that :math:`R = \\operatorname{diag}(s_1 C_1, \\dots, s_K C_K)`, the scale
+:math:`s_k` present for ``config.NOISE_SCALED_SOURCES`` only. Each
+:math:`C_k` is a covariance spec, the sum of the measurement error
 :math:`\\Sigma^{\\mathrm{obs}}_k`, built from the source's standard
 deviations (``model/observations.py``), and the model discrepancy
-:math:`\\Sigma^{\\delta}_k`, whose values are ``config``'s; a dated source's
-is one block per site. The functions below compute each term from the
+:math:`\\Sigma^{\\delta}_k`, whose values are ``config``'s and, for NEE, the
+error model's (``model/nee_error.py``); a dated source's is one block per
+site. A model with fixed noise holds every :math:`s_k` at 1
+(``models.py``). The functions below compute each term from the
 source's constants
 (:meth:`~sipnet_calibration.observation.ObservationVector.constants`), with
 times in seconds since the epoch. Nothing reads a parameter, so ``R`` is
 built and factored once, when the posterior is conditioned
-(``model/calibration.py``).
+(``models.py``).
 
 Functions
 ---------
-:func:`noise_factors`
-    One noise factor per source of an observation vector.
+:func:`noise_factors`, :func:`noise_scale_factors`
+    One noise factor per source of an observation vector, under an NEE
+    error model; the scales' prior factors.
+:func:`noise_scale_name`, :func:`noise_scale_prior_scale`
+    A scale's component name; the prior's ``b``, which puts its median at 1.
 :func:`noise_covariance_blocks`, :func:`noise_standard_deviations`
     A posterior's ``R_k``, per source, and the square roots of their
     diagonals as labeled values.
@@ -37,14 +44,16 @@ Usage
 -----
 ::
 
-    from experiments.single_site_mcmc_vs_eki.model import calibration, noise
-    posterior = calibration.calibration_posterior()
-    noise.noise_summary(posterior, calibration.calibration_observation_vector())
+    from experiments.single_site_mcmc_vs_eki import models
+    from experiments.single_site_mcmc_vs_eki.model import noise, observations
+    posterior = models.fixed_posterior(models.Model.parse("long_memory/fixed"))
+    noise.noise_summary(posterior, observations.calibration_observation_vector())
 """
 
 from functools import partial
 
 import jax.numpy as jnp
+import scipy.stats
 import numpy as np
 import pandas as pd
 import xarray as xr
@@ -57,13 +66,17 @@ from sipnet_calibration.probability import (
     DenseSpec,
     DiagonalSpec,
     FactorSpec,
+    POSITIVE,
+    ArraySpec,
     LabeledValues,
     Posterior,
+    ScaledSpec,
     SumSpec,
+    inverse_gamma,
 )
 
 from .. import config
-from .discrepancy import NEEDiscrepancy
+from .nee_error import NEE_ERROR_MODELS, Memory
 
 __all__ = [
     "LANDTRENDR_DISCREPANCY_VARIANCE",
@@ -75,6 +88,9 @@ __all__ = [
     "nee_discrepancy",
     "noise_covariance_blocks",
     "noise_factors",
+    "noise_scale_factors",
+    "noise_scale_name",
+    "noise_scale_prior_scale",
     "noise_standard_deviations",
     "noise_summary",
     "shared_measurement_error",
@@ -89,18 +105,48 @@ SECONDS_PER_DAY = 86_400.0
 LANDTRENDR_DISCREPANCY_VARIANCE = "discrepancy_variance"
 
 
-def noise_factors(observation_vector: ObservationVector) -> list[FactorSpec]:
-    """The noise factor of each source of *observation_vector*, in its order.
+def noise_factors(
+    observation_vector: ObservationVector, nee_error_model_name: str
+) -> list[FactorSpec]:
+    """The noise factor of each source of *observation_vector*, in its order,
+    NEE's under error model *nee_error_model_name* (``nee_error.NEE_ERROR_MODELS``).
 
-    Raises
-    ------
-    KeyError
-        If a source has no noise model here.
+    A source in ``config.NOISE_SCALED_SOURCES`` reads its scale,
+    :func:`noise_scale_name`, whose factor :func:`noise_scale_factors` declares.
     """
     return [
-        _noise_factor(observation_vector, name)
+        _noise_factor(observation_vector, name, nee_error_model_name)
         for name in observation_vector.observation_source_names
     ]
+
+
+def noise_scale_factors(observation_vector: ObservationVector) -> list[FactorSpec]:
+    """The prior factor of each scale *observation_vector*'s sources read:
+    :math:`s_k \\sim \\mathrm{IG}(a, b)`, ``a = config.NOISE_SCALE_SHAPE`` and
+    ``b`` :func:`noise_scale_prior_scale`, so that the median is 1."""
+    shape = config.NOISE_SCALE_SHAPE
+    return [
+        FactorSpec(
+            ArraySpec(noise_scale_name(name), units="1", support=POSITIVE),
+            law=inverse_gamma(shape=shape, scale=noise_scale_prior_scale()),
+            provenance=(
+                f"inverse gamma with shape {shape} and median 1, the value a "
+                "model with fixed noise holds (reasoned)."
+            ),
+        )
+        for name in observation_vector.observation_source_names
+        if name in config.NOISE_SCALED_SOURCES
+    ]
+
+
+def noise_scale_name(source_name: str) -> str:
+    """The component name of source *source_name*'s noise scale."""
+    return f"{source_name}_noise_scale"
+
+
+def noise_scale_prior_scale() -> float:
+    """The ``b`` of IG(a, b) with median 1: the median of Gamma(a, 1)."""
+    return float(scipy.stats.gamma(config.NOISE_SCALE_SHAPE).median())
 
 
 def noise_covariance_blocks(posterior: Posterior) -> dict[str, np.ndarray]:
@@ -194,9 +240,9 @@ def carbon_fraction_error(observed):
 # ── the terms: discrepancy ──
 
 
-def nee_discrepancy(time_since_epoch, *, discrepancy: NEEDiscrepancy):
-    """:math:`\\Sigma^\\delta_{WW'}` of ``model/discrepancy.py``, in the window ends."""
-    return discrepancy.covariance(time_since_epoch / SECONDS_PER_DAY, xp=jnp)
+def nee_discrepancy(time_since_epoch, *, variance: float, memory: Memory):
+    """:math:`v^\\delta \\rho(t_W - t_{W'})`, ``model/nee_error.py``'s correlation in the window ends."""
+    return variance * memory.correlation(time_since_epoch / SECONDS_PER_DAY, xp=jnp)
 
 
 def leaf_area_index_discrepancy(time_since_epoch, calendar_year):
@@ -228,29 +274,42 @@ def soil_carbon_discrepancy(observed):
 # ── each source's covariance ──
 
 
-def _noise_factor(observation_vector: ObservationVector, name: str) -> FactorSpec:
+def _noise_factor(
+    observation_vector: ObservationVector, name: str, nee_error_model_name: str
+) -> FactorSpec:
     """Source *name*'s noise factor, with its covariance and provenance."""
-    check_source_has_a_noise_model(name)
     if name in config.NEE_WINDOWS:
-        discrepancy = config.NEE_DISCREPANCY[name]
+        error_model = NEE_ERROR_MODELS[nee_error_model_name]
+        standard_deviation = config.NEE_DISCREPANCY_STANDARD_DEVIATION[name]
         return noise_factor(
             observation_vector,
             name,
             covariance=_per_site(
+                name,
                 DiagonalSpec(measurement_variance),
-                DenseSpec(partial(nee_discrepancy, discrepancy=discrepancy)),
+                DenseSpec(
+                    partial(
+                        nee_discrepancy,
+                        variance=standard_deviation**2,
+                        memory=error_model.memory(name),
+                    )
+                ),
             ),
             provenance=(
-                "AmeriFlux RANDUNC and JOINTUNC per window; discrepancy "
-                f"{discrepancy.provenance}."
+                "AmeriFlux RANDUNC and JOINTUNC per window; discrepancy of "
+                f"standard deviation {standard_deviation} with the memory of "
+                f"error model {nee_error_model_name!r}: {error_model.provenance}."
             ),
         )
     return _CONSTRAINT_NOISE_FACTORS[name](observation_vector, name)
 
 
-def _per_site(*terms: CovarianceSpec) -> BlockDiagonalSpec:
-    """The sum of *terms*, one block per site."""
-    return BlockDiagonalSpec(SumSpec(*terms), by="site")
+def _per_site(name: str, *terms: CovarianceSpec) -> BlockDiagonalSpec:
+    """The sum of *terms*, times source *name*'s scale if it has one, one block per site."""
+    covariance = SumSpec(*terms)
+    if name in config.NOISE_SCALED_SOURCES:
+        covariance = ScaledSpec(covariance, scale=noise_scale_name(name))
+    return BlockDiagonalSpec(covariance, by="site")
 
 
 def _leaf_area_index_factor(observation_vector, name) -> FactorSpec:
@@ -259,6 +318,7 @@ def _leaf_area_index_factor(observation_vector, name) -> FactorSpec:
         observation_vector,
         name,
         covariance=_per_site(
+            name,
             DiagonalSpec(floored_measurement_variance),
             DenseSpec(leaf_area_index_discrepancy),
         ),
@@ -279,6 +339,7 @@ def _landtrendr_factor(observation_vector, name) -> FactorSpec:
         observation_vector,
         name,
         covariance=_per_site(
+            name,
             DenseSpec(shared_measurement_error),
             DenseSpec(carbon_fraction_error),
             DiagonalSpec(LANDTRENDR_DISCREPANCY_VARIANCE),
@@ -323,14 +384,3 @@ _CONSTRAINT_NOISE_FACTORS = {
     "soilgrids_soil_organic_carbon": _soil_carbon_factor,
 }
 
-
-# ── checks ──
-
-
-def check_source_has_a_noise_model(name: str) -> None:
-    """Every observation source has a noise model defined for it."""
-    if name not in config.NEE_WINDOWS and name not in _CONSTRAINT_NOISE_FACTORS:
-        raise KeyError(
-            f"no noise model is defined for the observation source {name!r}; "
-            "add one to model/noise.py and its terms to config.py"
-        )
