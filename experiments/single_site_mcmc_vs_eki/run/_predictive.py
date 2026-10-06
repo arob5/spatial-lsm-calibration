@@ -1,12 +1,12 @@
 """Predictive runs: an ensemble, and optionally one run by hand, against both observation vectors.
 
-What the prior and the posterior predictive share: running an ensemble of
-theta through the forward model for the calibration and validation
-predictions and for daily model output, scoring each row under the
-calibration likelihood, and writing it all in one layout, which
-``model/outputs.py``'s ``load_predictive`` reads. A member that fails, or
-whose SIPNET parameters leave pySIPNET's domain (the forward model's
-``out_of_domain="fail_row"``, as EKI runs it), is written as NaN rather than
+What the prior and the posterior predictive share: evaluating an ensemble of
+theta under the calibration and the validation posteriors
+(``model/calibration.py``), each sample's predictions and log likelihood,
+running it once more for daily model output, and writing it all in one
+layout, which ``model/outputs.py``'s ``load_predictive`` reads. A sample
+that is invalid, its run failed or its SIPNET parameters outside pySIPNET's
+domain, is written as NaN, with log likelihood ``-inf``, rather than
 stopping the run, and the failures are printed.
 
 Output data
@@ -26,18 +26,19 @@ Under the directory given:
   the diagonal of its noise covariance block;
 - ``parameters.csv``: theta's natural values, one row per run
   (``single_run`` first, when there is one, then the samples), with each
-  run's log likelihood.
+  run's log likelihood under the calibration posterior.
 """
 
 import numpy as np
 import xarray as xr
 
-from sipnet_calibration.conventions import SITE
+from sipnet_calibration.conventions import SAMPLE, SITE
 from sipnet_calibration.fields import to_model_output
 from sipnet_calibration.observation import aggregate_time
+from sipnet_calibration.probability import Posterior
 
 from .. import config
-from ..model import inputs, noise, observations, prior, sipnet
+from ..model import calibration, inputs, noise, prior
 
 __all__ = [
     "run_ensemble",
@@ -49,64 +50,52 @@ __all__ = [
 
 
 def run_predictive(
-    directory, vector, sipnet_map, site_dims, external_inputs, samples, *, center=None
+    directory, calibration_posterior, validation_posterior, theta, *, center=None
 ) -> None:
-    """Run *samples*, and one run by hand at *center* if given, and write it all.
+    """Run *theta*, and one run by hand at *center* if given, and write it all.
 
-    *vector*, *sipnet_map*, *site_dims* and *external_inputs* are the
-    calibration's (``model/prior.py``); *samples* and *center* are theta,
-    ``(J, D)`` and ``(D,)``.
+    *theta* is ``(J, D)`` and *center* ``(D,)``, a point of both posteriors.
     """
-    calibration = observations.calibration_observation_vector()
-    validation = observations.validation_observation_vector()
+    posteriors = {
+        "calibration": calibration_posterior,
+        "validation": validation_posterior,
+    }
     directory.mkdir(parents=True, exist_ok=True)
     single = None
     if center is not None:
-        single = run_once_by_hand(
-            vector,
-            sipnet_map,
-            site_dims,
-            center,
-            calibration,
-            validation,
-            external_inputs,
-        )
+        single = run_once_by_hand(posteriors, center)
         print("one run by hand: done")
-    ensemble = run_ensemble(
-        vector, sipnet_map, site_dims, samples, calibration, validation, external_inputs
-    )
-    print(f"ensemble of {samples.shape[0]}: done")
-    rows = [np.asarray(samples)] if center is None else [center, np.asarray(samples)]
-    write_outputs(directory, vector, np.vstack(rows), single, ensemble)
-    write_observations(
-        directory, {"calibration": calibration, "validation": validation}
-    )
+    ensemble = run_ensemble(posteriors, theta)
+    print(f"ensemble of {theta.shape[0]}: done")
+    rows = np.asarray(theta) if center is None else np.vstack([center, theta])
+    write_outputs(directory, calibration_posterior, rows, single, ensemble)
+    write_observations(directory, posteriors)
 
 
-def run_once_by_hand(
-    vector, sipnet_map, site_dims, theta, calibration, validation, external_inputs
-) -> dict:
-    """One run at *theta*, through each layer the forward model composes."""
-    # The map: theta's natural values and the external inputs to SIPNET
-    # parameter fields.
-    values = xr.merge(
-        [vector.flat_to_dataset(vector.to_natural(theta)), external_inputs],
-        join="exact",
-        combine_attrs="drop_conflicts",
+def run_once_by_hand(posteriors: dict[str, Posterior], theta) -> dict:
+    """One run at *theta*, through each layer the forward map composes."""
+    posterior = posteriors["calibration"]
+    runs = posterior.simulators[calibration.SIMULATOR_NAME].runs
+    # The map: what the simulator reads at theta, its natural values and the
+    # inputs, to SIPNET parameter fields; one run's keywords are their values.
+    values = posterior.simulator_inputs(np.asarray(theta)[None], calibration.SIMULATOR_NAME)
+    sipnet_parameter_fields = runs.sipnet_parameter_map.sipnet_parameter_fields(
+        values, site_dims=runs.site_dims
     )
-    sipnet_parameter_fields = sipnet_map.sipnet_parameter_fields(
-        values, site_dims=site_dims
-    )
-    # One run's keywords: each field's value at the site.
+    at_the_run = sipnet_parameter_fields.isel({SAMPLE: 0}).sel({SITE: config.SITE})
     sipnet_overrides = {
-        name: float(sipnet_parameter_fields[name].sel({SITE: config.SITE}))
-        for name in sipnet_parameter_fields.data_vars
+        name: float(value) for name, value in at_the_run.data_vars.items()
     }
     # One SIPNET run, and its output as model output.
-    sipnet_result = sipnet.sipnet_model()(**sipnet_overrides)
+    sipnet_result = runs.sipnet_model(**sipnet_overrides)
+    vectors = {
+        label: calibration.observation_vector(posterior)
+        for label, posterior in posteriors.items()
+    }
     output_variable_names = sorted(
-        set(config.PRIOR_PREDICTIVE_OUTPUT_VARIABLE_NAMES)
-        | set(calibration.output_variable_names)
+        set(config.PRIOR_PREDICTIVE_OUTPUT_VARIABLE_NAMES).union(
+            *(vector.output_variable_names for vector in vectors.values())
+        )
     )
     model_output = to_model_output(
         sipnet_result,
@@ -114,26 +103,20 @@ def run_once_by_hand(
         site=config.SITE,
         site_table=inputs.site_table(),
     )
-    # The operators read the run's own SIPNET parameters, as on a worker.
-    run_parameters = xr.Dataset(
-        {
-            name: sipnet_result.parameters.dataarray(name)
-            for name in calibration.sipnet_parameter_names_read
-        },
-        coords={name: model_output[name] for name in (SITE, "lon", "lat")},
-    )
-    predicted = {
-        "calibration": calibration.predict(
+    # Each vector's operators, reading the run's own SIPNET parameters, as on
+    # a worker.
+    predicted = {}
+    for label, vector in vectors.items():
+        run_parameters = xr.Dataset(
+            {
+                name: sipnet_result.parameters.dataarray(name)
+                for name in vector.sipnet_parameter_names_read
+            },
+            coords={name: model_output[name] for name in (SITE, "lon", "lat")},
+        )
+        predicted[label] = vector.predict(
             model_output, sipnet_parameter_fields=run_parameters
-        ),
-        "validation": validation.predict(
-            model_output, sipnet_parameter_fields=run_parameters
-        ),
-    }
-    likelihood = noise.calibration_likelihood(calibration)
-    log_likelihood = float(
-        likelihood.log_density(calibration.flat(predicted["calibration"]))
-    )
+        )
     daily = xr.Dataset(
         {
             name: aggregate_time(model_output[name], "1D")
@@ -143,41 +126,30 @@ def run_once_by_hand(
     return {
         "predicted": predicted,
         "daily": daily,
-        "log_likelihood": np.array([log_likelihood]),
+        "log_likelihood": np.asarray(posterior.log_likelihood(theta))[None],
     }
 
 
-def run_ensemble(
-    vector, sipnet_map, site_dims, samples, calibration, validation, external_inputs
-) -> dict:
-    """The ensemble through the forward model: predictions of both vectors, then daily output."""
+def run_ensemble(posteriors: dict[str, Posterior], theta) -> dict:
+    """*theta* evaluated under each posterior, then run once more for daily output."""
     predicted = {}
-    for label, observation_vector in (
-        ("calibration", calibration),
-        ("validation", validation),
-    ):
-        evaluation = sipnet.forward_model(
-            vector,
-            sipnet_map,
-            site_dims=site_dims,
-            observation_vector=observation_vector,
-            external_inputs=external_inputs,
-            out_of_domain="fail_row",
-        ).evaluate(samples)
-        _report_failures(label, evaluation)
-        predicted[label] = evaluation.predicted_fields()
+    for label, posterior in posteriors.items():
+        evaluation = posterior.evaluate(theta)
+        _report_failures(
+            label, evaluation.simulator_records[calibration.SIMULATOR_NAME]
+        )
+        predicted[label] = calibration.predicted_fields(posterior, evaluation)
         if label == "calibration":
-            likelihood = noise.calibration_likelihood(calibration)
-            log_likelihood = np.asarray(likelihood.log_density(evaluation.predictions))
-    daily = sipnet.forward_model(
-        vector,
-        sipnet_map,
-        site_dims=site_dims,
-        output_variable_names=config.PRIOR_PREDICTIVE_OUTPUT_VARIABLE_NAMES,
-        freq="1D",
-        external_inputs=external_inputs,
-        out_of_domain="fail_row",
-    ).evaluate(samples)
+            log_likelihood = np.asarray(evaluation.log_likelihood)
+    posterior = posteriors["calibration"]
+    daily = (
+        posterior.simulators[calibration.SIMULATOR_NAME]
+        .runs.evaluate(
+            posterior.simulator_inputs(theta, calibration.SIMULATOR_NAME),
+            output_variable_names=config.PRIOR_PREDICTIVE_OUTPUT_VARIABLE_NAMES,
+            freq="1D",
+        )
+    )
     _report_failures("daily output", daily)
     return {
         "predicted": predicted,
@@ -186,7 +158,7 @@ def run_ensemble(
     }
 
 
-def write_outputs(directory, vector, theta, single, ensemble) -> None:
+def write_outputs(directory, posterior: Posterior, theta, single, ensemble) -> None:
     """Every output file, as the module docstring lists them.
 
     *theta* is the one run's row, when there is one, then the ensemble's.
@@ -202,7 +174,7 @@ def write_outputs(directory, vector, theta, single, ensemble) -> None:
             target.mkdir(parents=True, exist_ok=True)
             for source_name, field in fields.items():
                 field.to_netcdf(target / f"{source_name}.nc")
-    natural = prior.natural_table(vector, theta)
+    natural = prior.natural_table(posterior, theta)
     n_samples = len(ensemble["log_likelihood"])
     natural.index = [
         *(["single_run"] if single is not None else []),
@@ -214,30 +186,29 @@ def write_outputs(directory, vector, theta, single, ensemble) -> None:
     natural.to_csv(directory / "parameters.csv")
 
 
-def write_observations(directory, vectors) -> None:
+def write_observations(directory, posteriors: dict[str, Posterior]) -> None:
     """Each source's observed values, with its total noise standard deviation."""
-    series = {
-        "calibration": config.CALIBRATION_NEE_SERIES,
-        "validation": config.VALIDATION_NEE_SERIES,
-    }
-    for vector_name, observation_vector in vectors.items():
-        blocks = noise.noise_covariance_blocks(observation_vector, series[vector_name])
+    for vector_name, posterior in posteriors.items():
+        vector = calibration.observation_vector(posterior)
+        noise_standard_deviations = vector.to_fields(
+            noise.noise_standard_deviations(posterior)
+        )
         target = directory / "observed" / vector_name
         target.mkdir(parents=True, exist_ok=True)
-        for source_name in observation_vector:
-            observed = observation_vector[source_name].observed_values
-            total = np.sqrt(np.diag(blocks[source_name])).reshape(observed.shape)
-            dataset = observed.to_dataset(name="value")
-            dataset["noise_standard_deviation"] = observed.copy(data=total)
+        for source_name in vector.observation_source_names:
+            dataset = vector[source_name].observed_values.to_dataset(name="value")
+            dataset["noise_standard_deviation"] = noise_standard_deviations[
+                source_name
+            ]
             dataset.to_netcdf(target / f"{source_name}.nc")
 
 
 # ── helpers ──
 
 
-def _report_failures(label: str, evaluation) -> None:
+def _report_failures(label: str, runs_evaluation) -> None:
     """Print how many runs failed, and why."""
-    failures = evaluation.failures
+    failures = runs_evaluation.failures
     if len(failures):
         print(f"{label}: {len(failures)} runs failed")
         print(failures[["error", "message"]].drop_duplicates().to_string())

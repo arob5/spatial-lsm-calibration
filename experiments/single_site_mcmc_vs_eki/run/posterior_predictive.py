@@ -3,9 +3,9 @@
 Overview
 --------
 Reads the ensemble an EKI run ended with (``run/eki.py``, beta = 1) and
-runs every member through the forward model for the calibration and
-validation predictions and for daily model output, as the prior predictive
-runs the prior's draws, so the two predictives are written, and drawn, alike.
+evaluates every member under the calibration and validation posteriors,
+and runs it for daily model output, as the prior predictive does the
+prior's draws, so the two predictives are written, and drawn, alike.
 There is no one run by hand: a posterior's center is not a run it predicts.
 The script then draws the posterior predictive's figures
 (``figures/eki.py``) and diagnoses the run (``run/diagnose.py``):
@@ -15,7 +15,7 @@ diagnosis.
 Input data
 ----------
 ``steps/`` of ``config.EKI_DIRECTORY / <data>``, of a finished run, and
-everything the forward model reads.
+everything the posteriors read.
 
 Output data
 -----------
@@ -43,7 +43,7 @@ import numpy as np
 
 from .. import config
 from ..figures.eki import draw_posterior_predictive_figures
-from ..model import prior
+from ..model import calibration
 from ..model.outputs import check_eki_run_finished, load_eki_run
 from . import _predictive, _provenance
 from .diagnose import diagnose_run
@@ -61,19 +61,16 @@ def main(argv: list[str] | None = None) -> int:
     data = arguments.data
     run_directory = config.EKI_DIRECTORY / data
     try:
-        samples = final_ensemble(run_directory)
+        theta = final_ensemble(run_directory)
     except (FileNotFoundError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
-    vector, _, sipnet_map = prior.calibration()
     directory = run_directory / "posterior_predictive"
     _predictive.run_predictive(
         directory,
-        vector,
-        sipnet_map,
-        prior.site_dims(),
-        prior.external_inputs(),
-        samples,
+        calibration.calibration_posterior(),
+        calibration.validation_posterior(),
+        theta,
     )
     _provenance.write_provenance(
         directory / "provenance.json", input_files=_provenance.model_input_files()

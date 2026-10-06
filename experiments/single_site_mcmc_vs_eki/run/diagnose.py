@@ -56,7 +56,7 @@ import pandas as pd
 
 from .. import config
 from ..figures.diagnostics import draw_diagnostic_figures
-from ..model import diagnostics, observations
+from ..model import calibration, diagnostics
 from ..model.outputs import (
     check_eki_run_finished,
     load_eki_run,
@@ -119,30 +119,18 @@ def diagnose_run(run_name: str) -> None:
 
 def run_sources(run_name: str, directory: Path):
     """The run's predictions of the calibration vector, and of the validation vector if any."""
-    calibration_vector = observations.calibration_observation_vector()
-    validation_vector = observations.validation_observation_vector()
     if run_name == "prior":
         outputs = load_predictive(directory)
         return (
             diagnostics.sources_from_predictive(
-                outputs,
-                "calibration",
-                calibration_vector,
-                config.CALIBRATION_NEE_SERIES,
+                outputs, "calibration", calibration.calibration_posterior()
             ),
             diagnostics.sources_from_predictive(
-                outputs,
-                "validation",
-                validation_vector,
-                config.VALIDATION_NEE_SERIES,
+                outputs, "validation", calibration.validation_posterior()
             ),
         )
     run = load_eki_run(directory)
     check_eki_run_finished(run, directory)
-    y = run["y"] if run["y"] is not None else calibration_vector.y
-    calibration = diagnostics.sources_from_flat(
-        calibration_vector, y, run["predictions"], config.CALIBRATION_NEE_SERIES
-    )
     validation = None
     # The posterior predictive's validation predictions are of the held-out
     # tower's own data, which a synthetic run did not condition on.
@@ -151,10 +139,9 @@ def run_sources(run_name: str, directory: Path):
         validation = diagnostics.sources_from_predictive(
             load_predictive(predictive),
             "validation",
-            validation_vector,
-            config.VALIDATION_NEE_SERIES,
+            calibration.validation_posterior(),
         )
-    return calibration, validation
+    return diagnostics.sources_from_eki_run(run), validation
 
 
 def report_noise_model_changes(directory: Path) -> None:

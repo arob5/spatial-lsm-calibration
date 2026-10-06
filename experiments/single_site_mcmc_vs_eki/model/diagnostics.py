@@ -11,10 +11,13 @@ The diagnostics read an ensemble's predictions of one observation vector as
 a mapping from observation source name to :class:`SourcePredictions`: the
 source's observed values ``y`` ``(n,)``, their window ends ``times`` (``NaT``
 for a static source), the ensemble's predictions ``(J, n)``, and the
-source's block of ``R`` with its measurement standard deviations. Two
-builders make it: :func:`sources_from_flat` from Flat ``y`` and predictions
-``(J, N)`` (an EKI run's final step), and :func:`sources_from_predictive`
-from a predictive's files (``model/outputs.py``).
+source's block of ``R`` with its measurement standard deviations, each in
+the order of the source's observations. A posterior over the vector
+(``model/calibration.py``) supplies all but the predictions. Three builders
+make it: :func:`sources_from_predictions` from predictions ``(J, N)`` in a
+posterior's y order, :func:`sources_from_eki_run` from an EKI run's final
+step, and :func:`sources_from_predictive` from a predictive's files
+(``model/outputs.py``).
 
 Functions
 ---------
@@ -39,14 +42,21 @@ from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
+import xarray as xr
 from scipy.linalg import cho_factor, cho_solve
 from scipy.stats import chi2
 
 from sipnet_calibration.conventions import SAMPLE, TIME
-from sipnet_calibration.observation import ObservationVector
+from sipnet_calibration.observation import (
+    OBSERVED,
+    STANDARD_DEVIATION,
+    ObservationSource,
+    ObservationVector,
+)
+from sipnet_calibration.probability import Posterior, condition_on
 
 from .. import config
-from . import noise, observations
+from . import calibration, noise, observations
 from .discrepancy import NEEDiscrepancy
 
 __all__ = [
@@ -56,14 +66,15 @@ __all__ = [
     "SLOW_WINDOW_DAYS",
     "SMOOTHING_WEEKS",
     "SourcePredictions",
-    "check_files_hold_the_vector",
+    "check_files_hold_the_observations",
     "nee_residuals",
     "night_day_correlation",
     "predictive_check",
     "residual_autocorrelation",
     "residual_summary",
     "slow_fast_split",
-    "sources_from_flat",
+    "sources_from_eki_run",
+    "sources_from_predictions",
     "sources_from_predictive",
     "tower_comparison",
     "weekly_residuals",
@@ -94,7 +105,7 @@ class SourcePredictions:
 
     ``members_dropped`` counts the members left out of ``predictions`` for a
     prediction that is not finite anywhere in the vector: a failed run, or
-    one the forward model failed for leaving pySIPNET's domain.
+    a sample whose SIPNET parameters left pySIPNET's domain.
     """
 
     times: pd.DatetimeIndex
@@ -108,63 +119,51 @@ class SourcePredictions:
 # ── the builders ──
 
 
-def sources_from_flat(
-    vector: ObservationVector, y, predictions, nee_series_name: str
+def sources_from_predictions(
+    posterior: Posterior, predictions
 ) -> dict[str, SourcePredictions]:
-    """The sources of *vector* from Flat *y* ``(N,)`` and *predictions* ``(J, N)``.
+    """The sources *posterior* observes, from *predictions* ``(J, N)`` in its y order.
 
     A member whose predictions are not all finite is left out of every
     source, and counted.
     """
-    y, predictions = np.asarray(y), np.asarray(predictions)
-    finite = np.isfinite(predictions).all(axis=1)
-    predictions = predictions[finite]
-    blocks = noise.noise_covariance_blocks(vector, nee_series_name)
-    measurement = noise.measurement_standard_deviations(vector, nee_series_name)
-    times = vector.index.get_level_values(TIME)
-    sources = {}
-    for name in vector:
-        positions = vector.positions(observation_source_name=name)
-        sources[name] = SourcePredictions(
-            times=pd.DatetimeIndex(times[positions]),
-            y=y[positions],
-            predictions=predictions[:, positions],
-            noise_block=blocks[name],
-            measurement_standard_deviation=np.asarray(measurement[name]),
-            members_dropped=int((~finite).sum()),
+    return _sources(posterior, posterior.observations.flat_to_values(predictions))
+
+
+def sources_from_eki_run(run: dict) -> dict[str, SourcePredictions]:
+    """An EKI run's final predictions of the calibration vector (``model/outputs.py``'s
+    ``load_eki_run``), against the observations it conditioned on: the
+    vector's own, or the run's synthetic ``y``."""
+    posterior = calibration.calibration_posterior()
+    if run["y"] is not None:
+        posterior = condition_on(
+            posterior.model, posterior.observations.flat_to_values(run["y"])
         )
-    return sources
+    return sources_from_predictions(posterior, run["predictions"])
 
 
 def sources_from_predictive(
-    outputs: dict, vector_name: str, vector: ObservationVector, nee_series_name: str
+    outputs: dict, vector_name: str, posterior: Posterior
 ) -> dict[str, SourcePredictions]:
-    """The sources of *vector* from a predictive's files (``model/outputs.py``).
+    """The sources *posterior* observes, from a predictive's files (``model/outputs.py``).
 
     Raises
     ------
     ValueError
-        If the files' observed values are not the vector's, in its order.
+        If the files' observed values are not the posterior's.
     """
+    vector = calibration.observation_vector(posterior)
+    check_files_hold_the_observations(
+        outputs["observed"][vector_name], posterior, vector_name
+    )
     predicted = outputs["predicted"]["ensemble"][vector_name]
-    y = np.concatenate(
-        [
-            np.atleast_1d(outputs["observed"][vector_name][name]["value"].to_numpy())
-            for name in vector
-        ]
+    return _sources(
+        posterior,
+        {
+            name: _at_observations(predicted[name], vector[name])
+            for name in vector.observation_source_names
+        },
     )
-    check_files_hold_the_vector(y, vector, vector_name)
-    predictions = np.concatenate(
-        [
-            predicted[name]
-            .transpose(SAMPLE, ...)
-            .to_numpy()
-            .reshape(predicted[name].sizes[SAMPLE], -1)
-            for name in vector
-        ],
-        axis=1,
-    )
-    return sources_from_flat(vector, y, predictions, nee_series_name)
 
 
 # ── the predictive check ──
@@ -421,18 +420,9 @@ def tower_comparison(
     frames = {}
     for label, series in (("first", first_series), ("second", second_series)):
         vector = observations.nee_observation_vector(series, period)
-        sources = sources_from_flat(
-            vector, vector.y, np.asarray(vector.y)[None, :], series
-        )
         frames[label] = {
-            name: pd.DataFrame(
-                {
-                    label: source.y,
-                    f"{label}_standard_deviation": source.measurement_standard_deviation,
-                },
-                index=source.times,
-            )
-            for name, source in sources.items()
+            name: _observed_table(vector, name, label)
+            for name in vector.observation_source_names
         }
     windows, rows = [], []
     for name in config.NEE_WINDOWS:
@@ -467,6 +457,61 @@ def tower_comparison(
 
 
 # ── helpers ──
+
+
+def _sources(
+    posterior: Posterior, predictions: dict[str, np.ndarray]
+) -> dict[str, SourcePredictions]:
+    """Each source *posterior* observes, with its *predictions* ``(J, n)``."""
+    finite = np.all(
+        [np.isfinite(np.asarray(values)).all(axis=1) for values in predictions.values()],
+        axis=0,
+    )
+    vector = calibration.observation_vector(posterior)
+    y = posterior.observations.flat_to_values(posterior.y)
+    blocks = noise.noise_covariance_blocks(posterior)
+    return {
+        name: SourcePredictions(
+            times=_observation_times(vector[name]),
+            y=np.asarray(y[name]),
+            predictions=np.asarray(predictions[name])[finite],
+            noise_block=blocks[name],
+            measurement_standard_deviation=vector.constants(name)[
+                STANDARD_DEVIATION
+            ].values,
+            members_dropped=int((~finite).sum()),
+        )
+        for name in posterior.observations.component_names
+    }
+
+
+def _observed_table(
+    vector: ObservationVector, name: str, label: str
+) -> pd.DataFrame:
+    """Source *name*'s observed values and measurement standard deviations, by time."""
+    constants = vector.constants(name)
+    return pd.DataFrame(
+        {
+            label: constants[OBSERVED].values,
+            f"{label}_standard_deviation": constants[STANDARD_DEVIATION].values,
+        },
+        index=_observation_times(vector[name]),
+    )
+
+
+def _observation_times(source: ObservationSource) -> pd.DatetimeIndex:
+    """Each observation's time label, ``NaT`` for a static source."""
+    labels = source.observation_labels
+    if TIME not in labels.names:
+        return pd.DatetimeIndex([pd.NaT] * len(labels))
+    return pd.DatetimeIndex(labels.get_level_values(TIME))
+
+
+def _at_observations(field: xr.DataArray, source: ObservationSource) -> np.ndarray:
+    """A field of samples at the site, at each of the source's observations, ``(J, n)``."""
+    if TIME in source.observation_labels.names:
+        field = field.sel({TIME: _observation_times(source)})
+    return field.transpose(SAMPLE, ...).to_numpy().reshape(field.sizes[SAMPLE], -1)
 
 
 def _member_misfits(source: SourcePredictions) -> np.ndarray:
@@ -599,9 +644,21 @@ def _modeled_correlation(discrepancy: NEEDiscrepancy, measurement_variance: floa
 # ── checks ──
 
 
-def check_files_hold_the_vector(y, vector: ObservationVector, vector_name: str) -> None:
-    """A predictive's observed values are the observation vector's, in its order."""
-    if y.shape != np.asarray(vector.y).shape or not np.allclose(y, vector.y):
+def check_files_hold_the_observations(
+    observed: dict[str, xr.Dataset], posterior: Posterior, vector_name: str
+) -> None:
+    """A predictive's observed values are the ones *posterior* conditions on."""
+    vector = calibration.observation_vector(posterior)
+    y = posterior.observations.flat_to_values(posterior.y)
+    held = all(
+        name in observed
+        and np.array_equal(
+            _at_observations(observed[name]["value"].expand_dims(SAMPLE), vector[name])[0],
+            np.asarray(y[name]),
+        )
+        for name in vector.observation_source_names
+    )
+    if not held:
         raise ValueError(
             f"the predictive's {vector_name} observed values are not the "
             f"{vector_name} vector's; rerun the predictive with the current "

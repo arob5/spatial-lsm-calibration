@@ -2,8 +2,8 @@
 
 Each function builds one piece from ``config``, so every script runs SIPNET
 the same way: the base SIPNET parameters, the runner and the model, the
-drivers, the site's initial state, and the forward model that runs an
-ensemble through PyEns.
+drivers, the site's initial state, and the runs that execute a batch through
+PyEns.
 
 Functions
 ---------
@@ -13,15 +13,15 @@ Functions
     pySIPNET's runner with the configured flags and run settings, and the
     model over it with the base parameters and the drivers.
 :func:`climate_drivers`
-    The prepared driver file, file-backed, as the forward model needs it.
+    The prepared driver file, file-backed, as the runs need it.
 :func:`initial_state`
     The site's initial conditions as external inputs, on ``site`` alone.
-:func:`forward_model`
-    A :class:`~sipnet_calibration.forward.ForwardModel` over the site,
-    predicting an observation vector or returning model output.
+:func:`sipnet_runs`
+    :class:`~sipnet_calibration.forward.SIPNETRuns` at the site: SIPNET once
+    per sample, reduced to an observation vector's predictions (the forward
+    map, ``model/calibration.py``'s simulator) or to model output.
 """
 
-from collections.abc import Sequence
 from typing import Literal
 
 import xarray as xr
@@ -31,9 +31,7 @@ from pysipnet.model import SIPNETModel
 from pysipnet.parameters.model import SIPNETParameters
 from pysipnet.runner import SIPNETRunner
 
-from sipnet_calibration.forward import ForwardModel
-from sipnet_calibration.observation import ObservationVector
-from sipnet_calibration.parameters import ParameterVector
+from sipnet_calibration.forward import SIPNETRuns
 from sipnet_calibration.sipnet_parameter_map import (
     INITIAL_STATE_NAMES,
     SIPNETParameterMap,
@@ -46,10 +44,10 @@ from . import inputs
 __all__ = [
     "base_sipnet_parameters",
     "climate_drivers",
-    "forward_model",
     "initial_state",
     "sipnet_model",
     "sipnet_runner",
+    "sipnet_runs",
 ]
 
 
@@ -79,7 +77,7 @@ def sipnet_model() -> SIPNETModel:
 def climate_drivers() -> ClimateDrivers:
     """The prepared driver file, opened without reading it.
 
-    File-backed, as the forward model requires under a parallel backend; the
+    File-backed, as the runs require under a parallel backend; the
     labels are validated at the first read. Run ``run/prepare_drivers.py``
     first.
     """
@@ -110,37 +108,24 @@ def initial_state() -> xr.Dataset:
     )
 
 
-def forward_model(
-    parameter_vector: ParameterVector,
+def sipnet_runs(
     sipnet_parameter_map: SIPNETParameterMap,
-    *,
     site_dims: SiteDims,
-    observation_vector: ObservationVector | None = None,
-    output_variable_names: Sequence[str] | None = None,
-    freq: str | None = None,
-    external_inputs: xr.Dataset | None = None,
-    out_of_domain: Literal["raise", "fail_row"] = "raise",
-) -> ForwardModel:
-    """The forward model over the site, on the configured number of local workers.
+    *,
+    out_of_domain: Literal["raise", "fail_row"] = "fail_row",
+) -> SIPNETRuns:
+    """SIPNET at the site, on the configured number of local workers.
 
-    *site_dims* are the site the calibration's values are read at
-    (``prior.site_dims``). Give *observation_vector* for predictions ``(J, N)``, or
-    *output_variable_names* (and optionally *freq*) for model output.
-    *external_inputs* default to the site's whole initial state
-    (:func:`initial_state`); a calibration that calibrates some initial
-    states passes the rest. *out_of_domain* is the forward model's: raise on
-    a SIPNET parameter outside pySIPNET's domain, or fail its row.
+    *sipnet_parameter_map* and *site_dims* are the calibration's
+    (``model/prior.py``). *out_of_domain* is the runs': ``"fail_row"``, the
+    default, marks a sample whose SIPNET parameters leave pySIPNET's domain
+    invalid, as a failed run is; ``"raise"`` refuses the batch.
     """
-    return ForwardModel(
+    return SIPNETRuns(
         sipnet_model(),
-        parameter_vector,
-        sipnet_parameter_map,
+        sipnet_parameter_map=sipnet_parameter_map,
         site_dims=site_dims,
         climate={config.SITE: climate_drivers()},
         backend=LocalBackend(n_workers=config.N_WORKERS),
-        external_inputs=initial_state() if external_inputs is None else external_inputs,
-        observation_vector=observation_vector,
-        output_variable_names=output_variable_names,
-        freq=freq,
         out_of_domain=out_of_domain,
     )

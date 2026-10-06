@@ -5,11 +5,11 @@ machinery they share. In the order a calibration runs them:
 
 - setup: ``prepare_drivers`` (the corrected driver file), ``check_inputs``
   (everything is found and builds);
-- ``prior_predictive``: the prior's draws through the forward model, then
-  their figures and diagnosis;
+- ``prior_predictive``: the prior's draws through the model, then their
+  figures and diagnosis;
 - ``eki``: inference, then the ladder's figures;
 - ``posterior_predictive``: an inference run's final ensemble through the
-  forward model, then its figures and the run's diagnosis;
+  model, then its figures and the run's diagnosis;
 - ``compare_setups``: the EKI setups' figures side by side.
 
 And for a stored run: ``diagnose`` rediagnoses it under ``config``'s current

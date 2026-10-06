@@ -387,8 +387,8 @@ SOIL_CARBON_DISCREPANCY_FRACTION = 0.25
 #
 # Ensemble Kalman inversion in its sampling form: an ensemble drawn from the
 # prior, moved up the tempering ladder from beta = 0 (the prior) to beta = 1
-# (the posterior) by pyEKI's perturbed-observation update, the increments
-# chosen adaptively. run/eki.py runs it and figures/eki.py draws it.
+# (the posterior) by EnsKit's perturbed-observation (Matheron) update, the
+# increments chosen adaptively. run/eki.py runs it and figures/eki.py draws it.
 
 #: The name of the current EKI setup. Each setup's runs are kept under their
 #: own name, so a change to the noise model or the algorithm leaves the
@@ -406,12 +406,12 @@ EKI_DIRECTORY = OUTPUT_DIRECTORY / "eki" / EKI_RUN_NAME
 #: spare.
 EKI_ENSEMBLE_SIZE = 100
 
-#: The seed of the initial ensemble's prior draw and of the updates'
-#: perturbed observations.
+#: The seed of the initial ensemble's prior draw and of the run's own key,
+#: which the updates' perturbed observations are drawn with.
 EKI_SEED = 20260930
 
 #: The effective sample size, as a fraction of J, the adaptive ladder's
-#: increments target (pyEKI's AdaptiveESSSchedule and its default).
+#: increments target (EnsKit's AdaptiveESSSchedule and its default).
 EKI_ESS_FRACTION = 0.5
 
 #: The seed of the synthetic truth: one prior draw theta*, and the noise

@@ -19,10 +19,12 @@ A dirty tree is recorded, not refused: a record of what ran is worth more
 than a refusal to run.
 
 Beside it, :func:`write_calibration` writes the calibration's own record,
-``describe_calibration``'s two tables: ``calibration_parameters.csv``, one
-row per parameter with its prior term, and
+:data:`CALIBRATION_FILE_NAMES`: ``calibration_parts.csv``, one row per part
+of the model (each prior factor, the forward map and each noise factor) with
+its law, what it is given and its provenance; ``calibration_components.csv``,
+one row per component and input with its role in the posterior; and
 ``calibration_sipnet_parameters.csv``, one row per SIPNET parameter written,
-with its role and rule or fixed value.
+with its rule or fixed value.
 """
 
 import json
@@ -41,13 +43,11 @@ from sipnet_calibration import (
     site_labels,
 )
 from sipnet_calibration import net_ecosystem_exchange as nee
-from sipnet_calibration.calibration import describe_calibration
 from sipnet_calibration.io import file_md5, utc_timestamp
-from sipnet_calibration.parameters import ParameterVector, Prior
-from sipnet_calibration.sipnet_parameter_map import SIPNETParameterMap
+from sipnet_calibration.probability import Posterior
 
 from .. import config
-from ..model import prior
+from ..model import calibration, prior
 
 __all__ = [
     "CALIBRATION_FILE_NAMES",
@@ -58,11 +58,13 @@ __all__ = [
 ]
 
 #: The packages whose versions a run records.
-COMPANION_PACKAGE_NAMES = ("pysipnet", "pyens", "pyeki")
+COMPANION_PACKAGE_NAMES = ("pysipnet", "pyens", "enskit")
 
-#: The calibration's record, per parameter and per SIPNET parameter.
+#: The calibration's record: per part of the model, per component, and per
+#: SIPNET parameter.
 CALIBRATION_FILE_NAMES = (
-    "calibration_parameters.csv",
+    "calibration_parts.csv",
+    "calibration_components.csv",
     "calibration_sipnet_parameters.csv",
 )
 
@@ -84,14 +86,14 @@ def write_provenance(path: Path, *, input_files: Iterable[Path]) -> None:
     path.write_text(json.dumps(record, indent=2) + "\n")
 
 
-def write_calibration(
-    directory: Path,
-    vector: ParameterVector,
-    calibration_prior: Prior,
-    sipnet_map: SIPNETParameterMap,
-) -> None:
-    """Write the calibration's two tables, :data:`CALIBRATION_FILE_NAMES`, to *directory*."""
-    tables = describe_calibration(vector, calibration_prior, sipnet_map)
+def write_calibration(directory: Path, posterior: Posterior) -> None:
+    """Write the calibration's record, :data:`CALIBRATION_FILE_NAMES`, to *directory*."""
+    simulator = posterior.simulators[calibration.SIMULATOR_NAME]
+    tables = (
+        posterior.model.describe(),
+        posterior.describe(),
+        simulator.runs.sipnet_parameter_map.describe(),
+    )
     for name, table in zip(CALIBRATION_FILE_NAMES, tables, strict=True):
         table.to_csv(directory / name)
 

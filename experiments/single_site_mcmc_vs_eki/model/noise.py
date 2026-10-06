@@ -1,407 +1,327 @@
-"""The noise model: the covariance of the observation errors, and the likelihood it defines.
+"""The noise model: each observation source's error as a Gaussian noise factor.
 
-``MODEL.md``, "The observation model", states the model exactly; this module
-builds it. The covariance ``R`` of ``y`` is block-diagonal over the
-observation sources, and each source's block is its measurement error plus a
-model discrepancy:
+``MODEL.md``, "Noise model", states the model exactly; this module declares
+it. Source :math:`k`'s observed values :math:`y_k` are Gaussian about its
+prediction :math:`m_k`, independent of every other source's,
 
-    R = diag(R_1, ..., R_K),    R_k = Sigma_obs_k + Sigma_delta_k.
+.. math::
 
-The measurement errors are read from the data sources (NEE's random and
-joint uncertainties, the constraints' standard deviations); the discrepancy
-terms, the floors and the timescales are ``config``'s. ``R`` does not depend
-on the parameters, so it is built once and factored once.
+    y_k \\mid m_k \\sim \\mathcal N(m_k,\\ R_k), \\qquad
+    R_k = \\Sigma^{\\mathrm{obs}}_k + \\Sigma^{\\delta}_k,
+
+so that :math:`R = \\operatorname{diag}(R_1, \\dots, R_K)`. Each
+:math:`R_k` is a covariance spec, the sum of the measurement error
+:math:`\\Sigma^{\\mathrm{obs}}_k`, built from the source's standard
+deviations (``model/observations.py``), and the model discrepancy
+:math:`\\Sigma^{\\delta}_k`, whose values are ``config``'s; a dated source's
+is one block per site. The functions below compute each term from the
+source's constants
+(:meth:`~sipnet_calibration.observation.ObservationVector.constants`), with
+times in seconds since the epoch. Nothing reads a parameter, so ``R`` is
+built and factored once, when the posterior is conditioned
+(``model/calibration.py``).
 
 Functions
 ---------
-:func:`calibration_likelihood`, :func:`validation_likelihood`
-    The Gaussian of ``y`` about the predictions, a ``pyeki.gauss.Gaussian``
-    whose ``log_density(predictions)`` is the log likelihood, ``(..., N) ->
-    (...)``.
-:func:`noise_covariance`
-    ``R`` as a pyEKI operator, one dense block per observation source.
-:func:`noise_covariance_blocks`
-    Each source's block as a NumPy array, for inspection.
-:func:`measurement_standard_deviations`
-    Each observation's measurement-error standard deviation, before any
-    floor or discrepancy.
+:func:`noise_factors`
+    One noise factor per source of an observation vector.
+:func:`noise_covariance_blocks`, :func:`noise_standard_deviations`
+    A posterior's ``R_k``, per source, and the square roots of their
+    diagonals as labeled values.
 :func:`noise_summary`
-    What each observation source contributes to ``R``.
+    What each source contributes to ``R``.
+
+The remaining public functions are the covariances' terms.
 
 Usage
 -----
 ::
 
-    from experiments.single_site_mcmc_vs_eki.model import noise, observations
-    vector = observations.calibration_observation_vector()
-    likelihood = noise.calibration_likelihood(vector)
-    likelihood.log_density(predictions)      # predictions (J, N) -> (J,)
+    from experiments.single_site_mcmc_vs_eki.model import calibration, noise
+    posterior = calibration.calibration_posterior()
+    noise.noise_summary(posterior, calibration.calibration_observation_vector())
 """
 
-from collections.abc import Callable
-from datetime import timedelta
+from functools import partial
 
 import jax.numpy as jnp
 import numpy as np
 import pandas as pd
-from pyeki.gauss import Gaussian
-from pyeki.linalg import DensePSD, PSDBlockDiag
+import xarray as xr
 
-from sipnet_calibration import constraints
-from sipnet_calibration import net_ecosystem_exchange as nee
-from sipnet_calibration.conventions import TIME
-from sipnet_calibration.observation import ObservationSource, ObservationVector
-from sipnet_calibration.observation.time_alignment import windows_from_observed_values
+from sipnet_calibration.observation import STANDARD_DEVIATION, ObservationVector
+from sipnet_calibration.observation.model import noise_factor
+from sipnet_calibration.probability import (
+    BlockDiagonalSpec,
+    CovarianceSpec,
+    DenseSpec,
+    DiagonalSpec,
+    FactorSpec,
+    LabeledValues,
+    Posterior,
+    SumSpec,
+)
 
 from .. import config
-from . import observations
+from .discrepancy import NEEDiscrepancy
 
 __all__ = [
-    "calibration_likelihood",
-    "measurement_standard_deviations",
-    "noise_covariance",
+    "SECONDS_PER_DAY",
+    "carbon_fraction_error",
+    "floored_measurement_variance",
+    "leaf_area_index_discrepancy",
+    "measurement_variance",
+    "nee_discrepancy",
     "noise_covariance_blocks",
+    "noise_factors",
+    "noise_standard_deviations",
     "noise_summary",
-    "validation_likelihood",
+    "shared_measurement_error",
+    "soil_carbon_discrepancy",
 ]
 
+#: Seconds in a day: the sources' times are in seconds, ``config``'s
+#: timescales in days.
+SECONDS_PER_DAY = 86_400.0
 
-def calibration_likelihood(vector: ObservationVector | None = None) -> Gaussian:
-    """The calibration's likelihood: ``N(y, R)`` over the calibration vector.
-
-    *vector* defaults to ``observations.calibration_observation_vector()``.
-    """
-    if vector is None:
-        vector = observations.calibration_observation_vector()
-    return _gaussian_of(vector, config.CALIBRATION_NEE_SERIES)
+#: The name of LandTrendr's discrepancy variance, a constant of its factor.
+LANDTRENDR_DISCREPANCY_VARIANCE = "discrepancy_variance"
 
 
-def validation_likelihood(vector: ObservationVector | None = None) -> Gaussian:
-    """The held-out check's likelihood: ``N(y, R)`` over the validation vector.
-
-    *vector* defaults to ``observations.validation_observation_vector()``.
-    """
-    if vector is None:
-        vector = observations.validation_observation_vector()
-    return _gaussian_of(vector, config.VALIDATION_NEE_SERIES)
-
-
-def noise_covariance(vector: ObservationVector, nee_series_name: str) -> PSDBlockDiag:
-    """``R`` for *vector*, one ``DensePSD`` block per observation source, in Flat order.
-
-    Parameters
-    ----------
-    vector:
-        An observation vector of the experiment's observation sources, at one
-        site.
-    nee_series_name:
-        The NEE series the vector's NEE sources were built from, whose
-        hourly uncertainties give their measurement errors.
+def noise_factors(observation_vector: ObservationVector) -> list[FactorSpec]:
+    """The noise factor of each source of *observation_vector*, in its order.
 
     Raises
     ------
     KeyError
-        If an observation source has no block builder here.
-    ValueError
-        If the vector is not at one site, or a source's observations are not
-        one contiguous run of Flat in time order.
+        If a source has no noise model here.
     """
-    blocks = noise_covariance_blocks(vector, nee_series_name)
-    return PSDBlockDiag(
-        tuple(DensePSD(jnp.asarray(block)) for block in blocks.values())
-    )
+    return [
+        _noise_factor(observation_vector, name)
+        for name in observation_vector.observation_source_names
+    ]
 
 
-def noise_covariance_blocks(
-    vector: ObservationVector, nee_series_name: str
-) -> dict[str, np.ndarray]:
-    """Each observation source's block of ``R``, in Flat order, as NumPy arrays.
-
-    Parameters and Raises as :func:`noise_covariance`.
-    """
-    check_vector_is_at_one_site(vector)
-    standard_deviations = measurement_standard_deviations(vector, nee_series_name)
-    blocks = {}
-    start = 0
-    for name in vector:
-        source = vector[name]
-        check_source_is_contiguous_in_time_order(vector, name, start)
-        blocks[name] = _block_builder(name)(source, standard_deviations[name])
-        start += source.n_observations
-    return blocks
-
-
-def measurement_standard_deviations(
-    vector: ObservationVector, nee_series_name: str
-) -> dict[str, np.ndarray]:
-    """Each observation's measurement-error standard deviation, per observation source.
-
-    As ``MODEL.md``, "Measurement error", defines them: for a NEE window, the
-    random part averaged down over its values and the u* part not, and the
-    median of the source's windows for a window none of whose values reports
-    an uncertainty; for a constraint, its data source's own standard
-    deviation. In each source's observation order, and in its observed
-    values' units.
-    """
+def noise_covariance_blocks(posterior: Posterior) -> dict[str, np.ndarray]:
+    """Each observed source's ``R_k``, dense, keyed by source, in y's order."""
+    likelihood = posterior.gaussian_likelihood()
     return {
-        name: (
-            _nee_window_standard_deviations(vector[name], nee_series_name)
-            if name in config.NEE_WINDOWS
-            else _constraint_standard_deviations(vector[name])
+        name: np.asarray(block.to_dense())
+        for name, block in zip(
+            posterior.observations.component_names,
+            likelihood.noise_covariance.blocks,
+            strict=True,
         )
-        for name in vector
     }
 
 
-def noise_summary(vector: ObservationVector, nee_series_name: str) -> pd.DataFrame:
-    """What each observation source contributes to ``R``, one row per source.
+def noise_standard_deviations(posterior: Posterior) -> LabeledValues:
+    """``sqrt(diag R_k)`` for each observed source, labeled as its observations."""
+    return posterior.observations.values_to_labeled(
+        {
+            name: np.sqrt(np.diag(block))
+            for name, block in noise_covariance_blocks(posterior).items()
+        }
+    )
 
-    The columns are the number of observations; ``unreported``, the NEE
-    windows none of whose values reports an uncertainty, which take their
-    source's median measurement error; the source's units; ``measurement``
-    and ``discrepancy``, medians of each observation's standard deviations;
-    ``total``, the median of ``sqrt(diag R_k)``; ``effective_n``, how many
-    independent observations of the median total variance would constrain a
-    shift common to the whole source as tightly, ``(1' R_k^-1 1)`` times that
-    variance; and ``R_k``'s smallest eigenvalue.
+
+def noise_summary(
+    posterior: Posterior, observation_vector: ObservationVector
+) -> pd.DataFrame:
+    """What each source of *observation_vector* contributes to the posterior's ``R``.
+
+    One row per source: ``observations``; the source's ``units``;
+    ``measurement`` and ``discrepancy``, medians of each observation's
+    standard deviations, the second
+    :math:`\\sqrt{\\max(R_{ii} - \\sigma_i^2, 0)}`; ``total``, the median of
+    :math:`\\sqrt{R_{ii}}`; ``effective_n``, how many independent observations
+    of the median total variance would constrain a shift common to the
+    whole source as tightly, :math:`(\\mathbf 1^\\top R_k^{-1} \\mathbf 1)`
+    times that variance; and :math:`R_k`'s smallest eigenvalue.
     """
-    measurement = measurement_standard_deviations(vector, nee_series_name)
-    blocks = noise_covariance_blocks(vector, nee_series_name)
     rows = []
-    for name, block in blocks.items():
-        unreported = (
-            int(
-                np.isnan(
-                    _reported_nee_window_standard_deviations(
-                        vector[name], nee_series_name
-                    )
-                ).sum()
-            )
-            if name in config.NEE_WINDOWS
-            else 0
-        )
-        total = np.sqrt(np.diag(block))
-        discrepancy = np.sqrt(np.clip(np.diag(block) - measurement[name] ** 2, 0, None))
+    for name, block in noise_covariance_blocks(posterior).items():
+        measurement = observation_vector.constants(name)[STANDARD_DEVIATION].values
+        variance = np.diag(block)
+        total = np.sqrt(variance)
         ones = np.ones(block.shape[0])
-        effective = float(ones @ np.linalg.solve(block, ones)) * np.median(total) ** 2
         rows.append(
             {
                 "observation_source": name,
                 "observations": block.shape[0],
-                "unreported": unreported,
-                "units": vector[name].observed_values.attrs.get("units"),
-                "measurement": np.median(measurement[name]),
-                "discrepancy": np.median(discrepancy),
+                "units": observation_vector[name].observed_values.attrs.get("units"),
+                "measurement": np.median(measurement),
+                "discrepancy": np.median(
+                    np.sqrt(np.clip(variance - measurement**2, 0, None))
+                ),
                 "total": np.median(total),
-                "effective_n": effective,
+                "effective_n": float(ones @ np.linalg.solve(block, ones))
+                * np.median(total) ** 2,
                 "smallest_eigenvalue": np.linalg.eigvalsh(block)[0],
             }
         )
     return pd.DataFrame(rows).set_index("observation_source")
 
 
-# ── the blocks, one builder per kind of observation source ──
+# ── the terms: measurement error ──
 
 
-def _nee_block(source: ObservationSource, measurement: np.ndarray) -> np.ndarray:
-    """Measurement error on the diagonal plus discrepancy correlated in time."""
-    discrepancy = config.NEE_DISCREPANCY[source.observation_source_name]
-    return np.diag(measurement**2) + discrepancy.covariance(_times_in_days(source))
+def measurement_variance(standard_deviation):
+    """:math:`\\Sigma^{\\mathrm{obs}} = \\operatorname{diag}(\\sigma_i^2)`, as its diagonal."""
+    return standard_deviation**2
 
 
-def _leaf_area_index_block(
-    source: ObservationSource, measurement: np.ndarray
-) -> np.ndarray:
-    """Floored measurement error plus discrepancy correlated within each summer."""
-    floored = np.maximum(measurement, config.LAI_STANDARD_DEVIATION_FLOOR)
-    times = _times_in_days(source)
-    years = pd.DatetimeIndex(source.observed_values[TIME].values).year.to_numpy()
-    same_summer = years[:, None] == years[None, :]
-    correlation = _exponential_correlation(times, config.LAI_DISCREPANCY_TIMESCALE)
-    return (
-        np.diag(floored**2)
-        + config.LAI_DISCREPANCY_STANDARD_DEVIATION**2 * correlation * same_summer
-    )
+def floored_measurement_variance(standard_deviation):
+    """:math:`\\max(\\sigma_i, \\sigma_{\\min})^2`, ``config.LAI_STANDARD_DEVIATION_FLOOR``."""
+    return jnp.maximum(standard_deviation, config.LAI_STANDARD_DEVIATION_FLOOR) ** 2
 
 
-def _landtrendr_block(source: ObservationSource, measurement: np.ndarray) -> np.ndarray:
-    """LandTrendr's error and the carbon fraction's, each shared by every year, plus
-    independent discrepancy."""
-    values = _observed_values(source)
+def shared_measurement_error(standard_deviation):
+    """:math:`\\sigma \\sigma^\\top`: LandTrendr's error, shared by every year."""
+    return jnp.outer(standard_deviation, standard_deviation)
+
+
+def carbon_fraction_error(observed):
+    """:math:`\\kappa^2 y y^\\top`, :math:`\\kappa = 0.02 / 0.48`: the carbon
+    fraction's relative error (``config.WOOD_CARBON_FRACTION_UNCERTAINTY``
+    over ``config.WOOD_CARBON_FRACTION``), shared by every year."""
     relative = config.WOOD_CARBON_FRACTION_UNCERTAINTY / config.WOOD_CARBON_FRACTION
-    return (
-        np.outer(measurement, measurement)
-        + relative**2 * np.outer(values, values)
-        + config.LANDTRENDR_DISCREPANCY_STANDARD_DEVIATION**2 * np.eye(values.size)
-    )
+    return relative**2 * jnp.outer(observed, observed)
 
 
-def _soil_carbon_block(
-    source: ObservationSource, measurement: np.ndarray
-) -> np.ndarray:
-    """Measurement error plus a discrepancy proportional to the stock."""
-    values = _observed_values(source)
-    discrepancy = config.SOIL_CARBON_DISCREPANCY_FRACTION * values
-    return np.diag(measurement**2 + discrepancy**2)
+# ── the terms: discrepancy ──
 
 
-#: The block builder of each constraint observation source; the NEE sources
-#: are config.NEE_WINDOWS, which all take the NEE block.
-_CONSTRAINT_BLOCK_BUILDERS: dict[str, Callable[..., np.ndarray]] = {
-    "modis_leaf_area_index": _leaf_area_index_block,
-    "landtrendr_aboveground_biomass": _landtrendr_block,
-    "soilgrids_soil_organic_carbon": _soil_carbon_block,
-}
+def nee_discrepancy(time_since_epoch, *, discrepancy: NEEDiscrepancy):
+    """:math:`\\Sigma^\\delta_{WW'}` of ``model/discrepancy.py``, in the window ends."""
+    return discrepancy.covariance(time_since_epoch / SECONDS_PER_DAY, xp=jnp)
 
 
-def _block_builder(name: str) -> Callable[..., np.ndarray]:
-    """The block builder of observation source *name*."""
-    if name in config.NEE_WINDOWS:
-        return _nee_block
-    check_source_has_a_block_builder(name)
-    return _CONSTRAINT_BLOCK_BUILDERS[name]
+def leaf_area_index_discrepancy(time_since_epoch, calendar_year):
+    """The LAI discrepancy, correlated within a summer and independent across summers:
 
+    .. math::
 
-# ── helpers ──
+        \\sigma_\\delta^2 \\, e^{-|t - t'| / \\tau} \\,
+        \\mathbf 1[\\mathrm{year}(t) = \\mathrm{year}(t')],
 
-
-def _gaussian_of(vector: ObservationVector, nee_series_name: str) -> Gaussian:
-    """``N(y, R)`` for *vector*."""
-    return Gaussian(jnp.asarray(vector.y), noise_covariance(vector, nee_series_name))
-
-
-def _nee_window_standard_deviations(
-    source: ObservationSource, series_name: str
-) -> np.ndarray:
-    """Each window's measurement error, the source's median where a window reports none."""
-    reported = _reported_nee_window_standard_deviations(source, series_name)
-    check_some_window_reports_an_uncertainty(reported, source.observation_source_name)
-    return np.where(np.isnan(reported), np.nanmedian(reported), reported)
-
-
-def _reported_nee_window_standard_deviations(
-    source: ObservationSource, series_name: str
-) -> np.ndarray:
-    """``sqrt(mean(r^2) / n + mean(u)^2)`` over each window's values; NaN where none reports.
-
-    ``r`` is the random uncertainty and ``u`` the u* part of the joint
-    uncertainty, ``sqrt(max(j^2 - r^2, 0))``; each mean is over the values
-    of the window that report it, and ``n`` counts every value of the window.
+    :math:`\\sigma_\\delta` ``config.LAI_DISCREPANCY_STANDARD_DEVIATION`` and
+    :math:`\\tau` ``config.LAI_DISCREPANCY_TIMESCALE``.
     """
-    random = _series_at_site(
-        nee.net_ecosystem_exchange_random_uncertainties, series_name
+    lag = jnp.abs(time_since_epoch[:, None] - time_since_epoch[None, :])
+    timescale = config.LAI_DISCREPANCY_TIMESCALE.total_seconds()
+    same_summer = calendar_year[:, None] == calendar_year[None, :]
+    return (
+        config.LAI_DISCREPANCY_STANDARD_DEVIATION**2
+        * jnp.exp(-lag / timescale)
+        * same_summer
     )
-    joint = _series_at_site(nee.net_ecosystem_exchange_joint_uncertainties, series_name)
-    windows = windows_from_observed_values(source.observed_values.squeeze())
-    # get_indexer needs the times at the windows' precision.
-    window_of_value = windows.get_indexer(random.index.as_unit(windows.left.unit))
-    in_a_window = window_of_value >= 0
-    table = pd.DataFrame(
-        {
-            "window": window_of_value[in_a_window],
-            "random_variance": random.to_numpy()[in_a_window] ** 2,
-            "ustar": np.sqrt(
-                np.clip(joint.to_numpy() ** 2 - random.to_numpy() ** 2, 0, None)
-            )[in_a_window],
-        }
+
+
+def soil_carbon_discrepancy(observed):
+    """:math:`(f y)^2`, ``config.SOIL_CARBON_DISCREPANCY_FRACTION``: proportional to the stock."""
+    return (config.SOIL_CARBON_DISCREPANCY_FRACTION * observed) ** 2
+
+
+# ── each source's covariance ──
+
+
+def _noise_factor(observation_vector: ObservationVector, name: str) -> FactorSpec:
+    """Source *name*'s noise factor, with its covariance and provenance."""
+    check_source_has_a_noise_model(name)
+    if name in config.NEE_WINDOWS:
+        discrepancy = config.NEE_DISCREPANCY[name]
+        return noise_factor(
+            observation_vector,
+            name,
+            covariance=_per_site(
+                DiagonalSpec(measurement_variance),
+                DenseSpec(partial(nee_discrepancy, discrepancy=discrepancy)),
+            ),
+            provenance=(
+                "AmeriFlux RANDUNC and JOINTUNC per window; discrepancy "
+                f"{discrepancy.provenance}."
+            ),
+        )
+    return _CONSTRAINT_NOISE_FACTORS[name](observation_vector, name)
+
+
+def _per_site(*terms: CovarianceSpec) -> BlockDiagonalSpec:
+    """The sum of *terms*, one block per site."""
+    return BlockDiagonalSpec(SumSpec(*terms), by="site")
+
+
+def _leaf_area_index_factor(observation_vector, name) -> FactorSpec:
+    """MODIS LAI: floored measurement error plus discrepancy within each summer, per site."""
+    return noise_factor(
+        observation_vector,
+        name,
+        covariance=_per_site(
+            DiagonalSpec(floored_measurement_variance),
+            DenseSpec(leaf_area_index_discrepancy),
+        ),
+        provenance=(
+            "MCD15A3H LAI_StdDev floored at the reanalysis's 0.66; discrepancy "
+            "0.5 m2 m-2 over 30 days within a summer (reasoned)."
+        ),
     )
-    grouped = table.groupby("window")
-    counts = grouped.size().reindex(range(len(windows)))
-    random_variance = grouped["random_variance"].mean().reindex(range(len(windows)))
-    ustar = grouped["ustar"].mean().reindex(range(len(windows)))
-    return np.sqrt(random_variance / counts + ustar**2).to_numpy()
 
 
-def _constraint_standard_deviations(source: ObservationSource) -> np.ndarray:
-    """The constraint's own standard deviations at the source's observations."""
-    constraint_name = source.observation_source_name
-    standard_deviations = constraints.constraint_standard_deviations(
-        [constraint_name], sites=[config.SITE]
-    )[constraint_name]
-    observed = source.observed_values
-    if TIME in observed.dims:
-        standard_deviations = standard_deviations.sel({TIME: observed[TIME]})
-    values = np.atleast_1d(standard_deviations.squeeze().to_numpy())
-    check_standard_deviations_are_non_negative(values, constraint_name)
-    return values
+def _landtrendr_factor(observation_vector, name) -> FactorSpec:
+    """LandTrendr: its error and the carbon fraction's, each shared by every
+    year, plus independent discrepancy, per site."""
+    return noise_factor(
+        observation_vector,
+        name,
+        covariance=_per_site(
+            DenseSpec(shared_measurement_error),
+            DenseSpec(carbon_fraction_error),
+            DiagonalSpec(LANDTRENDR_DISCREPANCY_VARIANCE),
+        ),
+        constants={
+            LANDTRENDR_DISCREPANCY_VARIANCE: xr.DataArray(
+                config.LANDTRENDR_DISCREPANCY_STANDARD_DEVIATION**2
+            )
+        },
+        provenance=(
+            "LandTrendr's reported error and the carbon fraction's, 0.48 +/- "
+            "0.02, each shared by every year; independent discrepancy 5 Mg ha-1 "
+            "(reasoned)."
+        ),
+    )
 
 
-def _series_at_site(reader: Callable[..., dict], series_name: str) -> pd.Series:
-    """One of a NEE series' companion variables at the site, as a time series."""
-    field = reader([series_name], sites=[config.SITE])[series_name]
-    return field.squeeze().to_series()
+def _soil_carbon_factor(observation_vector, name) -> FactorSpec:
+    """SoilGrids: measurement error plus a discrepancy proportional to the stock."""
+    return noise_factor(
+        observation_vector,
+        name,
+        covariance=SumSpec(
+            DiagonalSpec(measurement_variance), DiagonalSpec(soil_carbon_discrepancy)
+        ),
+        provenance=(
+            "SoilGrids' reported error; discrepancy 25% of the stock, for the "
+            "depth and definition SIPNET's soil pool does not share (reasoned)."
+        ),
+    )
 
 
-def _times_in_days(source: ObservationSource) -> np.ndarray:
-    """The source's time labels, in days since its first."""
-    times = pd.DatetimeIndex(source.observed_values[TIME].values)
-    return ((times - times[0]) / pd.Timedelta(days=1)).to_numpy()
-
-
-def _exponential_correlation(times: np.ndarray, timescale: timedelta) -> np.ndarray:
-    """``exp(-|t - t'| / tau)`` between every pair of *times*, in days."""
-    tau = timescale / timedelta(days=1)
-    return np.exp(-np.abs(times[:, None] - times[None, :]) / tau)
-
-
-def _observed_values(source: ObservationSource) -> np.ndarray:
-    """The source's observed values, in its observation order."""
-    return np.atleast_1d(source.observed_values.squeeze().to_numpy())
+#: The noise factor of each constraint source; the NEE sources are
+#: config.NEE_WINDOWS. Built last: it names the builders above.
+_CONSTRAINT_NOISE_FACTORS = {
+    "modis_leaf_area_index": _leaf_area_index_factor,
+    "landtrendr_aboveground_biomass": _landtrendr_factor,
+    "soilgrids_soil_organic_carbon": _soil_carbon_factor,
+}
 
 
 # ── checks ──
 
 
-def check_vector_is_at_one_site(vector: ObservationVector) -> None:
-    """The noise model is for one site's observations."""
-    if len(vector.sites) != 1:
-        raise ValueError(
-            f"the vector observes {len(vector.sites)} sites; this noise model is "
-            "for one site, so select one with vector.select(sites=[...])"
-        )
-
-
-def check_source_is_contiguous_in_time_order(
-    vector: ObservationVector, name: str, start: int
-) -> None:
-    """A source's observations are one run of Flat, from *start*, in time order."""
-    positions = vector.positions(observation_source_name=name)
-    expected = np.arange(start, start + vector[name].n_observations)
-    if not np.array_equal(positions, expected):
-        raise ValueError(
-            f"{name}'s observations are not Flat positions {start} to "
-            f"{expected[-1]} in order; the blocks of R would be misplaced"
-        )
-
-
-def check_source_has_a_block_builder(name: str) -> None:
-    """Every observation source has a noise block defined for it."""
-    if name not in _CONSTRAINT_BLOCK_BUILDERS:
+def check_source_has_a_noise_model(name: str) -> None:
+    """Every observation source has a noise model defined for it."""
+    if name not in config.NEE_WINDOWS and name not in _CONSTRAINT_NOISE_FACTORS:
         raise KeyError(
-            f"no noise block is defined for the observation source {name!r}; "
+            f"no noise model is defined for the observation source {name!r}; "
             "add one to model/noise.py and its terms to config.py"
-        )
-
-
-def check_some_window_reports_an_uncertainty(
-    reported: np.ndarray, observation_source_name: str
-) -> None:
-    """At least one NEE window reports a random uncertainty, to stand for those that do not."""
-    if np.isnan(reported).all():
-        raise ValueError(
-            f"{observation_source_name}: no window reports a random uncertainty "
-            "in any value, so no measurement error can be given; check the "
-            "series' RANDUNC column"
-        )
-
-
-def check_standard_deviations_are_non_negative(values: np.ndarray, name: str) -> None:
-    """A constraint's standard deviations are finite and not negative.
-
-    A zero is allowed: every block adds a floor or a discrepancy to it.
-    """
-    if not (np.isfinite(values).all() and (values >= 0).all()):
-        raise ValueError(
-            f"{name}: its standard deviations at the observations are not all "
-            "finite and non-negative; the noise model cannot use them"
         )

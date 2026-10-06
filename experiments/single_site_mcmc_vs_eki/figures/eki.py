@@ -61,7 +61,7 @@ def plot_ladder(run: dict) -> plt.Figure:
     level.set_title("The ladder")
     for column, style in (("misfit_mean", "o-"), ("misfit_min", "v--")):
         misfit.plot(steps, history[column], style, label=column.replace("_", " "))
-    misfit.plot(steps, history["centre_misfit"], "s:", label="misfit of the mean")
+    misfit.plot(steps, history["center_misfit"], "s:", label="misfit of the mean")
     misfit.axhline(
         run["predictions"].shape[1] / 2,
         color="black",
@@ -195,7 +195,7 @@ def draw_eki_figures(data: str) -> None:
         f"eki_marginals_{data}": plot_marginals(run),
     }
     if run["theta_true"] is not None:
-        entry_names = list(prior.calibration()[0].unconstrained.entry_names)
+        entry_names = list(prior.prior_alone().parameters.unconstrained.entry_names)
         figures["eki_recovery_synthetic"] = plot_recovery(run, entry_names)
     for name, figure in figures.items():
         save_figure(figure, name, eki_run=True)

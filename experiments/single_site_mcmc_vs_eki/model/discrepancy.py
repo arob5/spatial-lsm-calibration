@@ -19,7 +19,7 @@ a :class:`NEEDiscrepancy` with only the short term is the single exponential
 term of ``MODEL.md``'s "Noise model".
 
 This module holds the form only; ``config.NEE_DISCREPANCY`` holds the values
-and ``model/noise.py`` builds ``R`` with them.
+and ``model/noise.py`` declares ``R`` with them.
 """
 
 from dataclasses import dataclass, fields

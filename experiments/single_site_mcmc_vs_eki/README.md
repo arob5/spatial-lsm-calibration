@@ -53,26 +53,26 @@ parts depend one way:
 |---|---|
 | `model/inputs.py` | one loader per data source, restricted to the site |
 | `model/operators.py` | the two observation operators the library does not have: a mean rate over each window (NEE), and dry aboveground biomass from wood carbon (LandTrendr) |
-| `model/observations.py` | the observed values of every observation source, prepared from `inputs` as `config` says, and the calibration and validation observation vectors |
+| `model/observations.py` | every observation source, its observed values and measurement standard deviations prepared from `inputs` as `config` says, and the calibration and validation observation vectors |
 | `model/discrepancy.py` | the form of NEE's model discrepancy: a short, a long and a recurring term; `config.NEE_DISCREPANCY` holds its values |
-| `model/noise.py` | the noise covariance $R$ and the Gaussian likelihood it defines, for both vectors |
-| `model/sipnet.py` | what running SIPNET needs, built from `config`: the base parameters, the runner and model, the drivers, the site's initial state, and the forward model over PyEns |
-| `model/prior.py` | **the calibration's parameterization and prior**: the parameter vector, the prior and the SIPNET parameter map, with every prior term's provenance; the site's `SiteDims`; theta's natural values as a table |
-| `model/inverse_problem.py` | the problem every algorithm conditions on: the prior (exactly Gaussian in theta, and as a pyEKI Gaussian, `prior_gaussian`), the forward model over the calibration vector, `y` and `R`; synthetic observations replace `y` |
+| `model/noise.py` | the noise model: one Gaussian noise factor per source, its covariance a measurement term plus a discrepancy term, as covariance specs; a posterior's $R$ blocks, and their summary |
+| `model/sipnet.py` | what running SIPNET needs, built from `config`: the base parameters, the runner and model, the drivers, the site's initial state, and the SIPNET runs over PyEns |
+| `model/prior.py` | **the calibration's parameterization and prior**: one prior factor per parameter, with its provenance, and the SIPNET parameter map; the initial states nothing calibrates, as inputs; the site's `SiteDims`; the prior's center in theta; theta's natural values as a table |
+| `model/calibration.py` | **the model, assembled in one place**: the prior factors, the forward map as a `SIPNETSimulator` and the noise factors, joined, bound at the site and conditioned on the observations, as the posterior every algorithm reads; the calibration and validation posteriors |
 | `model/outputs.py` | reading what the runs wrote: a predictive, an EKI run, a run's diagnostics |
 | `model/diagnostics.py` | the diagnostics of a run, as `MODEL.md`, "Diagnostics", defines them: the posterior predictive check, NEE's residuals (size, recurring seasonal part, autocorrelation against $R$'s, slow and fast parts, night-day correlation), and the two towers |
 | `model/fixed_sipnet_parameters.csv` | every SIPNET parameter the calibration does not calibrate: its value and justification |
 | `run/prepare_drivers.py` | the site's driver file, corrected for four known defects of the ERA5 driver files; its docstring says what each defect is and how it is corrected |
 | `run/check_inputs.py` | prints what the inputs, the observation vectors and the noise model hold; the check that everything is found and builds |
-| `run/prior_predictive.py` | one SIPNET run by hand at the prior mean and an ensemble of prior draws |
-| `run/eki.py` | EKI in its sampling form, on observed or synthetic data: a prior ensemble moved up an adaptive tempering ladder to beta = 1 by the perturbed-observation update, every step checkpointed and resumable (`--resume`) |
+| `run/prior_predictive.py` | one SIPNET run by hand at the prior's center and an ensemble of prior draws |
+| `run/eki.py` | EKI in its sampling form, on observed or synthetic data: EnsKit's driver on `inference.eki_problem(posterior)`: a prior ensemble moved up an adaptive tempering ladder to beta = 1 by the perturbed-observation update, every step checkpointed and resumable (`--resume`) |
 | `run/posterior_predictive.py` | an EKI run's final ensemble through the same predictive |
 | `run/compare_setups.py` | the EKI setups' figures side by side |
 | `run/diagnose.py` | a run's diagnosis: its tables under `diagnostics/`, and their figures |
 | `run/draw_figures.py` | a stored run's figures, redrawn |
 | `run/fit_nee_discrepancy.py` | fits NEE's discrepancy to an EKI run's residuals by maximum marginal likelihood, several variants per source, checked against the towers and the held-out tower; writes `nee_discrepancy_fit.csv` beside the run |
-| `run/_predictive.py` | what the prior and posterior predictives share: an ensemble (and optionally one run by hand) through the forward model, predicting both observation vectors and daily output, scored under the likelihood, written in one layout |
-| `run/_provenance.py` | the `provenance.json` each run writes beside its outputs, and the calibration's record, `calibration_parameters.csv` and `calibration_sipnet_parameters.csv` |
+| `run/_predictive.py` | what the prior and posterior predictives share: an ensemble (and optionally one run by hand) evaluated under the calibration and validation posteriors and run once more for daily output, written in one layout |
+| `run/_provenance.py` | the `provenance.json` each run writes beside its outputs, and the calibration's record: `calibration_parts.csv`, `calibration_components.csv` and `calibration_sipnet_parameters.csv` |
 | `figures/common.py` | panel titles, the shared legend, and saving a figure |
 | `figures/prior_predictive.py` | the prior predictive's figures: NEE windows, pool constraints and daily trajectories, and the slide figures (prior marginals, NEE's seasonal cycle, annual NEE against both towers, coverage per source); into `output/figures/` |
 | `figures/eki.py` | an EKI run's figures: the ladder, prior against posterior marginals, on synthetic data recovery of the truth, and the posterior predictive's figures; into `output/figures/<setup>/` |
@@ -128,7 +128,8 @@ quarto preview experiments/single_site_mcmc_vs_eki/report/report.qmd
 
 In a notebook started from the repository root, import the parts the same
 way: `from experiments.single_site_mcmc_vs_eki import config` and
-`from experiments.single_site_mcmc_vs_eki.model import observations, prior`.
+`from experiments.single_site_mcmc_vs_eki.model import calibration`, whose
+`calibration_posterior()` is the whole model.
 
 ## The record of a run
 
@@ -138,8 +139,10 @@ outputs (`run/_provenance.py`): the repository commit and whether the tree
 was dirty, each companion package's installed commit, the SIPNET pin and
 binary, the command, every `config` constant, and the path, size and MD5 of
 every input file. Beside it, a run of the calibration writes the
-calibration's own record: one table per parameter with its prior term, and
-one per SIPNET parameter with its role and rule or fixed value. A result worth keeping is then the commit it names, tagged,
+calibration's own record: one table per part of the model with its law and
+provenance, one per component with its role in the posterior, and one per
+SIPNET parameter with its rule or fixed value. A result worth keeping is then
+the commit it names, tagged,
 with its `output/` directory archived beside the tag.
 
 ## Decisions

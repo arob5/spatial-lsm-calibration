@@ -99,7 +99,7 @@ def prior_predictive_coverage():
 
 def synthetic_recovery():
     """The synthetic run's posterior against the truth, each entry standardized."""
-    entry_names = list(prior.calibration()[0].unconstrained.entry_names)
+    entry_names = list(prior.prior_alone().parameters.unconstrained.entry_names)
     return eki_figures.plot_recovery(_eki_run("synthetic"), entry_names)
 
 

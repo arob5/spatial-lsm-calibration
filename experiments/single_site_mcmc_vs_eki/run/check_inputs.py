@@ -2,10 +2,11 @@
 
 Overview
 --------
-Loads every input, builds both observation vectors and their noise
-covariances, and prints what each holds. It writes nothing; it is the check
-that ``config`` points at data that exists and that the model builds from
-it.
+Loads every input, builds the calibration and validation posteriors
+(``model/calibration.py``), and prints what the inputs, the observation
+vectors and the noise covariances hold. It runs no SIPNET and writes
+nothing; it is the check that ``config`` points at data that exists and
+that the model builds from it.
 
 Input data
 ----------
@@ -40,7 +41,7 @@ from sipnet_calibration.observation import ObservationSource
 from sipnet_calibration.validation import range_summary
 
 from .. import config
-from ..model import inputs, noise, observations
+from ..model import calibration, inputs, noise
 
 __all__ = ["main"]
 
@@ -52,11 +53,15 @@ def main() -> int:
     """Print the three reports, or the error that stopped one."""
     try:
         describe_inputs()
-        calibration = observations.calibration_observation_vector()
-        validation = observations.validation_observation_vector()
+        posteriors = {
+            "calibration": calibration.calibration_posterior(),
+            "validation": calibration.validation_posterior(),
+        }
         with pd.option_context("display.width", 200, "display.max_columns", 20):
-            describe_observations(calibration, validation)
-            describe_noise(calibration, validation)
+            describe_observations(
+                *(calibration.observation_vector(p) for p in posteriors.values())
+            )
+            describe_noise(posteriors)
     except (FileNotFoundError, KeyError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
@@ -99,29 +104,27 @@ def describe_inputs() -> None:
         )
 
 
-def describe_observations(calibration, validation) -> None:
+def describe_observations(calibration_vector, validation_vector) -> None:
     """Both observation vectors, and the NEE windows each keeps by month."""
-    print(f"\ncalibration: {calibration!r}")
-    print(calibration.describe().to_string())
-    print(f"\nvalidation: {validation!r}")
-    print(validation.describe().to_string())
+    print(f"\ncalibration: {calibration_vector!r}")
+    print(calibration_vector.describe().to_string())
+    print(f"\nvalidation: {validation_vector!r}")
+    print(validation_vector.describe().to_string())
     print("\nNEE windows kept, as a fraction of the period's windows, by month")
     for label, vector, period in (
-        ("calibration", calibration, config.CALIBRATION_NEE_PERIOD),
-        ("validation", validation, config.VALIDATION_NEE_PERIOD),
+        ("calibration", calibration_vector, config.CALIBRATION_NEE_PERIOD),
+        ("validation", validation_vector, config.VALIDATION_NEE_PERIOD),
     ):
         for name in config.NEE_WINDOWS:
             print(f"  {label} {name}: {_kept_by_month(vector[name], period)}")
 
 
-def describe_noise(calibration, validation) -> None:
-    """What each observation source contributes to both vectors' ``R``."""
+def describe_noise(posteriors: dict) -> None:
+    """What each observation source contributes to each posterior's ``R``."""
     summaries = pd.concat(
         {
-            "calibration": noise.noise_summary(
-                calibration, config.CALIBRATION_NEE_SERIES
-            ),
-            "validation": noise.noise_summary(validation, config.VALIDATION_NEE_SERIES),
+            name: noise.noise_summary(posterior, calibration.observation_vector(posterior))
+            for name, posterior in posteriors.items()
         },
         names=["vector"],
     )

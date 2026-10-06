@@ -3,54 +3,59 @@
 Overview
 --------
 Runs ensemble Kalman inversion in its sampling form on the calibration's
-inverse problem (``model/inverse_problem.py``):
+posterior (``model/calibration.py``), through EnsKit's driver
+(``enskit.algorithms.eki``) and the problem
+:func:`sipnet_calibration.inference.eki_problem` reads from the posterior:
+its forward map, ``y`` and ``R``.
 
-- the initial ensemble is ``config.EKI_ENSEMBLE_SIZE`` draws of the prior,
-  which is exactly Gaussian in theta;
-- each step conditions on ``y`` with the noise covariance ``R / delta``, by
-  pyEKI's perturbed-observation update (``PathwiseUpdate``, the stochastic
-  Matheron update), the increment ``delta`` chosen by
-  ``AdaptiveESSSchedule`` so that the ensemble's effective sample size under
-  it is ``config.EKI_ESS_FRACTION`` of J, until the increments sum to 1;
-- a member whose run fails is moved to the valid members' center for that
-  step (pyEKI's ``on_failure="repair"``), and so is one whose SIPNET
-  parameters leave pySIPNET's domain (the forward model's
-  ``out_of_domain="fail_row"``); both are recorded.
+- The initial ensemble is ``config.EKI_ENSEMBLE_SIZE`` draws of the prior.
+- Each step conditions on ``y`` with the noise covariance ``R / delta`` by
+  the stochastic Matheron update (``enskit.kalman.Matheron``), the increment
+  ``delta`` chosen by ``AdaptiveESSSchedule`` so that the ensemble's
+  effective sample size under it is ``config.EKI_ESS_FRACTION`` of J, until
+  the increments sum to 1.
+- A member whose sample is invalid, its run failed or its SIPNET parameters
+  outside pySIPNET's domain, is moved to the valid members' center for that
+  step (``on_failure="repair"``), and recorded.
 
 ``--data observed`` conditions on the calibration vector's observations.
 ``--data synthetic`` conditions on synthetic ones, ``y* = G(theta*) + e``,
-with ``theta*`` one prior draw and ``e`` one draw of ``N(0, R)``
+``theta*`` one prior draw and ``e`` one draw of ``N(0, R)``
 (``config.EKI_SYNTHETIC_TRUTH_SEED``), so the run can be checked against a
 known truth.
 
 Input data
 ----------
-Everything the forward model reads (``run/prior_predictive.py`` lists
-it), and ``config``.
+Everything the posterior reads (``run/prior_predictive.py`` lists it), and
+``config``.
 
 Output data
 -----------
 Under ``config.EKI_DIRECTORY / <data>``:
 
-- ``history.csv``: one row per step, pyEKI's ``HistoryRecord`` (the level
+- ``history.csv``: one row per step, EnsKit's ``HistoryRecord`` (the level
   and increment, the misfits' mean, minimum and maximum, the mean
   prediction's misfit, the parameter spread, the effective sample size, the
   valid members), with the fraction of members out of pySIPNET's domain;
 - ``initial_ensemble.npy``: the initial ensemble, theta ``(J, D)``, as drawn;
 - ``steps/step_<k>.npz``: step ``k``'s evaluation, ``ensemble`` ``(J, D)``
-  (failed members moved to the valid center), ``predictions`` ``(J, N)``,
-  per-member ``misfits`` ``(J,)`` and ``valid`` ``(J,)``, whether the
-  member's run succeeded, and the state after it, ``next_ensemble``,
-  ``next_beta``, ``next_step`` and ``next_key`` (the key's data), from which
-  ``--resume`` continues;
+  (failed members moved to the valid center), ``predictions`` ``(J, N)``
+  in the posterior's y order, per-member ``misfits`` ``(J,)`` and
+  ``valid`` ``(J,)``, whether the member's sample was valid, and the state
+  after it, ``next_ensemble``, ``next_beta``, ``next_step`` and
+  ``next_key`` (the key's data), from which ``--resume`` continues;
   ``steps/step_<k>_failures.csv``, the failed runs, when there are any;
 - ``prior_ensemble.csv``, ``posterior_ensemble.csv``: the initial and the
   final ensembles' natural values, one row per member;
 - ``synthetic`` only: ``truth.csv``, theta*'s natural values, and
-  ``synthetic.npz``, ``theta_true`` ``(D,)``, ``predictions_true`` and
-  ``y`` ``(N,)``;
-- ``calibration_parameters.csv``, ``calibration_sipnet_parameters.csv`` and
+  ``synthetic.npz``, ``theta_true`` ``(D,)`` and ``y`` ``(N,)``;
+- ``calibration_parts.csv``, ``calibration_sipnet_parameters.csv`` and
   ``provenance.json``, as the prior predictive's.
+
+The ladder ends when the increments reach beta = 1, without evaluating the
+ensemble it ends with; the last step is then that ensemble's evaluation, at
+beta = 1 with no update (its increment is 0), so its ``predictions`` are the
+posterior ensemble's predictions of the calibration vector.
 
 Once the ladder reaches beta = 1, the run draws its ladder, its marginals
 and, on synthetic data, its recovery of the truth (``figures/eki.py``) into
@@ -62,9 +67,12 @@ A run started without ``--resume`` first removes what an earlier run of the
 same setup and data left: its steps, history, posterior ensemble, posterior
 predictive, diagnostics and discrepancy fit.
 
-The last step is an evaluation of the final ensemble, at beta = 1, with no
-update (its increment is 0), so its ``predictions`` are the posterior
-ensemble's predictions of the calibration vector.
+Notes
+-----
+The initial ensemble is the prior's own draws (``EKIProblem.initial_ensemble``),
+so it differs from that of a run made before the probability layer, which
+drew from a Gaussian built by hand: the same distribution, since every prior
+factor is Gaussian in theta, but another random stream.
 
 Usage
 -----
@@ -76,7 +84,6 @@ From the repository root::
 """
 
 import argparse
-import dataclasses
 import shutil
 import sys
 import warnings
@@ -85,21 +92,17 @@ from pathlib import Path
 import jax
 import numpy as np
 import pandas as pd
-from pyeki.eki import (
-    AdaptiveESSSchedule,
-    EKIState,
-    HistoryRecord,
-    PathwiseUpdate,
-    evaluate,
-    iterate,
-    misfits,
-)
-from pyeki.gauss import Gaussian
+from enskit import kalman
+from enskit.algorithms import eki
+from enskit.distribution import Ensemble
+
+from sipnet_calibration.inference import EKIProblem, eki_problem
+from sipnet_calibration.probability import Posterior, condition_on
+from sipnet_calibration.probability.names import THETA
 
 from .. import config
 from ..figures.eki import draw_eki_figures
-from ..model import inverse_problem, prior
-from ..model.inverse_problem import InverseProblem
+from ..model import calibration, prior
 from ..model.outputs import load_eki_run
 from . import _provenance
 
@@ -115,10 +118,13 @@ def main(argv: list[str] | None = None) -> int:
     arguments = _parser().parse_args(argv)
     directory = config.EKI_DIRECTORY / arguments.data
     (directory / "steps").mkdir(parents=True, exist_ok=True)
-    problem = inverse_problem.calibration_problem()
+    posterior = calibration.calibration_posterior()
     try:
         if arguments.data == "synthetic":
-            problem = synthetic_problem(problem, directory, resume=arguments.resume)
+            posterior = synthetic_posterior(
+                posterior, directory, resume=arguments.resume
+            )
+        problem = eki_problem(posterior)
         state = (
             resumed_state(directory)
             if arguments.resume
@@ -131,9 +137,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"the run under {directory} is finished; nothing to resume")
         return 0
     if not arguments.resume:
-        _write_start(directory, problem, state)
+        _write_start(directory, posterior, state)
     state = run_ladder(problem, state, directory)
-    write_ensemble(directory / "posterior_ensemble.csv", problem, state.ensemble)
+    write_ensemble(
+        directory / "posterior_ensemble.csv", posterior, state.ensemble[THETA]
+    )
     _provenance.write_provenance(
         directory / "provenance.json", input_files=_provenance.model_input_files()
     )
@@ -145,101 +153,88 @@ def main(argv: list[str] | None = None) -> int:
 # ── the steps ──
 
 
-def synthetic_problem(
-    problem: InverseProblem, directory: Path, *, resume: bool
-) -> InverseProblem:
-    """The problem conditioned on ``y* = G(theta*) + e``, made once and then read back."""
+def synthetic_posterior(
+    posterior: Posterior, directory: Path, *, resume: bool
+) -> Posterior:
+    """*posterior*'s model conditioned on ``y* = G(theta*) + e``, made once and then read back.
+
+    ``y*`` is one replicate of the observations at ``theta*``, a prior
+    draw, so ``R`` is the calibration vector's.
+    """
     path = directory / "synthetic.npz"
     if resume:
         check_file_exists(path)
-        return problem.with_observations(np.load(path)["y"])
+        observed = posterior.observations.flat_to_values(np.load(path)["y"])
+        return condition_on(posterior.model, observed)
     truth_key, noise_key = jax.random.split(
         jax.random.key(config.EKI_SYNTHETIC_TRUTH_SEED)
     )
-    theta_true = np.asarray(problem.prior.sample(truth_key, 1))[0]
-    predictions_true = np.asarray(problem.forward_model()(theta_true))
-    check_truth_run_succeeded(predictions_true)
-    noise = Gaussian(jax.numpy.zeros(problem.y.shape), problem.noise_covariance)
-    y = predictions_true + np.asarray(noise.sample(noise_key, 1))[0]
-    np.savez(path, theta_true=theta_true, predictions_true=predictions_true, y=y)
-    write_ensemble(directory / "truth.csv", problem, theta_true[None, :], ["truth"])
-    return problem.with_observations(y)
+    theta_true = posterior.sample_prior(truth_key, 1)
+    replicated, computed = posterior.replicate(noise_key, theta_true)
+    check_truth_run_succeeded(computed)
+    synthetic = condition_on(
+        posterior.model, {name: values[0] for name, values in replicated.items()}
+    )
+    np.savez(path, theta_true=np.asarray(theta_true[0]), y=np.asarray(synthetic.y))
+    write_ensemble(directory / "truth.csv", posterior, theta_true, ["truth"])
+    return synthetic
 
 
-def initial_state(problem: InverseProblem, ensemble_size: int) -> EKIState:
+def initial_state(problem: EKIProblem, ensemble_size: int) -> eki.EKIState:
     """*ensemble_size* draws of the prior, and the run's own key."""
-    return EKIState.from_prior(
-        jax.random.key(config.EKI_SEED), problem.prior_gaussian, ensemble_size
+    ensemble_key, run_key = jax.random.split(jax.random.key(config.EKI_SEED))
+    return eki.EKIState(
+        problem.initial_ensemble(ensemble_key, ensemble_size), key=run_key
     )
 
 
-def resumed_state(directory: Path) -> EKIState:
+def resumed_state(directory: Path) -> eki.EKIState:
     """The state after the last step written."""
     paths = sorted((directory / "steps").glob("step_*.npz"))
     check_some_step_was_written(paths, directory)
     last = np.load(paths[-1])
-    return EKIState(
-        ensemble=jax.numpy.asarray(last["next_ensemble"]),
+    return eki.EKIState(
+        Ensemble({THETA: jax.numpy.asarray(last["next_ensemble"])}),
+        key=jax.random.wrap_key_data(last["next_key"]),
         beta=float(last["next_beta"]),
         step=int(last["next_step"]),
-        key=jax.random.wrap_key_data(last["next_key"]),
     )
 
 
-def run_ladder(problem: InverseProblem, state: EKIState, directory: Path) -> EKIState:
-    """Move *state* up the ladder to beta = 1, writing each step as it is taken."""
-    forward = _RecordingForward(problem.forward_model(out_of_domain="fail_row"))
-    steps = iterate(
+def run_ladder(
+    problem: EKIProblem, state: eki.EKIState, directory: Path
+) -> eki.EKIState:
+    """Move *state* up the ladder to beta = 1, writing each step as it is taken,
+    then evaluate the ensemble it ends with."""
+    arguments = (problem.forward, problem.y, problem.noise_covariance)
+    steps = eki.iterate(
         state,
-        forward,
-        problem.y,
-        problem.noise_covariance,
-        schedule=AdaptiveESSSchedule(
-            beta_target=1.0, ess_fraction=config.EKI_ESS_FRACTION
-        ),
-        update=PathwiseUpdate(),
+        *arguments,
+        update_rule=kalman.Matheron(),
+        schedule=eki.AdaptiveESSSchedule(ess_fraction=config.EKI_ESS_FRACTION),
         on_failure="repair",
     )
     for state, record, evaluation in steps:
-        _write_step(directory, problem, state, record, evaluation, forward.last)
-    # The ladder ends when the increments reach beta = 1, without evaluating
-    # the ensemble it ends with; evaluate it once more, as the record of the
-    # posterior ensemble's predictions.
-    evaluation = evaluate(state, forward, problem.y, problem.noise_covariance)
-    record = _terminal_record(problem, evaluation)
-    _write_step(directory, problem, state, record, evaluation, forward.last)
+        _write_step(directory, problem, state, record, evaluation)
+    evaluation = eki.evaluate(state, *arguments, on_failure="repair")
+    record = eki.HistoryRecord.from_evaluation(evaluation)
+    _write_step(directory, problem, state, record, evaluation)
     return state
 
 
 def write_ensemble(
-    path: Path,
-    problem: InverseProblem,
-    theta,
-    labels: list[str] | None = None,
+    path: Path, posterior: Posterior, theta, labels: list[str] | None = None
 ) -> None:
     """An ensemble's natural values, one row per member."""
-    theta = np.asarray(theta)
-    natural = prior.natural_table(problem.parameter_vector, theta)
-    natural.index = labels or [f"member_{i}" for i in range(theta.shape[0])]
+    natural = prior.natural_table(posterior, theta)
+    natural.index = labels or [f"member_{i}" for i in range(len(natural))]
     natural.to_csv(path)
 
 
 # ── helpers ──
 
 
-class _RecordingForward:
-    """The forward model as pyEKI calls it, keeping each call's evaluation."""
-
-    def __init__(self, forward_model):
-        self.forward_model = forward_model
-        self.last = None
-
-    def __call__(self, theta):
-        self.last = self.forward_model.evaluate(theta)
-        return self.last.predictions
-
-
-def _write_start(directory: Path, problem: InverseProblem, state: EKIState) -> None:
+def _write_start(directory: Path, posterior: Posterior, state: eki.EKIState) -> None:
     """The record of what runs, and the initial ensemble; an earlier run's outputs go."""
     for path in (directory / "steps").glob("step_*"):
         path.unlink()
@@ -252,69 +247,43 @@ def _write_start(directory: Path, problem: InverseProblem, state: EKIState) -> N
         (directory / name).unlink(missing_ok=True)
     for name in ("posterior_predictive", "diagnostics"):
         shutil.rmtree(directory / name, ignore_errors=True)
-    np.save(directory / "initial_ensemble.npy", np.asarray(state.ensemble))
-    _provenance.write_calibration(
-        directory, problem.parameter_vector, problem.prior, problem.sipnet_parameter_map
-    )
-    write_ensemble(directory / "prior_ensemble.csv", problem, state.ensemble)
+    theta = state.ensemble[THETA]
+    np.save(directory / "initial_ensemble.npy", np.asarray(theta))
+    _provenance.write_calibration(directory, posterior)
+    write_ensemble(directory / "prior_ensemble.csv", posterior, theta)
 
 
-def _write_step(directory, problem, state, record, evaluation, forward_evaluation):
+def _write_step(
+    directory: Path,
+    problem: EKIProblem,
+    state: eki.EKIState,
+    record: eki.HistoryRecord,
+    evaluation: eki.Evaluation,
+) -> None:
     """One step's evaluation and the state after it, and its row of the history."""
     step = int(record.step)
+    runs = problem.last_evaluation.simulator_records[calibration.SIMULATOR_NAME]
     np.savez(
         directory / "steps" / f"step_{step:03d}.npz",
-        ensemble=np.asarray(evaluation.ensemble),
-        predictions=np.asarray(evaluation.predictions),
-        misfits=np.asarray(
-            misfits(problem.y, evaluation.predictions, problem.noise_covariance)
-        ),
-        next_ensemble=np.asarray(state.ensemble),
+        ensemble=np.asarray(evaluation.ensemble[THETA]),
+        predictions=np.asarray(evaluation.ensemble[eki.PREDICTION]),
+        misfits=np.asarray(evaluation.misfits),
+        next_ensemble=np.asarray(state.ensemble[THETA]),
         next_beta=float(state.beta),
         next_step=state.step,
         next_key=np.asarray(jax.random.key_data(state.key)),
-        valid=np.asarray(forward_evaluation.valid),
+        valid=np.asarray(problem.last_evaluation.valid),
     )
-    failures = forward_evaluation.failures
-    if len(failures):
-        failures.to_csv(directory / "steps" / f"step_{step:03d}_failures.csv")
-    row = {
-        field.name: np.asarray(getattr(record, field.name)).item()
-        for field in dataclasses.fields(record)
-    }
-    row["out_of_domain_fraction"] = forward_evaluation.out_of_domain_fraction
+    if len(runs.failures):
+        runs.failures.to_csv(directory / "steps" / f"step_{step:03d}_failures.csv")
+    row = {name: np.asarray(value).item() for name, value in vars(record).items()}
+    row["out_of_domain_fraction"] = runs.out_of_domain_fraction
     path = directory / "history.csv"
     pd.DataFrame([row]).to_csv(path, mode="a", header=not path.exists(), index=False)
     print(
         f"step {step}: beta {row['beta']:.4g} -> {row['beta_next']:.4g}, "
         f"misfit mean {row['misfit_mean']:.4g}, {row['n_valid']} valid",
         flush=True,
-    )
-
-
-def _terminal_record(problem: InverseProblem, evaluation) -> HistoryRecord:
-    """The history row of an evaluation no update follows: increment 0, ESS J."""
-    member_misfits = misfits(
-        problem.y, evaluation.predictions, problem.noise_covariance
-    )
-    center = misfits(
-        problem.y,
-        evaluation.predictions.mean(axis=0),
-        problem.noise_covariance,
-    )
-    zero = jax.numpy.zeros_like(evaluation.beta)
-    return HistoryRecord(
-        step=jax.numpy.asarray(evaluation.step),
-        n_valid=evaluation.n_valid,
-        beta=evaluation.beta,
-        increment=zero,
-        beta_next=evaluation.beta,
-        misfit_mean=member_misfits.mean(),
-        misfit_min=member_misfits.min(),
-        misfit_max=member_misfits.max(),
-        centre_misfit=center,
-        spread=evaluation.rms_parameter_spread,
-        ess=jax.numpy.asarray(float(evaluation.ensemble.shape[0])),
     )
 
 
@@ -351,9 +320,9 @@ def check_some_step_was_written(paths: list[Path], directory: Path) -> None:
         )
 
 
-def check_truth_run_succeeded(predictions) -> None:
-    """The synthetic truth's run succeeded, so its predictions are finite."""
-    if not np.isfinite(predictions).all():
+def check_truth_run_succeeded(computed: dict) -> None:
+    """The synthetic truth's run succeeded, so every observation was replicated."""
+    if not all(bool(np.all(valid)) for valid in computed.values()):
         raise ValueError(
             "the synthetic truth's run failed; change config.EKI_SYNTHETIC_TRUTH_SEED"
         )

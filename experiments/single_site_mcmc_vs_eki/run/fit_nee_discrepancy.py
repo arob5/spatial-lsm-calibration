@@ -60,7 +60,7 @@ from scipy.optimize import minimize
 from scipy.special import logsumexp
 
 from .. import config
-from ..model import diagnostics, observations
+from ..model import calibration, diagnostics
 from ..model.discrepancy import NEEDiscrepancy
 from ..model.outputs import load_diagnostics, load_eki_run, load_predictive
 
@@ -132,11 +132,7 @@ def main(argv: list[str] | None = None) -> int:
 
 def calibration_sources(run: dict) -> dict:
     """The run's final predictions of the calibration vector, per source."""
-    vector = observations.calibration_observation_vector()
-    y = run["y"] if run["y"] is not None else vector.y
-    return diagnostics.sources_from_flat(
-        vector, y, run["predictions"], config.CALIBRATION_NEE_SERIES
-    )
+    return diagnostics.sources_from_eki_run(run)
 
 
 def heldout_sources(directory, data: str) -> dict | None:
@@ -145,10 +141,7 @@ def heldout_sources(directory, data: str) -> dict | None:
     if data != "observed" or not (predictive / "ensemble_daily.nc").exists():
         return None
     return diagnostics.sources_from_predictive(
-        load_predictive(predictive),
-        "validation",
-        observations.validation_observation_vector(),
-        config.VALIDATION_NEE_SERIES,
+        load_predictive(predictive), "validation", calibration.validation_posterior()
     )
 
 
@@ -284,7 +277,7 @@ def _discrepancy_of(parameters: dict, provenance: str = "") -> NEEDiscrepancy:
 
 
 def _days_since_first(times: pd.DatetimeIndex) -> np.ndarray:
-    """Window ends in days since the first, as ``model/noise.py`` measures them."""
+    """Window ends in days since the first: ``model/noise.py``'s times, shifted."""
     return ((times - times[0]) / pd.Timedelta(days=1)).to_numpy()
 
 

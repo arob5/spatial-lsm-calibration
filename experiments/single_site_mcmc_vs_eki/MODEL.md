@@ -18,12 +18,17 @@ $$
 
 where $\mathcal{M}(\theta)$ is one SIPNET run over the prepared drivers at
 parameters $\theta$, $\mathcal{H}$ stacks the observation operators of the
-$K = 5$ observation sources below, and $R$ is the noise covariance. $y$, its
-order (site-major, then source in the order below, then time) and the
-operators are `model/observations.py`'s `calibration_observation_vector()`; each operator
-is bound to its source in `config.OBSERVATION_OPERATORS`. This section states
-each source's data, its operator and its measurement error exactly, and then
-the noise model assembling $R$, which `model/noise.py` builds.
+$K = 5$ observation sources below, and $R$ is the noise covariance. The
+sources, their observed values and measurement errors, and the operators are
+`model/observations.py`'s `calibration_observation_vector()`; each operator
+is bound to its source in `config.OBSERVATION_OPERATORS`. $y$ is ordered by
+source in the order below, then by site and time. This section states each
+source's data, its operator and its measurement error exactly, and then the
+noise model assembling $R$, which `model/noise.py` declares. The whole model,
+the prior, $\mathcal{H}(\mathcal{M}(\cdot))$ as a simulator and one Gaussian
+noise factor per source, is joined, bound at the site and conditioned on $y$
+in one place, `model/calibration.py`, as the posterior every algorithm
+reads.
 
 ### Notation
 
@@ -217,10 +222,13 @@ $$
 \log p(y \mid \theta) = -\tfrac12 \big(y - \mathcal{H}(\mathcal{M}(\theta))\big)^{\!\top} R^{-1} \big(y - \mathcal{H}(\mathcal{M}(\theta))\big) - \tfrac12 \log\det R - \tfrac{N}{2} \log 2\pi,
 $$
 
-scored as `noise.calibration_likelihood().log_density(predictions)` (`model/noise.py`), a
-`pyeki.gauss.Gaussian` whose covariance is a `PSDBlockDiag` of one `DensePSD`
-block per source, each factored once; a failed run's NaN row is the caller's
-to score $-\infty$. The constants below are `config`'s "noise model"
+the posterior's log likelihood (`model/calibration.py`). Each source is a
+noise factor, its observed values Gaussian about its prediction with
+covariance $R_k$, a covariance spec of the probability layer: the sum of a
+measurement and a discrepancy term, one block per site for a dated source
+(`model/noise.py`). $R$ depends on no parameter, so it is built and
+factored once, when the posterior is conditioned; a sample whose run fails
+scores $-\infty$. The constants below are `config`'s "noise model"
 section. The temporal correlation below is
 $c_\tau(t, t') = \exp(-|t - t'| / \tau)$, with $t$ in days.
 
@@ -277,8 +285,8 @@ $c_\tau(t, t') = \exp(-|t - t'| / \tau)$, with $t$ in days.
 
 ## Parameterization and prior
 
-`model/prior.py`'s `calibration()` returns the three objects; this section
-says how they were found. The records are in `exploration/parameter_analysis/`
+`model/prior.py` declares them, a prior factor per parameter and the SIPNET
+parameter map; this section says how they were found. The records are in `exploration/parameter_analysis/`
 (`phase1_report.md`, `phase2_report.md` and their tables). It is a
 **starting point**: every prior is set from the literature, the traits or the
 site's data, and none was tuned to the observations beyond checking that the

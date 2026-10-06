@@ -5,15 +5,16 @@ Overview
 Runs the calibration's prior (``model/prior.py``) two ways and writes what
 came back:
 
-1. **One run, by hand**, at the prior mean, through pySIPNET directly. It
-   shows the layers the forward model composes: theta to SIPNET parameter
-   fields (the SIPNET parameter map), fields to a run's keywords (SIPNET
-   overrides), one ``SIPNETModel`` call, the run's output as model output,
-   and the observation vector's operators on it.
+1. **One run, by hand**, at the prior's center in theta, through pySIPNET
+   directly. It shows the layers the forward map composes: theta to what
+   the simulator reads, those values to SIPNET parameter fields (the SIPNET
+   parameter map), fields to a run's keywords (SIPNET overrides), one
+   ``SIPNETModel`` call, the run's output as model output, and the
+   observation vectors' operators on it.
 2. **An ensemble**, ``config.PRIOR_PREDICTIVE_ENSEMBLE_SIZE`` draws of the
-   prior, through :class:`~sipnet_calibration.forward.ForwardModel` and
-   PyEns on local workers: once for the predictions of the calibration and
-   validation observations, once for daily model output.
+   prior, evaluated by the calibration and the validation posteriors
+   (``model/calibration.py``), SIPNET through PyEns on local workers, and
+   run once more for daily model output.
 
 Every run is scored under the calibration's likelihood (``model/noise.py``).
 The script then draws the prior predictive's figures
@@ -33,9 +34,9 @@ observed values and ``parameters.csv`` in ``run/_predictive.py``'s
 layout, the one run by hand as ``single_run``, ``diagnostics/`` as
 ``run/diagnose.py`` writes it, and
 
-- ``calibration_parameters.csv``, ``calibration_sipnet_parameters.csv``:
-  the calibration's record (``run/_provenance.py``'s
-  ``write_calibration``);
+- ``calibration_parts.csv``, ``calibration_components.csv``,
+  ``calibration_sipnet_parameters.csv``: the calibration's record
+  (``run/_provenance.py``'s ``write_calibration``);
 - ``provenance.json``: the code, packages, command and inputs of the run
   (``run/_provenance.py``).
 
@@ -54,11 +55,10 @@ import sys
 import warnings
 
 import jax
-import numpy as np
 
 from .. import config
 from ..figures.prior_predictive import draw_prior_predictive_figures
-from ..model import inverse_problem, prior
+from ..model import calibration, prior
 from . import _predictive, _provenance
 from .diagnose import diagnose_run
 
@@ -72,21 +72,19 @@ def main(argv: list[str] | None = None) -> int:
     """Run the prior predictive, write its outputs, draw them and diagnose it."""
     warnings.filterwarnings("ignore", message=".*vapor_pressure_deficit.*")
     arguments = _parser().parse_args(argv)
-    vector, calibration_prior, sipnet_map = prior.calibration()
+    posterior = calibration.calibration_posterior()
     directory = config.PRIOR_PREDICTIVE_DIRECTORY
     directory.mkdir(parents=True, exist_ok=True)
-    _provenance.write_calibration(directory, vector, calibration_prior, sipnet_map)
-    samples = calibration_prior.sample(
+    _provenance.write_calibration(directory, posterior)
+    theta = posterior.sample_prior(
         jax.random.key(config.PRIOR_PREDICTIVE_SEED), arguments.ensemble_size
     )
     _predictive.run_predictive(
         directory,
-        vector,
-        sipnet_map,
-        prior.site_dims(),
-        prior.external_inputs(),
-        samples,
-        center=np.asarray(inverse_problem.prior_gaussian(calibration_prior).mean),
+        posterior,
+        calibration.validation_posterior(),
+        theta,
+        center=prior.prior_center(posterior),
     )
     _provenance.write_provenance(
         directory / "provenance.json", input_files=_provenance.model_input_files()

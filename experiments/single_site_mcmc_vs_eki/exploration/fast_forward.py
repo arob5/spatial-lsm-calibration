@@ -1,7 +1,7 @@
 """A fast forward model for exploration: SIPNET in a process pool, predictions by index arithmetic.
 
-**An exploration tool, not the calibration's forward model.** The calibration
-runs through :class:`~sipnet_calibration.forward.ForwardModel`, whose
+**An exploration tool, not the calibration's forward map.** The calibration
+runs through :class:`~sipnet_calibration.forward.SIPNETSimulator`, whose
 observation operators are general. Here every operator of this experiment is
 specialized to what its observations are at this site: each NEE window
 covers exactly four three-hourly steps, each LAI label falls in one known
@@ -13,8 +13,9 @@ confirms it equals ``ObservationVector.predict`` on a real run.
 Functions
 ---------
 :class:`FastPredictor`
-    Built once from an observation vector and the model's time axis; turns
-    one run's output arrays into Flat predictions, ``(N,)``.
+    Built once from an observation vector at the site and the model's time
+    axis; turns one run's output arrays into predictions, ``(N,)``, source
+    by source in the vector's order, each in time order.
 :func:`run_batch`
     SIPNET for each of a batch of SIPNET overrides, in a process pool, each
     run's predictions and annual summaries returned.
@@ -126,7 +127,7 @@ class FastPredictor:
         return cls(tuple(names), tuple(kinds), tuple(indices), lengths)
 
     def predict(self, arrays: dict, leaf_carbon_per_area: float) -> np.ndarray:
-        """Flat predictions, in the vector's order and the observed units, for one run."""
+        """One run's predictions, source by source, in the observed units."""
         pieces = []
         cumulative = {
             name: np.concatenate([[0.0], np.cumsum(arrays[name] * weight)])
@@ -192,9 +193,9 @@ def check_fast_predictions(
         },
         coords={n: model_output[n] for n in (SITE, "lon", "lat")},
     )
-    library = np.asarray(
-        vector.flat(vector.predict(model_output, sipnet_parameter_fields=parameters))
-    )
+    predicted = vector.predict(model_output, sipnet_parameter_fields=parameters)
+    # At one site each source's field holds its observations alone, in time order.
+    library = np.concatenate([np.ravel(predicted[name].values) for name in vector])
     fast = predictor.predict(
         _arrays_of(sipnet_result), overrides["leaf_carbon_per_area"]
     )

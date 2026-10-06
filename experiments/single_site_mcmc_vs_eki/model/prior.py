@@ -1,18 +1,16 @@
 """The calibration's parameterization and prior: the starting point step 4 found.
 
-The three objects of a calibration for this experiment: the
-:class:`~sipnet_calibration.parameters.ParameterVector` (what is calibrated),
-the :class:`~sipnet_calibration.parameters.Prior` (what is believed
-beforehand) and the
+The parameters' prior factors (what is believed beforehand), the
 :class:`~sipnet_calibration.sipnet_parameter_map.SIPNETParameterMap` (how a
-value reaches SIPNET), with the
-:class:`~sipnet_calibration.site_dims.SiteDims` of the one site and the
-external inputs the map reads. ``MODEL.md``,
-"Parameterization and prior", says how they were found; every prior term and
-fixed value carries its provenance, and
-:func:`sipnet_calibration.calibration.describe_calibration` tabulates them.
+value reaches SIPNET), the :class:`~sipnet_calibration.site_dims.SiteDims` of
+the one site, and the initial states the map reads that are not calibrated,
+declared as inputs. ``model/calibration.py`` joins them with the forward map
+and the noise model. ``MODEL.md``, "Parameterization and prior", says how
+they were found; every prior factor and fixed value carries its provenance.
 
-**Calibrated** (13 parameters, D = 15 entries of theta):
+**Calibrated** (13 parameters, D = 15 entries of theta), each with its own
+factor, so the prior is their product; every law is a Gaussian in theta
+pushed through the parameter's bijector:
 
 - photosynthesis: the capacity ``P`` and respiration share ``rho`` of
   :func:`~sipnet_calibration.sipnet_parameter_map.photosynthesis_rules`,
@@ -35,8 +33,8 @@ coarse-root and soil base respiration rates.
 **Fixed**: every other SIPNET parameter, at the values and with the
 justifications in ``fixed_sipnet_parameters.csv``.
 
-**External inputs**: the initial leaf carbon and soil moisture, the site's
-initial-condition medians (``sipnet.initial_state``).
+**Inputs**: the initial leaf carbon and soil moisture, the site's
+initial-condition medians (``sipnet.initial_state``), on ``site``.
 """
 
 import csv
@@ -48,18 +46,22 @@ import pandas as pd
 import tensorflow_probability.substrates.jax as tfp
 import xarray as xr
 
-from sipnet_calibration.parameters import (
+from sipnet_calibration.probability import (
+    NON_NEGATIVE,
     OPEN_UNIT_INTERVAL,
     POSITIVE,
     REAL,
     SIMPLEX,
-    Parameter,
-    ParameterVector,
-    Prior,
-    PriorTerm,
+    ArraySpec,
+    FactorSpec,
+    Interval,
+    Posterior,
+    condition_on,
+    joint,
     log_normal_from_interval,
     log_normal_from_samples,
     logit_normal_from_interval,
+    normal,
     softmax_normal,
 )
 from sipnet_calibration.sipnet_parameter_map import (
@@ -80,11 +82,17 @@ from . import inputs, sipnet
 __all__ = [
     "ALLOCATION_PART",
     "ALLOCATION_PARTS",
+    "EXTERNAL_STATE_NAMES",
     "FIXED_SIPNET_PARAMETERS_FILE",
-    "calibration",
+    "SITE_LABELS_NAME",
     "external_inputs",
     "fixed_sipnet_parameters",
+    "input_specs",
     "natural_table",
+    "prior_alone",
+    "prior_center",
+    "prior_factors",
+    "sipnet_parameter_map",
     "site_dims",
 ]
 
@@ -113,6 +121,16 @@ FIXED_SIPNET_PARAMETERS_FILE = (
 #: initial wood and soil carbon are calibrated instead.
 EXTERNAL_STATE_NAMES = ("initial_leaf_carbon", "initial_soil_moisture_saturation")
 
+#: The support of each input, the domain its rule reads it on
+#: (``initial_condition_rules``): leaf carbon is a stock, soil moisture a
+#: percent of saturation.
+EXTERNAL_STATE_SUPPORTS = {
+    "initial_leaf_carbon": NON_NEGATIVE,
+    "initial_soil_moisture_saturation": Interval(
+        0.0, 100.0, low_closed=True, high_closed=True
+    ),
+}
+
 #: psnTOpt - psnTMin, deg C, held while the optimum is calibrated: the base
 #: set's optimum 24 (PEcAn's template; BETY's 43 is implausible) less its
 #: minimum 0.04 (the BETY median).
@@ -123,7 +141,7 @@ PHOTOSYNTHESIS_TEMPERATURE_RANGE = 24.0 - 0.041553
 WOOD_RESPIRATION_Q10 = 1.80944
 COARSE_ROOT_RESPIRATION_Q10 = 3.20614
 
-#: The provenance of each prior term.
+#: The provenance of each prior factor.
 PROVENANCE = {
     "photosynthetic_capacity": (
         "Reasoned. P = aMax (aMaxFrac + baseFolRespFrac) / cFracLeaf. Median 251 nmol "
@@ -197,10 +215,117 @@ PROVENANCE = {
 }
 
 
-def calibration() -> tuple[ParameterVector, Prior, SIPNETParameterMap]:
-    """The parameter vector, prior and SIPNET parameter map at the configured site."""
-    vector = _parameter_vector()
-    return vector, _prior(vector), _sipnet_parameter_map()
+def prior_factors() -> list[FactorSpec]:
+    """The 13 parameters' prior factors, one each, in theta's order."""
+    members = {
+        name: np.asarray(field).ravel().astype(float)
+        for name, field in inputs.initial_condition_fields().items()
+        if name in ("initial_wood_carbon", "initial_soil_organic_carbon")
+    }
+
+    def prior_factor(name, units, law, *, support=POSITIVE, **arguments):
+        return FactorSpec(
+            ArraySpec(name, units=units, support=support, **arguments),
+            law=law,
+            provenance=PROVENANCE[name],
+        )
+
+    return [
+        prior_factor(
+            "photosynthetic_capacity",
+            "nmol g-1 s-1",
+            log_normal_from_interval(lower=140.0, upper=450.0),
+        ),
+        prior_factor(
+            "respiration_share",
+            "1",
+            logit_normal_from_interval(lower=0.04, upper=0.20),
+            support=OPEN_UNIT_INTERVAL,
+        ),
+        prior_factor(
+            "optimum_photosynthesis_temperature",
+            "degC",
+            normal(mean=22.0, standard_deviation=2.5),
+            support=REAL,
+        ),
+        prior_factor(
+            "half_saturation_light",
+            "mol m-2 d-1",
+            log_normal_from_interval(lower=4.6, upper=26.3),
+        ),
+        prior_factor(
+            "soil_water_holding_capacity",
+            "cm",
+            log_normal_from_interval(lower=15.0, upper=150.0),
+        ),
+        prior_factor(
+            "leaf_on_growth", "g m-2", log_normal_from_interval(lower=50.0, upper=180.0)
+        ),
+        prior_factor(
+            "leaf_on_growing_degree_days",
+            "K d",
+            log_normal_from_interval(lower=500.0, upper=1100.0),
+        ),
+        prior_factor(
+            "allocation",
+            "1",
+            softmax_normal(
+                center=jnp.array([0.18, 0.45, 0.065, 0.305]),
+                logit_sd=jnp.array([0.25, 0.30, 0.30]),
+            ),
+            support=SIMPLEX,
+            element_axes={ALLOCATION_PART: ALLOCATION_PARTS},
+        ),
+        prior_factor(
+            "wood_respiration_rate_at_10c",
+            "yr-1",
+            log_normal_from_interval(lower=0.006, upper=0.04),
+        ),
+        prior_factor(
+            "soil_respiration_flux_at_10c",
+            "g m-2 yr-1",
+            log_normal_from_interval(lower=200.0, upper=900.0),
+        ),
+        prior_factor(
+            "soil_respiration_q10", "1", log_normal_from_interval(lower=1.3, upper=3.2)
+        ),
+        prior_factor(
+            "initial_wood_carbon",
+            "kg m-2",
+            log_normal_from_samples(members["initial_wood_carbon"]),
+        ),
+        prior_factor(
+            "initial_soil_organic_carbon",
+            "kg m-2",
+            log_normal_from_samples(members["initial_soil_organic_carbon"]),
+        ),
+    ]
+
+
+def prior_alone() -> Posterior:
+    """The prior factors bound and conditioned on nothing: the prior over theta.
+
+    Its theta is the calibration's, since the parameters are declared in the
+    same order; it needs no data beyond the initial-condition ensemble.
+    """
+    return condition_on(joint(*prior_factors()).bind(coords={}), {})
+
+
+def prior_center(posterior: Posterior) -> np.ndarray:
+    """Theta at the prior's center, ``(D,)``.
+
+    Every prior factor's law is a Gaussian in theta pushed through its
+    parameter's bijector (or the Gaussian itself, for the optimum
+    temperature), and the center is the Gaussians' means: each parameter at
+    its prior median, the allocation at its softmax-normal's center.
+    """
+    means = []
+    for name in posterior.parameter_names:
+        law = posterior.model.law(name, given={})
+        if isinstance(law, tfp.distributions.TransformedDistribution):
+            law = law.distribution
+        means.append(np.ravel(law.mean()))
+    return np.concatenate(means)
 
 
 def site_dims() -> SiteDims:
@@ -211,28 +336,45 @@ def site_dims() -> SiteDims:
     )
 
 
-def external_inputs() -> xr.Dataset:
-    """The initial states the map reads that are not calibrated, on ``site``."""
-    return sipnet.initial_state()[list(EXTERNAL_STATE_NAMES)]
+def input_specs() -> list[ArraySpec]:
+    """The initial states the map reads and nothing calibrates, on ``site``.
+
+    Each in the units of the initial-condition file (:func:`external_inputs`).
+    """
+    values = external_inputs()
+    return [
+        ArraySpec(
+            name,
+            units=values[name].attrs["units"],
+            support=EXTERNAL_STATE_SUPPORTS[name],
+            indexed_by=("site",),
+        )
+        for name in EXTERNAL_STATE_NAMES
+    ]
 
 
-def natural_table(vector: ParameterVector, theta) -> pd.DataFrame:
+def external_inputs() -> dict[str, xr.DataArray]:
+    """The values of :func:`input_specs`, by name: the site's initial-condition medians."""
+    initial_state = sipnet.initial_state()
+    return {name: initial_state[name] for name in EXTERNAL_STATE_NAMES}
+
+
+def natural_table(posterior: Posterior, theta) -> pd.DataFrame:
     """Theta's natural values, one row per row of *theta*, ``(J, D)``.
 
-    One column per parameter, and per element of a parameter with a shape,
-    named ``<parameter>.<element label>`` (``allocation.leaf``). The rows
-    are numbered; a caller labels them.
+    One column per parameter, and per element of a parameter with element
+    axes, named ``<parameter>.<element label>`` (``allocation.leaf``). The
+    rows are numbered; a caller labels them.
     """
-    values_by_parameter = vector.flat_to_values(vector.to_natural(theta))
+    labeled = posterior.to_labeled(np.asarray(theta))
     columns = {}
-    for name, values in values_by_parameter.items():
-        values = np.asarray(values)
-        if values.ndim == 1:
-            columns[name] = values
+    for name in posterior.parameter_names:
+        values = labeled[name].to_pandas()
+        if isinstance(values, pd.Series):
+            columns[name] = values.to_numpy()
             continue
-        (labels,) = vector[name].element_labels.values()
-        for position, label in enumerate(labels):
-            columns[f"{name}.{label}"] = values[:, position]
+        for label in values.columns:
+            columns[f"{name}.{label}"] = values[label].to_numpy()
     return pd.DataFrame(columns)
 
 
@@ -241,113 +383,10 @@ def fixed_sipnet_parameters() -> pd.DataFrame:
     return pd.read_csv(FIXED_SIPNET_PARAMETERS_FILE).set_index("sipnet_parameter_name")
 
 
-# ── the three objects ──
+# ── the SIPNET parameter map ──
 
 
-def _parameter_vector() -> ParameterVector:
-    """The 13 parameters: one value each, the allocation simplex four."""
-    parameters = [
-        Parameter(
-            name="photosynthetic_capacity", support=POSITIVE, units="nmol g-1 s-1"
-        ),
-        Parameter(name="respiration_share", support=OPEN_UNIT_INTERVAL, units="1"),
-        Parameter(
-            name="optimum_photosynthesis_temperature", support=REAL, units="degC"
-        ),
-        Parameter(name="half_saturation_light", support=POSITIVE, units="mol m-2 d-1"),
-        Parameter(name="soil_water_holding_capacity", support=POSITIVE, units="cm"),
-        Parameter(name="leaf_on_growth", support=POSITIVE, units="g m-2"),
-        Parameter(name="leaf_on_growing_degree_days", support=POSITIVE, units="K d"),
-        Parameter(
-            name="allocation",
-            support=SIMPLEX,
-            units="1",
-            shape=(len(ALLOCATION_PARTS),),
-            element_labels={ALLOCATION_PART: ALLOCATION_PARTS},
-        ),
-        Parameter(name="wood_respiration_rate_at_10c", support=POSITIVE, units="yr-1"),
-        Parameter(
-            name="soil_respiration_flux_at_10c", support=POSITIVE, units="g m-2 yr-1"
-        ),
-        Parameter(name="soil_respiration_q10", support=POSITIVE, units="1"),
-        Parameter(name="initial_wood_carbon", support=POSITIVE, units="kg m-2"),
-        Parameter(name="initial_soil_organic_carbon", support=POSITIVE, units="kg m-2"),
-    ]
-    return ParameterVector(parameters=parameters)
-
-
-def _prior(vector: ParameterVector) -> Prior:
-    """One independent term per parameter; the allocation simplex is joint by construction."""
-    members = {
-        name: np.asarray(field).ravel().astype(float)
-        for name, field in inputs.initial_condition_fields().items()
-        if name in ("initial_wood_carbon", "initial_soil_organic_carbon")
-    }
-
-    def term(name, distribution):
-        return PriorTerm(
-            parameter_names=(name,),
-            distribution=distribution,
-            provenance=PROVENANCE[name],
-        )
-
-    return Prior(
-        vector,
-        [
-            term(
-                "photosynthetic_capacity",
-                log_normal_from_interval(lower=140.0, upper=450.0),
-            ),
-            term(
-                "respiration_share", logit_normal_from_interval(lower=0.04, upper=0.20)
-            ),
-            term(
-                "optimum_photosynthesis_temperature",
-                tfp.distributions.Normal(jnp.float64(22.0), jnp.float64(2.5)),
-            ),
-            term(
-                "half_saturation_light", log_normal_from_interval(lower=4.6, upper=26.3)
-            ),
-            term(
-                "soil_water_holding_capacity",
-                log_normal_from_interval(lower=15.0, upper=150.0),
-            ),
-            term("leaf_on_growth", log_normal_from_interval(lower=50.0, upper=180.0)),
-            term(
-                "leaf_on_growing_degree_days",
-                log_normal_from_interval(lower=500.0, upper=1100.0),
-            ),
-            term(
-                "allocation",
-                softmax_normal(
-                    center=jnp.array([0.18, 0.45, 0.065, 0.305]),
-                    logit_sd=jnp.array([0.25, 0.30, 0.30]),
-                ),
-            ),
-            term(
-                "wood_respiration_rate_at_10c",
-                log_normal_from_interval(lower=0.006, upper=0.04),
-            ),
-            term(
-                "soil_respiration_flux_at_10c",
-                log_normal_from_interval(lower=200.0, upper=900.0),
-            ),
-            term(
-                "soil_respiration_q10", log_normal_from_interval(lower=1.3, upper=3.2)
-            ),
-            term(
-                "initial_wood_carbon",
-                log_normal_from_samples(members["initial_wood_carbon"]),
-            ),
-            term(
-                "initial_soil_organic_carbon",
-                log_normal_from_samples(members["initial_soil_organic_carbon"]),
-            ),
-        ],
-    )
-
-
-def _sipnet_parameter_map() -> SIPNETParameterMap:
+def sipnet_parameter_map() -> SIPNETParameterMap:
     """The rules for the calibrated values, and every other SIPNET parameter fixed."""
     copies = (
         "optimum_photosynthesis_temperature",
