@@ -32,7 +32,7 @@ and proofs are the design's §12; the column below is a summary.
 | E1 | `refactor/probability-e1-enskit` | merged #88 | P9 | Re-pin from pyEKI to EnsKit's `main` (`TARPS-group/EnsKit`, package `enskit`), which moves JAX 0.8 to 0.10 and TFP's nightly with it; the `_linalg` shim on `enskit.linalg` and `enskit.distribution`; `GaussianLaw` and `as_law` on EnsKit's block `Gaussian`; `test_inference` and `test_smc` off the deleted `pyeki.eki`; P1's references rewritten if their bytes move; CLAUDE.md's companion table, upgrade command and pyEKI facts |
 | E2 | `refactor/probability-e2-enskit-eki` | merged #89 | E1 | EnsKit's EKI driver: `eki_problem` in the terms of `enskit.algorithms.eki`; `initial_ensemble` an EnsKit `Ensemble` |
 | #69 | `feat/single-site-mcmc-vs-eki` | migrated, merged #69 | P7, E2 | PR #69 migrates in its own session, onto the probability layer and EnsKit together |
-| R1 | `refactor/probability-r1-removal` | open #R1PR | #69 migrated | Delete `parameters`, today's `ForwardModel`, the Flat API, the old `describe_calibration`; move the vocabulary into CLAUDE.md's glossary |
+| R1 | `refactor/probability-r1-removal` | open #90 | #69 migrated | Delete `parameters`, today's `ForwardModel`, the Flat API, the old `describe_calibration`; move the vocabulary into CLAUDE.md's glossary |
 
 The plan allows P2 and P4 to run in parallel with P1. The workflow takes one PR
 at a time, in table order, unless Andrew starts a parallel session himself.
