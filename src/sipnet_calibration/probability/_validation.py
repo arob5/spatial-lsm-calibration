@@ -4,7 +4,6 @@ The probability layer imports nothing of the package outside itself, so the
 few coercions it shares with :mod:`sipnet_calibration.validation` are kept
 here, raising by the same rules: a sequence argument is a sequence, never
 one string, a set or a mapping; an integer is never a boolean or a float.
-The parameter layer reads them through its re-export.
 """
 
 from __future__ import annotations

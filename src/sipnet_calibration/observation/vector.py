@@ -1,6 +1,5 @@
-"""The observation vector: the observations of an experiment in a fixed
-order, with the operator that predicts each observation source, the two
-forms its values take, and the sources as components of a model.
+"""The observation vector: the observation sources of an experiment, with
+the operator that predicts each, as components of a model.
 
 Where this sits
 ---------------
@@ -11,24 +10,23 @@ Where this sits
       -> ObservationSource(observation_source_name=, observed_values=, operator=)
                                                      one per observation source
                                                      (observation.source)
-      -> ObservationVector(observation_sources=[...]) the observations, in Flat order
-           .y                                        what EKI compares against
+      -> ObservationVector(observation_sources=[...])
            .predict(model_output, sipnet_parameter_fields=)
                                                      H applied, converted, checked
-           .flat(fields) / .fields(flat_values)      Fields <-> Flat
            .coords, .constants(), .observed_values_by_component()
                                                      the probability layer's view
+           .to_fields(labeled)                       labeled values -> Fields
       -> observation.model                           the components themselves
 
-The forward model flattens predictions with it into EKI's ``(J, N)``; the
-inference layer reads ``y``, ``index`` and ``positions`` off it to build the
-error model; a predictive-check figure unstacks a ``(J, N)`` batched Flat
-with ``fields``. A model of the probability layer is bound at its ``coords``,
-its noise factors read its ``constants``, it is conditioned on
+A model of the probability layer is bound at its ``coords``, its noise
+factors read its ``constants``, it is conditioned on
 ``observed_values_by_component()``, and ``to_fields`` turns its labeled
-values back into fields. It imports nothing from the data-source modules,
-and nothing of the probability layer: an observation source is built from
-arrays, and reads their attributes.
+values back into fields. The forward model applies ``predict`` to each run
+on the worker. The order of y belongs to the posterior conditioned on the
+vector's observed values (``Posterior.gaussian_likelihood().y``), not to the
+vector. It imports nothing from the data-source modules, and nothing of the
+probability layer: an observation source is built from arrays, and reads
+their attributes.
 
 What it reads
 -------------
@@ -43,24 +41,10 @@ Data model
 **Fields**: ``dict[str, Field]`` keyed by observation source name, each a
 ``float64`` field on that source's own ``(site[, time])`` grid, with its
 ``site``, ``lon``/``lat`` and time coordinates, ``NaN`` where nothing is
-observed; a ``(J, N)`` batch unstacks to the same with a leading batch dim,
-``sample`` unless ``batch_dim=`` names it otherwise, an ``int64`` coordinate
-labeled ``0`` to ``J - 1``. A source's grid holds only the sites and time
-labels with at least one observation: the rest are dropped when its
+observed, and any batch dims first. A source's grid holds only the sites
+and time labels with at least one observation: the rest are dropped when its
 observation source is built. A dict and not a Dataset, since each source is
 on its own time grid.
-
-**Flat**: ``y`` in ``R^N``, a ``float64`` ``jax.Array``, finite, one entry per
-observation; predictions are ``(N,)`` or ``(J, N)`` ``jax.Array``\\ s, where a
-``NaN`` marks a failed run. Every method taking Flat accepts any array-like.
-
-**The index**: a ``pandas.MultiIndex`` with levels
-``(site, observation_source, time)`` -- ``site`` ``int32`` as the ``site`` dim is,
-``observation_source`` a string, ``time`` ``datetime64[ns]`` -- one row per
-observation, in Flat order: **site-major**, sites ascending, then observation
-sources in declaration order, then times ascending. A static source's
-observations have ``time = NaT``. The order is a property of the vector;
-consumers read it off ``index`` and ``positions`` and never assume it.
 
 **The site table**: ``site_table``, one row per observed site, ascending:
 ``site_id`` (``int32``), ``lon`` and ``lat``, read off the observed values,
@@ -89,22 +73,18 @@ The components themselves are :mod:`~sipnet_calibration.observation.model`'s.
 Functions
 ---------
 :class:`ObservationVector`
-    The vector, whose pieces are its observation sources: ``y``, ``index``
-    and ``positions``; ``select``, ``restrict_to_sites`` and
-    ``with_observed_values``; ``flat`` and ``fields`` between the
-    representations; ``coords``, ``observation_dim_name``,
-    ``prediction_name``, ``constants``, ``year_label_map``,
-    ``observed_values_by_component`` and ``to_fields`` for a model;
-    ``predict``, every operator applied, converted and checked.
-:func:`check_batch_dim_is_not_an_observation_source_name`
-    The check a creator of a batch dim runs against the vector's names.
+    The vector, whose pieces are its observation sources: ``select``,
+    ``restrict_to_sites`` and ``with_observed_values``; ``coords``,
+    ``observation_dim_name``, ``prediction_name``, ``constants``,
+    ``year_label_map``, ``observed_values_by_component`` and ``to_fields``
+    for a model; ``predict``, every operator applied, converted and checked.
 
 Notes
 -----
-**Site-major.** A likelihood that factorizes over sites, or an error
-covariance block-diagonal by site, reads a site's observations as one
-contiguous segment, and a worker producing one site's predictions produces
-that segment. ``(site, observation_source)`` sub-segments are contiguous too.
+**By site, then time.** A likelihood that factorizes over sites, or an error
+covariance block-diagonal by site, reads a site's observations of a source
+as one contiguous segment of its observation dim, and a worker producing one
+site's predictions produces that segment.
 
 **Selection never reorders.** ``select`` keeps the vector's order of sources
 and sites whatever order they are asked in, and refuses a name or site the
@@ -113,12 +93,7 @@ vector does not hold, so a typo cannot silently shrink it;
 
 **No noise model here.** The covariance and the likelihood are a noise
 factor's; this module gives it the observation dims and the constants,
-standard deviations included, and today's inference layer ``y``, ``index``
-and ``positions``.
-
-**Two orders.** Flat's order is site-major across sources; an observation
-dim's is one source's, by site and then time. Labeled values carry their
-labels, so ``to_fields`` reads them by label, never by position.
+standard deviations included.
 
 **Failed runs.** ``predict`` passes a ``NaN`` through where the model output
 itself is ``NaN`` at that site and batch label (a failed run), and refuses one
@@ -153,12 +128,9 @@ Usage
         ),
     ]).select(time=slice("2012", "2024"))
 
-    vector.dimension, vector.y.shape           # N, (N,)
     predicted_fields = vector.predict(
         model_output, sipnet_parameter_fields=sipnet_parameter_fields
-    )
-    predictions = vector.flat(predicted_fields)  # (J, N) for a (sample, site, time) output
-    vector.fields(predictions)["modis_leaf_area_index"]  # back to (sample, site, time)
+    )                                               # one field per source
 
     # For a model of the probability layer:
     vector.coords                                   # {"modis_leaf_area_index_observation": MultiIndex, ...}
@@ -176,8 +148,6 @@ from datetime import datetime
 from itertools import chain
 from typing import Any
 
-import jax
-import jax.numpy as jnp
 import numpy as np
 import pandas as pd
 import xarray as xr
@@ -187,7 +157,6 @@ from pysipnet.units import convert_dataarray_units
 from sipnet_calibration.conventions import (
     LAT,
     LON,
-    SAMPLE,
     SITE,
     SITE_DTYPE,
     SITE_ID,
@@ -202,11 +171,7 @@ from sipnet_calibration.fields import (
     batch_coordinate,
     in_field_layout,
     batch_dims,
-    check_at_most_one_batch_dim,
-    check_batch_dim_name_is_not_a_data_source_member,
-    check_batch_dim_name_is_not_reserved,
     validate_field,
-    missing_labels,
     scalar_batch_labels,
 )
 from sipnet_calibration.observation.operators import (
@@ -215,21 +180,17 @@ from sipnet_calibration.observation.operators import (
 )
 from sipnet_calibration.observation.source import ObservationSource
 from sipnet_calibration.validation import (
-    as_batched_flat,
     as_names,
     as_sequence,
-    as_site_id,
     as_site_ids,
     check_names_are_unique,
     check_sites_are_the_vectors,
     check_the_restriction_keeps_a_site,
-    is_one_vector,
     truncated,
 )
 
 __all__ = [
     "CALENDAR_YEAR",
-    "INDEX_LEVELS",
     "OBSERVATION_DIM_SUFFIX",
     "OBSERVED",
     "PREDICTION_PREFIX",
@@ -238,13 +199,9 @@ __all__ = [
     "WINDOW_LENGTH",
     "YEAR",
     "ObservationVector",
-    "check_batch_dim_is_not_an_observation_source_name",
 ]
 
 OBSERVATION_SOURCE = "observation_source"
-
-#: The levels of :attr:`ObservationVector.index`, in order.
-INDEX_LEVELS: tuple[str, ...] = (SITE, OBSERVATION_SOURCE, TIME)
 
 #: An observation dim is named ``"<source>" + OBSERVATION_DIM_SUFFIX``.
 OBSERVATION_DIM_SUFFIX = "_observation"
@@ -272,21 +229,18 @@ YEAR = "year"
 #: The origin of :data:`TIME_SINCE_EPOCH`.
 _EPOCH = np.datetime64("1970-01-01T00:00:00", "ns")
 
-#: The dim the vectorized read of the observations indexes along, one per
-#: observation; internal to ``flat`` and never on a result.
-_OBSERVATION_DIM = "__observation__"
-
 
 @dataclass(frozen=True, eq=False, kw_only=True)
 class ObservationVector:
-    """The observations of several observation sources, in the module docstring's order.
+    """The observations of several observation sources, as the module
+    docstring describes them.
 
     Parameters
     ----------
     observation_sources:
         One :class:`~sipnet_calibration.observation.source.ObservationSource`
-        per observation source, in the order the sources take within each
-        site's segment; stored as a tuple.
+        per observation source, in the order of the vector's components;
+        stored as a tuple.
 
     Raises
     ------
@@ -307,10 +261,8 @@ class ObservationVector:
 
     observation_sources: tuple[ObservationSource, ...]
     _by_name: Mapping[str, ObservationSource] = field(init=False, repr=False)
-    _index: pd.MultiIndex = field(init=False, repr=False)
     _sites: tuple[int, ...] = field(init=False, repr=False)
     _locations: tuple[tuple[float, ...], tuple[float, ...]] = field(init=False, repr=False)
-    _y: jax.Array = field(init=False, repr=False)
     _coords: Mapping[str, pd.MultiIndex] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -324,12 +276,14 @@ class ObservationVector:
             "_by_name",
             frozendict({source.observation_source_name: source for source in observation_sources}),
         )
-        index = _build_index(observation_sources)
-        object.__setattr__(self, "_index", index)
-        sites = tuple(int(s) for s in np.unique(index.get_level_values(SITE)))
+        sites = tuple(
+            int(s)
+            for s in np.unique(
+                np.concatenate([s.observation_labels.get_level_values(SITE) for s in observation_sources])
+            )
+        )
         object.__setattr__(self, "_sites", sites)
         object.__setattr__(self, "_locations", _site_locations_of(observation_sources, sites))
-        object.__setattr__(self, "_y", self.flat(self.observed_values_by_source))
         object.__setattr__(
             self,
             "_coords",
@@ -365,17 +319,6 @@ class ObservationVector:
         )
 
     @property
-    def dimension(self) -> int:
-        """``N``, the number of observations."""
-        return len(self._index)
-
-    @property
-    def index(self) -> pd.MultiIndex:
-        """One row per entry of Flat: levels :data:`INDEX_LEVELS`; a copy, so
-        setting its names changes nothing of the vector."""
-        return self._index.copy()
-
-    @property
     def output_variable_names(self) -> tuple[str, ...]:
         """The pySIPNET output variables the operators read, in declaration order."""
         return _union(
@@ -397,11 +340,6 @@ class ObservationVector:
             source.observation_source_name: source.observed_values
             for source in self.observation_sources
         }
-
-    @property
-    def y(self) -> jax.Array:
-        """Flat: the observations, ``(N,)`` ``float64``, in :attr:`index` order."""
-        return self._y
 
     def __getitem__(self, observation_source_name: str) -> ObservationSource:
         """The observation source called *observation_source_name*."""
@@ -428,7 +366,7 @@ class ObservationVector:
 
     def __repr__(self) -> str:
         return (
-            f"ObservationVector(N={self.dimension}, "
+            f"ObservationVector(observations={sum(len(s.observation_labels) for s in self.observation_sources)}, "
             f"observation_sources={list(self.observation_source_names)}, "
             f"sites={len(self.sites)})"
         )
@@ -487,8 +425,9 @@ class ObservationVector:
             source left with no observations is dropped, and each source's
             ``time`` keeps only the labels where a kept site is observed, so an
             operator run on the sub-vector reads the model only at those
-            labels. Its Flat order is this vector's, restricted: a selection
-            never reorders the entries it keeps.
+            labels. Its sources keep this vector's order, and each source's
+            observations their order: a selection never reorders what it
+            keeps.
 
         Raises
         ------
@@ -504,11 +443,6 @@ class ObservationVector:
             If *time* has a step; if a name or a site is given twice, a site
             id is out of range, *sites* is a two-dimensional array, or the
             selection leaves no observation.
-
-        Notes
-        -----
-        The sub-vector's Flat values are not this one's: move predictions
-        across through Fields, where the correspondence is by label.
         """
         chosen = self.observation_sources
         if observation_source_names is not None:
@@ -605,49 +539,6 @@ class ObservationVector:
                 )
             sources.append(replaced)
         return ObservationVector(observation_sources=sources)
-
-    def positions(
-        self, *, site: int | None = None, observation_source_name: str | None = None
-    ) -> np.ndarray:
-        """Where in Flat the observations of a site, an observation source, or both sit.
-
-        Parameters
-        ----------
-        site:
-            An integer site id, or ``None`` for every site.
-        observation_source_name:
-            An observation source the vector holds, or ``None`` for every
-            observation source.
-
-        Returns
-        -------
-        numpy.ndarray
-            The ascending ``int64`` positions in Flat of the observations
-            matching both, which may be none when the site is observed but not
-            by that observation source.
-
-        Raises
-        ------
-        TypeError
-            If *site* is a boolean, a float, a string or not a number.
-        ValueError
-            If *site* is not a site id, from 1 to the largest ``int32``.
-        KeyError
-            If *site* is not one of :attr:`sites`, or
-            *observation_source_name* is not held.
-        """
-        mask = np.ones(self.dimension, dtype=bool)
-        if site is not None:
-            site_id = as_site_id(site, message_name="site")
-            check_sites_are_the_vectors([site_id], self._sites, message_name="the vector")
-            mask &= self._index.get_level_values(SITE).values == site_id
-        if observation_source_name is not None:
-            check_observation_source_names_are_held(
-                [observation_source_name], self.observation_source_names
-            )
-            labels = self._index.get_level_values(OBSERVATION_SOURCE).values
-            mask &= labels == observation_source_name
-        return np.flatnonzero(mask).astype(np.int64)
 
     # ── coordinates ───────────────────────────────────────────────────────────
 
@@ -788,117 +679,6 @@ class ObservationVector:
             out[name] = _unstacked_from_observation_dim(sources_by_dim[dims[0]], array, dims[0], str(name))
         return out
 
-    def flat(self, fields: Mapping[str, Field]) -> jax.Array:
-        """Fields to Flat: ``(N,)``, or ``(J, N)`` when the fields carry a batch dim.
-
-        Parameters
-        ----------
-        fields:
-            A mapping from every observation source name to a field
-            (:func:`~sipnet_calibration.fields.validate_field`, in any dim
-            order and with ``site`` a dim or a scalar) on that source's
-            ``site`` and ``time`` labels, with at most one batch dim, the
-            same in every array. An array may cover more sites or times than
-            the source observes; only the vector's observations are read, by
-            label.
-
-        Returns
-        -------
-        jax.Array
-            ``float64``, ``(N,)``, or ``(J, N)`` in the order of the fields'
-            batch labels. Values are taken as they are: a ``NaN`` prediction
-            stays ``NaN``.
-
-        Raises
-        ------
-        TypeError
-            If *fields* is not a mapping, or an entry is not a ``DataArray``.
-        ValueError
-            If an observation source is missing, or an array is not a field
-            at its source's observations with the one batch dim the others
-            have; stack several batch dims into a new one first
-            (:func:`~sipnet_calibration.fields.stack_batch_dims`).
-        """
-        check_fields_hold_the_observation_sources(fields, self.observation_source_names)
-        arrays = {}
-        for source in self.observation_sources:
-            array = fields[source.observation_source_name]
-            check_field_is_on_the_grid(array, source)
-            laid_out = in_field_layout(array)
-            if not isinstance(laid_out.data, np.ndarray):
-                # A JAX-backed array, say: xarray indexes only NumPy by label.
-                laid_out = laid_out.copy(data=np.asarray(laid_out.data))
-            arrays[source.observation_source_name] = laid_out
-        batch = _batch_dim_and_labels(arrays, self.observation_source_names)
-        shape = (len(batch[1]), self.dimension) if batch is not None else (self.dimension,)
-        out = np.full(shape, np.nan, dtype=np.float64)
-        for source in self.observation_sources:
-            array = arrays[source.observation_source_name]
-            positions = self.positions(observation_source_name=source.observation_source_name)
-            out[..., positions] = _read_observations(
-                array,
-                self._index[positions],
-                source.is_static,
-                None if batch is None else batch[0],
-            )
-        return jnp.asarray(out)
-
-    def fields(self, flat_values: Any, *, batch_dim: str = SAMPLE) -> dict[str, Field]:
-        """Flat to Fields: ``(N,)`` or ``(J, N)`` onto each observation source's grid.
-
-        Parameters
-        ----------
-        flat_values:
-            An array-like of shape ``(N,)`` or ``(J, N)``, in Flat order: a
-            JAX or NumPy array, or a nested list.
-        batch_dim:
-            The name of the batch dim a ``(J, N)`` batch is given: a new
-            index's name (no reserved or data source member name), and no
-            name of this vector's
-            (:func:`check_batch_dim_is_not_an_observation_source_name`).
-
-        Returns
-        -------
-        dict
-            Observation source name to a ``float64`` array on the source's
-            ``(site[, time])`` grid, with its coordinates and attributes and
-            ``NaN`` where nothing is observed. A ``(J, N)`` batch gives each
-            array a leading ``int64`` *batch_dim* labeled ``0`` to ``J - 1``.
-            An observation source's scalar batch labels are not carried.
-
-        Raises
-        ------
-        TypeError
-            If *flat_values* is not a rectangular array of real numbers, or
-            *batch_dim* is not a string.
-        ValueError
-            If *flat_values* is not one- or two-dimensional or does not have
-            ``N`` entries per row, or *batch_dim* is a name it may not be.
-
-        Notes
-        -----
-        An observation source's scalar batch labels
-        (:func:`~sipnet_calibration.fields.scalar_batch_labels`, such as a
-        ``sample=4`` left by selecting one sample of an ensemble) describe the
-        observed input, not the batch: carried onto the arrays, they would
-        say every row is sample 4, which the rows are not. They are dropped.
-        """
-        check_batch_dim_name_is_not_reserved(batch_dim, message_name="batch_dim")
-        check_batch_dim_name_is_not_a_data_source_member(batch_dim, message_name="batch_dim")
-        check_batch_dim_is_not_an_observation_source_name(self.observation_sources, batch_dim)
-        batched = np.asarray(
-            as_batched_flat(flat_values, self.dimension, message_name="flat_values")
-        )
-        was_one_vector = is_one_vector(flat_values)
-        out: dict[str, xr.DataArray] = {}
-        for source in self.observation_sources:
-            positions = self.positions(observation_source_name=source.observation_source_name)
-            array = _unstacked(source, batched[:, positions], self._index[positions], batch_dim)
-            out[source.observation_source_name] = (
-                array.isel({batch_dim: 0}, drop=True) if was_one_vector else array
-            )
-        return out
-
     # ── evaluation ────────────────────────────────────────────────────────────
 
     def predict(
@@ -927,8 +707,7 @@ class ObservationVector:
         -------
         dict
             Fields on each observation source's grid, in its units, with
-            the model output's batch dims if any, first; pass the result to
-            :meth:`flat` for a ``(J, N)`` batch. A ``NaN`` is allowed only
+            the model output's batch dims if any, first. A ``NaN`` is allowed only
             where a variable the operators read is ``NaN`` at every timestep for
             that site and batch label (a failed run).
 
@@ -1069,98 +848,6 @@ def _site_locations_of(
             if k is not None:
                 lon[k], lat[k] = x, y
     return tuple(lon.tolist()), tuple(lat.tolist())
-
-
-def _build_index(observation_sources: Sequence[ObservationSource]) -> pd.MultiIndex:
-    frames = []
-    for order, source in enumerate(observation_sources):
-        observations = source.observations()
-        observations[OBSERVATION_SOURCE] = source.observation_source_name
-        observations["_order"] = order
-        frames.append(observations)
-    table = pd.concat(frames, ignore_index=True)
-    table = table.sort_values([SITE, "_order", TIME], kind="stable", na_position="first")
-    return pd.MultiIndex.from_arrays(
-        [
-            table[SITE].to_numpy(SITE_DTYPE),
-            table[OBSERVATION_SOURCE].to_numpy(),
-            table[TIME].to_numpy(),
-        ],
-        names=INDEX_LEVELS,
-    )
-
-
-def _unstacked(
-    source: ObservationSource,
-    entries: np.ndarray,
-    observation_index: pd.MultiIndex,
-    batch_dim: str,
-) -> xr.DataArray:
-    """One observation source's entries of a ``(J, N)`` batch, shaped as its
-    observed values with *batch_dim* first."""
-    full = np.full((entries.shape[0], *source.observed_values.shape), np.nan, dtype=np.float64)
-    site_positions, time_positions = _positions_in_observed_values(source, observation_index)
-    if source.is_static:
-        full[:, site_positions] = entries
-    else:
-        full[:, site_positions, time_positions] = entries
-    # An observation source's scalar batch labels are metadata of the input: they
-    # would contradict the rows, and one of the batch dim's name would
-    # overwrite the batch coordinate made here.
-    labels = {*scalar_batch_labels(source.observed_values), batch_dim}
-    kept = {name: c for name, c in source.observed_values.coords.items() if name not in labels}
-    return xr.DataArray(
-        full,
-        dims=(batch_dim, *source.observed_values.dims),
-        coords={**kept, batch_dim: batch_coordinate(batch_dim, np.arange(entries.shape[0]))},
-        attrs=dict(source.observed_values.attrs),
-        name=source.observation_source_name,
-    )
-
-
-def _batch_dim_and_labels(
-    fields: Mapping[str, xr.DataArray], observation_source_names: Sequence[str]
-) -> tuple[str, np.ndarray] | None:
-    """The one batch dim the fields share and its labels, or ``None`` if they have none."""
-    arrays = {n: fields[n] for n in observation_source_names}
-    by_source = {name: batch_dims(array) for name, array in arrays.items()}
-    for name, dims in by_source.items():
-        check_at_most_one_batch_dim(dims, message_name=f"the field {name!r}")
-    with_batch = [n for n, dims in by_source.items() if dims]
-    if not with_batch:
-        return None
-    check_fields_agree_on_the_batch_dim(fields, observation_source_names, with_batch)
-    dim = by_source[with_batch[0]][0]
-    return dim, fields[with_batch[0]][dim].values
-
-
-def _read_observations(
-    array: xr.DataArray, observation_index: pd.MultiIndex, is_static: bool, batch_dim: str | None
-) -> np.ndarray:
-    """*array* at the observations *observation_index* holds: ``(J, n)`` or ``(n,)``."""
-    selectors: dict[str, Any] = {
-        SITE: xr.DataArray(observation_index.get_level_values(SITE).values, dims=_OBSERVATION_DIM)
-    }
-    if not is_static:
-        selectors[TIME] = xr.DataArray(
-            observation_index.get_level_values(TIME).values, dims=_OBSERVATION_DIM
-        )
-    picked = array.sel(selectors)
-    if batch_dim is not None:
-        picked = picked.transpose(batch_dim, _OBSERVATION_DIM)
-    return np.asarray(picked.values, dtype=np.float64)
-
-
-def _positions_in_observed_values(
-    source: ObservationSource, observation_index: pd.MultiIndex
-) -> tuple[np.ndarray, np.ndarray]:
-    """The (site, time) positions in *source*'s observed values of the observations
-    *observation_index* holds."""
-    indexes = source.observed_values.indexes
-    site_positions = indexes[SITE].get_indexer(observation_index.get_level_values(SITE))
-    if source.is_static:
-        return site_positions, np.array([], dtype=np.int64)
-    return site_positions, indexes[TIME].get_indexer(observation_index.get_level_values(TIME))
 
 
 def _failed_runs(
@@ -1306,129 +993,12 @@ def check_time_is_a_slice(time: Any) -> None:
         )
 
 
-def check_fields_hold_the_observation_sources(
-    fields: Any, observation_source_names: Sequence[str]
-) -> None:
-    if not isinstance(fields, Mapping):
-        raise TypeError(
-            f"fields must be a mapping from observation source name to DataArray, got "
-            f"{type(fields).__name__}; pass what predict or fields returns."
-        )
-    missing = [n for n in observation_source_names if n not in fields]
-    if missing:
-        raise ValueError(
-            f"fields lack the observation source(s) {missing}; pass an array for every "
-            "observation source the vector holds, or select the vector to the sources given."
-        )
-
-
-def check_batch_dim_is_not_an_observation_source_name(
-    observation_sources: Sequence[ObservationSource], batch_dim: str
-) -> None:
-    """*batch_dim* names no observation source nor any coordinate of its values."""
-    # A scalar batch label of that name is allowed: it is metadata of the
-    # observed input, which fields() drops.
-    for source in observation_sources:
-        values = source.observed_values
-        taken = set(map(str, values.coords)) - set(scalar_batch_labels(values))
-        what = (
-            "an observation source name"
-            if batch_dim == source.observation_source_name
-            else f"a coordinate of the observation source {source.observation_source_name!r}"
-            if batch_dim in taken
-            else None
-        )
-        if what is not None:
-            other = "run" if batch_dim == SAMPLE else SAMPLE
-            raise ValueError(
-                f"batch_dim={batch_dim!r} is {what}; name the batch dim otherwise, such as "
-                f"{other!r}."
-            )
-
-
-def check_fields_agree_on_the_batch_dim(
-    fields: Mapping[str, xr.DataArray],
-    observation_source_names: Sequence[str],
-    with_batch: Sequence[str],
-) -> None:
-    """Every field carries the same batch dim, with the same labels in the same order."""
-    if len(with_batch) != len(observation_source_names):
-        raise ValueError(
-            f"some fields carry a batch dim ({list(with_batch)}) and others do not; "
-            "flatten predictions from one model output at a time."
-        )
-    first = with_batch[0]
-    dim = batch_dims(fields[first])[0]
-    labels = fields[first][dim].values
-    for name in with_batch[1:]:
-        other = batch_dims(fields[name])[0]
-        if other != dim:
-            raise ValueError(
-                f"the fields carry different batch dims ({first!r} {dim!r}, {name!r} "
-                f"{other!r}); flatten predictions from one model output at a time."
-            )
-        if not np.array_equal(fields[name][dim].values, labels):
-            raise ValueError(
-                f"the fields disagree on their {dim} labels ({first!r} and {name!r}); "
-                "flatten predictions from one model output at a time."
-            )
-
-
-def check_field_is_on_the_grid(array: Any, source: ObservationSource) -> None:
-    """An array to flatten is a field in any dim order, at its source's observations."""
-    name = source.observation_source_name
-    check_array_is_a_dataarray(array, name)
-    array = in_field_layout(array)
-    validate_field(array, message_name=name)
-    check_array_has_the_observed_sites(array, source)
-    check_array_has_the_observed_time_labels(array, source)
-
-
 def check_array_is_a_dataarray(array: Any, name: str) -> None:
     """An observation source's array is a ``DataArray``."""
     if not isinstance(array, xr.DataArray):
         raise TypeError(
-            f"{name}: expected a DataArray, got {type(array).__name__}; pass the field "
-            "predict or fields returns for it."
-        )
-
-
-def check_array_has_the_observed_sites(array: xr.DataArray, source: ObservationSource) -> None:
-    """The array has a ``site`` dim holding every site the source observes."""
-    name = source.observation_source_name
-    if SITE not in array.dims:
-        raise ValueError(
-            f"{name}: the array has no site; label it with the observation source's sites, "
-            "as predict and fields do."
-        )
-    missing_sites = missing_labels(array, SITE, source.observed_values.indexes[SITE])
-    if missing_sites:
-        raise ValueError(
-            f"{name}: the array lacks observed site(s) {truncated(missing_sites)}; predict at "
-            "every site the observation source holds, or select the vector to the sites "
-            "given."
-        )
-
-
-def check_array_has_the_observed_time_labels(
-    array: xr.DataArray, source: ObservationSource
-) -> None:
-    """For a dated source, the array has a ``time`` dim holding every observed label."""
-    if source.is_static:
-        return
-    name = source.observation_source_name
-    if TIME not in array.dims:
-        raise ValueError(
-            f"{name}: the array has no time dimension; read the model at the "
-            "observation source's time labels."
-        )
-    observed_times = source.observed_values[TIME].values
-    missing_times = observed_times[~np.isin(observed_times, array[TIME].values)]
-    if missing_times.size:
-        raise ValueError(
-            f"{name}: the array lacks {missing_times.size} observed time label(s), the "
-            f"first being {missing_times[0]}; read the model at the observation source's "
-            "time labels, or select the vector to the period given."
+            f"{name}: expected a DataArray, got {type(array).__name__}; pass labeled values, one "
+            "DataArray per component."
         )
 
 

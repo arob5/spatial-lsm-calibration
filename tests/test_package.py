@@ -35,14 +35,14 @@ def test_the_package_declares_its_empty_public_api():
     assert sipnet_calibration.__all__ == []
 
 
-def test_the_data_sources_and_observation_do_not_import_the_parameter_layer():
-    """initial_conditions and observation import neither the parameter nor
-    the probability layer, nor TFP and EnsKit."""
+def test_the_data_sources_and_observation_do_not_import_the_probability_layer():
+    """initial_conditions and observation import neither the probability
+    layer, nor TFP and EnsKit."""
     code = (
         "import sys; import sipnet_calibration.initial_conditions, "
         "sipnet_calibration.observation; "
-        "print(sorted(m for m in ('sipnet_calibration.parameters', "
-        "'sipnet_calibration.probability', 'tensorflow_probability', 'enskit') if m in sys.modules))"
+        "print(sorted(m for m in ('sipnet_calibration.probability', "
+        "'tensorflow_probability', 'enskit') if m in sys.modules))"
     )
     result = subprocess.run(
         [sys.executable, "-c", code], capture_output=True, text=True, check=True
@@ -162,16 +162,11 @@ def _files_importing(package: str, top_level: str) -> list[str]:
     return sorted({entry.split(": ")[0] for entry in _modules_importing(package, top_level)})
 
 
-def test_the_parameter_layer_imports_nothing_of_the_package_outside_itself():
-    """The parameter layer is replaceable only while it is independent: no
-    module under parameters/ imports another module of the package but the
-    probability layer, whose supports, coercion and probe points it
-    re-exports, and importing it loads none, nor pySIPNET or PyEns. EnsKit
-    it loads only through the probability layer's shim."""
-    allowed = ("sipnet_calibration.probability",)
-    assert _imports_outside("sipnet_calibration.parameters", allowed) == []
-    assert _loaded_outside("sipnet_calibration.parameters", allowed, ("pysipnet", "pyens")) == "[]"
-    assert _files_importing("sipnet_calibration.parameters", "enskit") == []
+def test_the_parameter_layer_is_gone():
+    """The probability layer replaced the parameter layer, which R1 removed."""
+    import importlib.util
+
+    assert importlib.util.find_spec("sipnet_calibration.parameters") is None
 
 
 def test_the_probability_layer_imports_nothing_of_the_package_outside_itself():

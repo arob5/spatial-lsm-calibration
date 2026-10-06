@@ -18,9 +18,7 @@ Two abstractions and a handful of functions:
 * :class:`ObservationSource` (in
   :mod:`~sipnet_calibration.observation.source`, with the
   :data:`ObservedValues` it holds and :func:`validate_observed_values`) and
-  :class:`ObservationVector`: the observations of an experiment in a fixed
-  order, with Fields and Flat representations,
-  ``y``, ``index`` (levels :data:`INDEX_LEVELS`), ``positions`` and
+  :class:`ObservationVector`: the observation sources of an experiment, with
   ``predict``; and, as components of a model, each source's observation
   dim (``coords``), constants, prediction name, observed values on that dim
   (``observed_values_by_component``) and the way back to fields
@@ -40,9 +38,8 @@ pySIPNET's :func:`~pysipnet.parameters.model.parameter_dataarray`. Unit
 conversion is pySIPNET's :func:`pysipnet.units.convert_dataarray_units`,
 which :meth:`ObservationVector.predict` applies.
 
-The error model and the likelihood are not here: today's inference layer
-reads ``y``, ``index`` and ``positions`` off the vector, and the probability
-layer's noise factors read the observation dims and constants.
+The error model and the likelihood are not here: the probability layer's
+noise factors read the observation dims and constants.
 """
 
 from sipnet_calibration.observation.operators import (
@@ -78,7 +75,6 @@ from sipnet_calibration.observation.source import (
 )
 from sipnet_calibration.observation.vector import (
     CALENDAR_YEAR,
-    INDEX_LEVELS,
     OBSERVATION_DIM_SUFFIX,
     OBSERVED,
     PREDICTION_PREFIX,
@@ -87,14 +83,12 @@ from sipnet_calibration.observation.vector import (
     WINDOW_LENGTH,
     YEAR,
     ObservationVector,
-    check_batch_dim_is_not_an_observation_source_name,
 )
 
 __all__ = [
     "CALENDAR_YEAR",
     "DEFAULT_METHOD_FOR_KIND",
     "DEFAULT_OBS_OPS",
-    "INDEX_LEVELS",
     "OBSERVATION_DIM_SUFFIX",
     "OBSERVED",
     "PREDICTION_PREFIX",
@@ -114,7 +108,6 @@ __all__ = [
     "SelectTimestep",
     "aggregate_time",
     "aggregation_counts",
-    "check_batch_dim_is_not_an_observation_source_name",
     "check_model_output_carries_what_is_read",
     "check_operator",
     "check_operator_declares_names",

@@ -5,11 +5,11 @@ Where this sits
 ---------------
 ::
 
-    labeled natural values (parameters, derived parameters)    the parameter layer's seam
+    labeled values (parameters, derived values, inputs)        a posterior's, or any caller's
     external inputs                                            propagated values, by name
       -> sipnet_parameter_map.SIPNETParameterMap (with a site_dims.SiteDims)
       -> SIPNET parameter fields (fields.SIPNETParameterFields)
-      -> forward.ForwardModel, one SIPNET run each
+      -> forward.SIPNETRuns, one SIPNET run each
 
 Of the calibration's objects it alone reads pySIPNET's parameter specs,
 which own every SIPNET parameter's name, units and domain. It knows nothing
@@ -19,13 +19,12 @@ grid or BETY's medians as readily as a draw.
 
 What it reads
 -------------
-The values its rules read, by name: one labeled Dataset, the parameters'
-and derived parameters' labeled forms
-(:mod:`sipnet_calibration.parameters.vector`'s data model) merged with any
-:data:`ExternalInputs`, uncertain values that are propagated rather than
-calibrated; or the probability layer's labeled values
+The values its rules read, by name: the probability layer's labeled values
 (:data:`~sipnet_calibration.probability.layout.LabeledValues`, a dict of
-DataArrays), of which it reads only what its rules name. And a
+DataArrays, each on ``(*batch dims, *indexed_by, *element axes)``) or an
+``xr.Dataset`` of the same arrays, merged with any :data:`ExternalInputs`,
+uncertain values that are propagated rather than calibrated; it reads only
+what its rules name. And a
 :class:`~sipnet_calibration.site_dims.SiteDims`, which reads them at the
 sites.
 
@@ -82,9 +81,8 @@ dim, site)``, a fixed value on ``(site,)``. Each carries pySIPNET's
 **What is checked when.** Before anything runs,
 :func:`check_sipnet_parameter_map_fits` checks that every value read exists,
 in the units and shape its rule requires, against the values' declarations
-(today's parameters and derived parameters, or the probability layer's
-``ArraySpec``\\ s), and that every constant and fixed value covers the labels
-the sites carry. Domains are checked on values
+(the ``ArraySpec``\\ s of a model's components and inputs), and that every
+constant and fixed value covers the labels the sites carry. Domains are checked on values
 only, by :meth:`SIPNETParameterMap.out_of_domain`: each rule input against
 its requirement's domain, each SIPNET parameter against pySIPNET's.
 
@@ -143,12 +141,9 @@ Usage
                   .rename_axis("pft").to_xarray()),
         ],
     )
-    values = vector.flat_to_dataset(vector.to_natural(theta), batch_dims=("sample",))
+    values = posterior.to_labeled(theta)        # labeled values, a dict of DataArrays
     sipnet_parameter_fields = sipnet_map.sipnet_parameter_fields(values, site_dims=site_dims)
     sipnet_map.out_of_domain(sipnet_parameter_fields, values, site_dims=site_dims)   # empty: in domain
-
-    # The probability layer's labeled values, a dict of DataArrays, read alike.
-    sipnet_map.sipnet_parameter_fields(posterior.to_labeled(theta), site_dims=site_dims)
 """
 
 from __future__ import annotations
@@ -180,7 +175,6 @@ from sipnet_calibration.fields import (
     check_sipnet_parameter_name_is_a_flat_name,
 )
 from sipnet_calibration.initial_conditions.specs import resolve_initial_condition
-from sipnet_calibration.parameters import DerivedParameter, Parameter
 from sipnet_calibration.probability.spec import ArraySpec
 from sipnet_calibration.probability.support import (
     NON_NEGATIVE,
@@ -299,8 +293,8 @@ class SIPNETParameterMap:
 
     def sipnet_parameter_names_depending_on(self, value_names: Sequence[str]) -> tuple[str, ...]:
         """The SIPNET parameters that depend on any of *value_names*, in
-        ``PARAMETER_SPECS`` order: with a vector's parameter and derived
-        parameter names, the SIPNET parameters a calibration varies.
+        ``PARAMETER_SPECS`` order: with a posterior's parameter and
+        deterministic names, the SIPNET parameters a calibration varies.
 
         Raises
         ------
@@ -639,8 +633,8 @@ class SIPNETRule(Protocol):
     Attributes
     ----------
     values_read:
-        ``{name: ValueRequirement}``: the values it reads (parameters,
-        derived parameters, external inputs), each with what it requires.
+        ``{name: ValueRequirement}``: the values it reads (a model's
+        components and inputs, external inputs), each with what it requires.
     constants:
         ``{name: xr.DataArray}``: constants it reads, which the map reads at
         the sites and passes beside the values; empty when none.
@@ -774,13 +768,12 @@ class Compute:
     units makes the inputs checkable, and the domain checks check the
     result.
 
-    **A Compute rule or a derived parameter.** A formula that is how SIPNET
+    **A Compute rule or a deterministic.** A formula that is how SIPNET
     wants a value expressed, such as a unit reference or a formula of
     ``sipnet.c``, is a Compute rule. A formula whose result is a quantity
-    of the model, one you would map, give a prior term, or check against
-    data, is a
-    :class:`~sipnet_calibration.parameters.derived.DerivedParameter`, which
-    the map then reads by name like a parameter.
+    of the model, one you would map, give a law, or check against data, is
+    a :class:`~sipnet_calibration.probability.DeterministicSpec` of the
+    model, which the map then reads by name like a parameter.
     """
 
     sipnet_parameter_name: str
@@ -1214,15 +1207,14 @@ def check_sipnet_parameter_map_is_valid(sipnet_parameter_map: SIPNETParameterMap
 
 def check_sipnet_parameter_map_fits(
     sipnet_parameter_map: SIPNETParameterMap,
-    descriptions: Mapping[str, Parameter | DerivedParameter | ArraySpec],
+    descriptions: Mapping[str, ArraySpec],
     external_inputs: ExternalInputs | None = None,
     site_dims: SiteDims | None = None,
 ) -> None:
-    """The map reads what the values' declarations (parameters and derived
-    parameters, or the probability layer's ``ArraySpec``\\ s of components
-    and inputs) and the external inputs hold, in the units and shapes its
-    rules require, and its constants and fixed values cover the labels the
-    sites carry."""
+    """The map reads what the values' declarations (the ``ArraySpec``\\ s of
+    a model's components and inputs) and the external inputs hold, in the
+    units and shapes its rules require, and its constants and fixed values
+    cover the labels the sites carry."""
     external_names = () if external_inputs is None else tuple(map(str, external_inputs.data_vars))
     check_external_inputs_share_no_name_with_the_values(external_names, descriptions)
     for name, requirements in sipnet_parameter_map.values_read.items():
@@ -1366,8 +1358,8 @@ def check_values_hold_what_the_rules_read(names: Sequence[str], values: xr.Datas
     missing = [name for name in names if name not in values.data_vars]
     if missing:
         raise KeyError(
-            f"the map reads {truncated(missing)}, which the values lack; merge in the parameters', derived "
-            "parameters' and external inputs' labeled values."
+            f"the map reads {truncated(missing)}, which the values lack; give every component and input "
+            "the rules read, and the external inputs, as labeled values."
         )
 
 
@@ -1385,31 +1377,31 @@ def check_value_has_the_required_shape(name: str, variable: xr.DataArray, shape:
 def check_external_inputs_share_no_name_with_the_values(
     external_names: Sequence[str], descriptions: Mapping[str, Any]
 ) -> None:
-    """No external input is named like a parameter or derived parameter,
+    """No external input is named like a component or input of the model,
     since values are read by name."""
     shared = [name for name in external_names if name in descriptions]
     if shared:
         raise ValueError(
-            f"the external inputs {truncated(shared)} are named like parameters or derived parameters; "
+            f"the external inputs {truncated(shared)} are named like components or inputs of the model; "
             "values are read by name, so rename them."
         )
 
 
 def check_value_is_held(name: str, descriptions: Mapping[str, Any], external_names: Sequence[str]) -> None:
-    """A value a rule reads is a parameter, a derived parameter or an
+    """A value a rule reads is a component or input of the model, or an
     external input."""
     if name not in descriptions and name not in external_names:
         raise KeyError(
-            f"the map reads {name!r}, which is neither a parameter, a derived parameter nor an external "
-            "input; add it to one of them, or read a value that exists."
+            f"the map reads {name!r}, which is neither a component nor an input of the model, nor an "
+            "external input; add it to one of them, or read a value that exists."
         )
 
 
 def check_description_meets_the_requirement(
-    description: Parameter | DerivedParameter | ArraySpec, requirement: ValueRequirement
+    description: ArraySpec, requirement: ValueRequirement
 ) -> None:
-    """A parameter, derived parameter or component read by a rule is in the
-    units and shape the rule requires."""
+    """A component or input read by a rule is in the units and shape the
+    rule requires."""
     if not _units_match(description.units, requirement.units):
         raise ValueError(
             f"{description.name!r} is in {description.units!r}, but the rule reading it requires "

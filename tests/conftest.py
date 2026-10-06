@@ -929,7 +929,7 @@ def with_parameter_value(sipnet_parameters, name: str, value: float):
 #: Eight prior draws of the example calibration at sites 1, 27 and 4711 (PFT
 #: deciduous, conifer, deciduous): each draw's natural values, as variables
 #: ``natural:<name>`` per site, and the SIPNET parameter fields they map to,
-#: as the ParameterVector of commit eec9745 computed them.
+#: as the code of commit eec9745 computed them.
 EXAMPLE_REFERENCE = Path(__file__).parent / "data" / "example_calibration_reference.nc"
 EXAMPLE_REFERENCE_SITES = (1, 27, 4711)
 EXAMPLE_REFERENCE_PFT = ("deciduous", "conifer", "deciduous")
@@ -941,10 +941,11 @@ def example_reference() -> xr.Dataset:
         return dataset.load()
 
 
-def example_reference_natural_values(reference: xr.Dataset, parameter_vector) -> dict:
-    """The reference's natural values, as the example calibration's
-    parameters hold them: per-site values read at each dim label."""
-    pft = [EXAMPLE_REFERENCE_PFT.index(label) for label in parameter_vector.coords["pft"]]
+def example_reference_natural_values(reference: xr.Dataset, pft_labels) -> dict:
+    """The reference's natural values as values by name of the example
+    calibration's parameters, bound with *pft_labels* as the ``pft`` labels:
+    per-site values read at each label."""
+    pft = [EXAMPLE_REFERENCE_PFT.index(label) for label in pft_labels]
     allocation = ("leaf", "wood", "fine_root", "coarse_root")
 
     def at(name: str) -> np.ndarray:
@@ -958,56 +959,3 @@ def example_reference_natural_values(reference: xr.Dataset, parameter_vector) ->
         "leaf_fall_fraction": at("leaf_fall_fraction")[:, 0],
         "initial_soil_carbon": at("initial_soil_carbon"),
     }
-
-
-# ── priors ────────────────────────────────────────────────────────────────────
-
-
-def example_calibration_factors(provenance: str = "Example calibration, as the probability layer declares it.") -> list:
-    """``calibration.example_calibration``'s prior as the probability layer's
-    factors, in its order: the same laws, so the same draws from the same
-    key, bound at coords holding ``pft`` and ``site``."""
-    from sipnet_calibration.probability import (
-        OPEN_UNIT_INTERVAL,
-        POSITIVE,
-        SIMPLEX,
-        ArraySpec,
-        FactorSpec,
-        iid_over_dim,
-        log_normal,
-        log_normal_from_interval,
-        logit_normal,
-        logit_normal_from_interval,
-        softmax_normal,
-    )
-
-    a_max_frac, c_frac_leaf, a_max, fol_resp = 0.76, 0.466, 58.0, 0.17
-    allocation_parts = ("leaf", "wood", "fine_root", "coarse_root")
-    return [
-        FactorSpec(ArraySpec("photosynthetic_capacity", units="nmol g-1 s-1", support=POSITIVE),
-                   law=log_normal(median=a_max * (a_max_frac + fol_resp) / c_frac_leaf, geometric_sd=1.75),
-                   provenance=provenance),
-        FactorSpec(ArraySpec("respiration_share", units="1", support=OPEN_UNIT_INTERVAL),
-                   law=logit_normal_from_interval(lower=0.10 / (a_max_frac + 0.10), upper=0.39 / (a_max_frac + 0.39)),
-                   provenance=provenance),
-        FactorSpec(ArraySpec("allocation", units="1", support=SIMPLEX, indexed_by=("pft",),
-                             element_axes={"allocation_part": allocation_parts}),
-                   law=iid_over_dim(softmax_normal(center=(0.18, 0.40, 0.07, 0.35), logit_sd=0.5)),
-                   provenance=provenance),
-        FactorSpec(ArraySpec("base_soil_respiration", units="yr-1", support=POSITIVE, indexed_by=("pft",)),
-                   law=iid_over_dim(log_normal_from_interval(lower=0.004, upper=0.020)), provenance=provenance),
-        FactorSpec(ArraySpec("leaf_fall_fraction", units="1", support=OPEN_UNIT_INTERVAL),
-                   law=logit_normal(median=0.5, logit_sd=1.7), provenance=provenance),
-        FactorSpec(ArraySpec("initial_soil_carbon", units="g m-2", support=POSITIVE, indexed_by=("site",)),
-                   law=iid_over_dim(log_normal(median=30_000.0, geometric_sd=2.0)), provenance=provenance),
-    ]
-
-
-
-def theta_gaussian(prior, name: str) -> tuple[np.ndarray, np.ndarray]:
-    """The mean and variances, flat in C order, of a term's Gaussian in
-    theta: its base's, when it is evaluated by its base density, else its
-    own (a Normal on the real line, under the identity)."""
-    built = prior._built[name]
-    gaussian = built.distribution.distribution if built.by_base_density else built.distribution
-    return np.ravel(gaussian.mean()), np.ravel(gaussian.variance())

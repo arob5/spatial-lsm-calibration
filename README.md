@@ -215,16 +215,17 @@ src/sipnet_calibration/
   constraints.py          # one spec per raw constraint file; load_constraint()
   initial_conditions/     # the PEcAn IC ensemble, one module per artifact
   drivers.py              # load_drivers(): the raw .clim files, read by pySIPNET
-  parameters/             # the parameter layer, independent of the rest: Support,
-                          # Parameter, ParameterVector (theta's layout and three
-                          # forms), DerivedParameters, Prior
+  probability/            # the probability layer, independent of the rest: specs,
+                          # laws, factors and deterministics joined into a model,
+                          # bound and conditioned into a Posterior; Layout
   site_dims.py            # SiteDims: the sites, their labels and covariates
   sipnet_parameter_map.py # SIPNETParameterMap: how the values at a site reach SIPNET
-  calibration.py          # the calibration's record; example_calibration()
+  calibration.py          # a posterior's record; example_calibration()
   fields.py               # field convention; SIPNET output adapters
   observation/            # operators, the observation vector, and the
                           # time-alignment verbs
-  forward.py              # ForwardModel: theta -> predictions through PyEns
+  forward.py              # SIPNETRuns and SIPNETSimulator: values -> predictions
+                          # through PyEns
   compute.py              # the SCC backend preset
   plotting/               # style, registry, primitives, series, maps, facet, diagnostics
 scripts/                  # ingest: data/raw/ -> data/processed/

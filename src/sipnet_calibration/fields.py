@@ -261,7 +261,7 @@ operations.
 **Why Flat takes one batch dim.** EKI takes exactly ``(J, ·)``, and a
 ``(J, N)`` array cannot say which of several dims its rows came from, so a
 field with several is reduced, or stacked with :func:`stack_batch_dims`,
-before it is flattened. The stacked dim takes a new name: its labels
+before its values become rows. The stacked dim takes a new name: its labels
 ``0..n-1`` are a new index, and giving it the name of a dim stacked into it,
 ``sample`` say, would align it with theta's samples, which it is not.
 
@@ -305,7 +305,7 @@ stands for::
 
     plot_time_series(aggregate_time(nee, "1D").sel(site=1))
 
-Two batch dims, stacked into one for Flat and back::
+Two batch dims, stacked into one and back::
 
     from sipnet_calibration.fields import stack_batch_dims, unstack_batch_dims
 
@@ -315,20 +315,11 @@ Two batch dims, stacked into one for Flat and back::
     unstack_batch_dims(stacked).dims
     # ('sample', 'initial_condition_member', 'site')
 
-Through Flat and back: a vector's ``fields(y, batch_dim="run")`` gives arrays
-labeled ``run`` ``0..n-1`` and nothing else, and ``labels_from`` copies the
+An array labeled ``run`` ``0..n-1`` and nothing else, such as one rebuilt
+from unlabeled values, is unstacked with ``labels_from``, which copies the
 rest from the stacked field::
 
-    stacked = {
-        name: stack_batch_dims(array, new_batch_dim="run")
-        for name, array in predicted.items()
-    }
-    y = observation_vector.flat(stacked)
-    made = observation_vector.fields(y, batch_dim="run")
-    restored = {
-        name: unstack_batch_dims(array, labels_from=stacked[name])
-        for name, array in made.items()
-    }
+    restored = unstack_batch_dims(made, labels_from=stacked)
 
 For a Dataset of fields,
 ``dataset.map(lambda field: stack_batch_dims(field, new_batch_dim="run"))``.
@@ -409,7 +400,6 @@ __all__ = [
     "STACKED_LABEL_SUFFIX",
     "batch_coordinate",
     "batch_dims",
-    "check_at_most_one_batch_dim",
     "check_batch_dim_name_is_not_a_data_source_member",
     "check_batch_dim_name_is_not_a_model_output_name",
     "check_batch_dim_name_is_not_reserved",
@@ -882,8 +872,8 @@ def unstack_batch_dims(
         A field with one batch dim stacked by :func:`stack_batch_dims`, its
         coordinate recording the stacked dims and carrying their
         ``<dim>_label`` coordinates; or, with *labels_from*, a field on the
-        same batch dim without them, such as one of the arrays a vector's
-        ``fields(flat_values, batch_dim=<the stacked dim>)`` makes from Flat.
+        same batch dim without them, such as one rebuilt from unlabeled
+        rows.
     labels_from:
         The stacked field, or its stacked coordinate
         (``stacked[new_batch_dim]``), to copy the record and the label and
@@ -1845,9 +1835,8 @@ def check_field_dims_are_field_dims(field: xr.DataArray, message_name: str) -> N
 
 def check_dims_are_batch_spatial_or_time(field: xr.DataArray, *, message_name: str) -> None:
     """Every dim of *field* is labeled and is a batch dim, a spatial dim or ``time``."""
-    # The part of the field contract that holds in any dim order, which the
-    # observation vector's flat and sipnet_overrides apply to what they
-    # read.
+    # The part of the field contract that holds in any dim order, which
+    # sipnet_overrides applies to what it reads.
     check_dims_are_labeled(field, message_name=message_name)
     check_labeled_dims_are_batch_spatial_or_time(field, message_name=message_name)
 
@@ -2173,8 +2162,7 @@ def check_one_batch_dim_is_stacked(
         f"{STACKED_DIMS_ATTRIBUTE!r} attribute of the stacked coordinate; pass "
         "labels_from=<the stacked field>, or restack the original."
         if labeled
-        else " Pass labels_from=<the stacked field> for a field a vector's fields() made "
-        "from Flat."
+        else " Pass labels_from=<the stacked field> for a field rebuilt from unlabeled rows."
     )
     raise ValueError(
         f"{message_name}: no batch dim records a stack in {STACKED_DIMS_ATTRIBUTE!r}, as "
@@ -2293,18 +2281,6 @@ def check_labels_from_is_on_the_field_dim(
         raise ValueError(
             f"the field's {source_dim} labels are not the rows of labels_from; unstack the "
             "field made from the same rows as the stacked one."
-        )
-
-
-def check_at_most_one_batch_dim(dims: Sequence[str], *, message_name: str) -> None:
-    """Something to flatten has at most one batch dim, since Flat has one row axis."""
-    if len(dims) > 1:
-        raise ValueError(
-            f"{message_name} carries the batch dims {list(dims)}, and Flat has one row axis; "
-            "reduce all but one, or stack them into a new dim with "
-            "fields.stack_batch_dims(field, new_batch_dim='run'): for a Dataset, "
-            "dataset.map(lambda field: stack_batch_dims(field, new_batch_dim='run')), and for a "
-            "dict, one call per entry."
         )
 
 

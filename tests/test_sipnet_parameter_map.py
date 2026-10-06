@@ -24,17 +24,19 @@ from pysipnet.parameters.base import ParameterDomain
 from conftest import site_table_of
 from sipnet_calibration.fields import validate_sipnet_parameter_fields
 from sipnet_calibration.initial_conditions import to_sipnet_initial_condition_fields
-from sipnet_calibration.parameters import (
+from sipnet_calibration.probability import (
     OPEN_UNIT_INTERVAL,
     POSITIVE,
     REAL,
     SIMPLEX,
-    DerivedParameter,
-    DerivedParameters,
-    Parameter,
-    ParameterVector,
+    ArraySpec,
+    DeterministicSpec,
+    FactorSpec,
+    Layout,
+    condition_on,
+    joint,
+    normal,
 )
-from sipnet_calibration.probability import ArraySpec, Layout
 from sipnet_calibration.sipnet_parameter_map import (
     FROM_SIPNET_SPEC,
     INITIAL_STATE_NAMES,
@@ -67,19 +69,26 @@ def site_dims() -> SiteDims:
     return SiteDims(site_table=site_table_of(*SITES), site_labels={"pft": PFT})
 
 
+def array_specs() -> list[ArraySpec]:
+    """The fixture's parameters, as a model declares them."""
+    return [
+        ArraySpec("photosynthetic_capacity", units="nmol g-1 s-1", support=POSITIVE),
+        ArraySpec("respiration_share", units="1", support=OPEN_UNIT_INTERVAL),
+        ArraySpec("allocation", units="1", support=SIMPLEX, indexed_by=("pft",),
+                  element_axes={"allocation_part": ALLOCATION}),
+        ArraySpec("base_soil_respiration", units="yr-1", support=POSITIVE, indexed_by=("pft",)),
+        ArraySpec("initial_soil_carbon", units="g m-2", support=POSITIVE, indexed_by=("site",)),
+    ]
+
+
+def descriptions() -> dict[str, ArraySpec]:
+    """The fixture's parameters' declarations by name, as the fit check reads them."""
+    return {spec.name: spec for spec in array_specs()}
+
+
 @pytest.fixture(scope="module")
-def vector(site_dims) -> ParameterVector:
-    return ParameterVector(
-        parameters=[
-            Parameter(name="photosynthetic_capacity", support=POSITIVE, units="nmol g-1 s-1"),
-            Parameter(name="respiration_share", support=OPEN_UNIT_INTERVAL, units="1"),
-            Parameter(name="allocation", support=SIMPLEX, units="1", shape=(4,), indexed_by=("pft",),
-                      element_labels={"allocation_part": ALLOCATION}),
-            Parameter(name="base_soil_respiration", support=POSITIVE, units="yr-1", indexed_by=("pft",)),
-            Parameter(name="initial_soil_carbon", support=POSITIVE, units="g m-2", indexed_by=("site",)),
-        ],
-        coords={"pft": site_dims.coords["pft"], "site": site_dims.coords["site"]},
-    )
+def layout(site_dims) -> Layout:
+    return Layout(array_specs(), coords={"pft": site_dims.coords["pft"], "site": site_dims.coords["site"]})
 
 
 def photosynthesis_fixed() -> list[Fixed]:
@@ -107,16 +116,17 @@ def sipnet_map() -> SIPNETParameterMap:
 
 
 @pytest.fixture(scope="module")
-def values(vector) -> xr.Dataset:
-    theta = jax.random.normal(jax.random.key(0), (8, vector.unconstrained.size))
-    return vector.flat_to_dataset(vector.to_natural(theta), batch_dims=("sample",))
+def values(layout) -> xr.Dataset:
+    """The fixture's labeled values at eight draws of theta, as one Dataset."""
+    theta = jax.random.normal(jax.random.key(0), (8, layout.unconstrained.size))
+    return xr.Dataset(layout.flat_to_labeled(layout.to_natural(theta), batch_dims=("sample",)))
 
 
 # ── the fields ────────────────────────────────────────────────────────────────
 
 
-def test_the_fields_are_sipnet_parameter_fields(sipnet_map, values, site_dims, vector):
-    check_sipnet_parameter_map_fits(sipnet_map, {p.name: p for p in vector.parameters}, site_dims=site_dims)
+def test_the_fields_are_sipnet_parameter_fields(sipnet_map, values, site_dims):
+    check_sipnet_parameter_map_fits(sipnet_map, descriptions(), site_dims=site_dims)
     fields = sipnet_map.sipnet_parameter_fields(values, site_dims=site_dims)
     validate_sipnet_parameter_fields(fields)
     assert fields["soil_carbon"].dims == ("sample", "site")
@@ -169,9 +179,9 @@ def crossing_map() -> SIPNETParameterMap:
     )
 
 
-def test_a_crossed_input_writes_on_the_union_of_dims(vector, values, site_dims):
+def test_a_crossed_input_writes_on_the_union_of_dims(values, site_dims):
     inputs = crossed_inputs()
-    check_sipnet_parameter_map_fits(crossing_map(), {p.name: p for p in vector.parameters}, inputs, site_dims)
+    check_sipnet_parameter_map_fits(crossing_map(), descriptions(), inputs, site_dims)
     fields = crossing_map().sipnet_parameter_fields(xr.merge([values, inputs]), site_dims=site_dims)
     assert fields["soil_carbon"].dims == ("initial_condition_member", "site")
     assert fields["base_soil_respiration_rate"].dims == ("sample", "site")
@@ -314,8 +324,8 @@ def test_a_dependency_passes_through_a_sipnet_parameter_read():
     assert set(chained.sipnet_parameter_names_depending_on(["rate"])) == {"base_soil_respiration_rate", "base_wood_respiration_rate"}
 
 
-def test_the_sipnet_parameters_a_calibration_varies(sipnet_map, vector):
-    varied = sipnet_map.sipnet_parameter_names_depending_on(list(vector))
+def test_the_sipnet_parameters_a_calibration_varies(sipnet_map, layout):
+    varied = sipnet_map.sipnet_parameter_names_depending_on(list(layout))
     assert set(varied) == set(sipnet_map.sipnet_parameter_names_written) - {
         "daily_mean_photosynthesis_fraction", "leaf_carbon_fraction", "vapor_pressure_deficit_exponent"}
     with pytest.raises(TypeError, match="must be a sequence"):
@@ -370,7 +380,7 @@ def test_a_rule_input_outside_its_domain_is_reported(sipnet_map, values, site_di
     share = outside[outside["value_name"] == "respiration_share"]
     assert share["sample"].tolist() == [3, 3, 3] and share["value"].tolist() == [1.5] * 3
     allocation = outside[outside["value_name"] == "allocation"]
-    # pft 0 is conifer, carried by site 27 alone; the vector is outside the simplex, so no one value is named.
+    # pft 0 is conifer, carried by site 27 alone; the value is outside the simplex, so no one element is named.
     assert allocation[["sample", "site"]].values.tolist() == [[1, 27]] and np.isnan(allocation["value"].iloc[0])
     assert set(outside["sipnet_parameter"].dropna()) <= {"foliar_respiration_fraction", "max_photosynthesis_rate",
                                                          "fine_root_allocation", "wood_allocation", "leaf_allocation"}
@@ -440,41 +450,39 @@ def test_value_requirement_defaults():
     assert ValueRequirement("1") == ValueRequirement("1", None, ())
 
 
-def test_the_fit_check_needs_each_value(vector, site_dims):
-    descriptions = {p.name: p for p in vector.parameters}
+def test_the_fit_check_needs_each_value():
     missing = SIPNETParameterMap(rules=[Copy(value_name="missing", sipnet_parameter_name="soil_carbon")])
-    with pytest.raises(KeyError, match="neither a parameter, a derived parameter nor an external input"):
-        check_sipnet_parameter_map_fits(missing, descriptions)
+    with pytest.raises(KeyError, match="neither a component nor an input of the model, nor an external input"):
+        check_sipnet_parameter_map_fits(missing, descriptions())
     both = SIPNETParameterMap(rules=[Copy(value_name="initial_soil_carbon", sipnet_parameter_name="soil_carbon")])
     inputs = crossed_inputs().rename({"initial_soil_carbon_input": "initial_soil_carbon"})
-    with pytest.raises(ValueError, match="named like parameters"):
-        check_sipnet_parameter_map_fits(both, descriptions, inputs)
+    with pytest.raises(ValueError, match="named like components or inputs of the model"):
+        check_sipnet_parameter_map_fits(both, descriptions(), inputs)
 
 
 @pytest.mark.parametrize(
-    "parameter, message",
+    "description, message",
     [
-        (Parameter(name="value", support=POSITIVE, units="kg m-2"), "requires 'g m-2'"),
-        (Parameter(name="value", support=POSITIVE, units="g m-2", shape=(2,)), "requires \\(\\)"),
+        (ArraySpec("value", units="kg m-2", support=POSITIVE), "requires 'g m-2'"),
+        (ArraySpec("value", units="g m-2", support=POSITIVE, element_axes={"part": 2}), "requires \\(\\)"),
     ],
 )
-def test_a_parameter_must_meet_the_requirement(parameter, message):
+def test_a_component_must_meet_the_requirement(description, message):
     sipnet_map = SIPNETParameterMap(rules=[Copy(value_name="value", sipnet_parameter_name="soil_carbon")])
     with pytest.raises(ValueError, match=message):
-        check_sipnet_parameter_map_fits(sipnet_map, {"value": parameter})
+        check_sipnet_parameter_map_fits(sipnet_map, {"value": description})
 
 
-def test_a_derived_parameter_is_held_to_the_requirement_too():
-    rate = DerivedParameter(name="respiration", units="d-1", given=("x",), function=lambda x: x)
+def test_a_deterministics_output_is_held_to_the_requirement_too():
+    rate = DeterministicSpec(ArraySpec("respiration", units="d-1"), function=lambda x: x)
     sipnet_map = SIPNETParameterMap(rules=[Copy(value_name="respiration", sipnet_parameter_name="base_soil_respiration_rate")])
     with pytest.raises(ValueError, match="requires 'yr-1'"):
-        check_sipnet_parameter_map_fits(sipnet_map, {"respiration": rate})
+        check_sipnet_parameter_map_fits(sipnet_map, {spec.name: spec for spec in rate.outputs})
 
 
-def test_units_are_compared_for_every_rule_and_input(vector, site_dims):
-    descriptions = {p.name: p for p in vector.parameters}
-    wrong = {**descriptions,
-             "photosynthetic_capacity": Parameter(name="photosynthetic_capacity", support=POSITIVE, units="umol g-1 s-1")}
+def test_units_are_compared_for_every_rule_and_input():
+    wrong = {**descriptions(),
+             "photosynthetic_capacity": ArraySpec("photosynthetic_capacity", units="umol g-1 s-1", support=POSITIVE)}
     photosynthesis = SIPNETParameterMap(rules=photosynthesis_rules(
         capacity_value_name="photosynthetic_capacity", respiration_share_value_name="respiration_share"),
         fixed=photosynthesis_fixed())
@@ -483,7 +491,7 @@ def test_units_are_compared_for_every_rule_and_input(vector, site_dims):
     inputs = crossed_inputs()
     inputs["initial_soil_carbon_input"].attrs["units"] = "kg m-2"
     with pytest.raises(ValueError, match="convert it first"):
-        check_sipnet_parameter_map_fits(crossing_map(), descriptions, inputs)
+        check_sipnet_parameter_map_fits(crossing_map(), descriptions(), inputs)
     initial = SIPNETParameterMap(rules=initial_condition_rules(deciduous=DECIDUOUS), fixed=INITIAL_FIXED)
     state = initial_state()
     state["initial_wood_carbon"].attrs["units"] = "g m-2"
@@ -520,7 +528,7 @@ def test_every_rule_reading_a_value_holds_it_to_its_requirement(order):
     sipnet_map = SIPNETParameterMap(rules=rules)
     assert len(sipnet_map.values_read["amount"]) == 2
     with pytest.raises(ValueError, match="requires 'yr-1'"):
-        check_sipnet_parameter_map_fits(sipnet_map, {"amount": Parameter(name="amount", support=POSITIVE, units="g m-2")})
+        check_sipnet_parameter_map_fits(sipnet_map, {"amount": ArraySpec("amount", units="g m-2", support=POSITIVE)})
 
 
 def test_external_inputs_are_validated():
@@ -537,26 +545,28 @@ def test_external_inputs_are_validated():
                                             coords={"site": [1]}))
 
 
-# ── derived parameters ────────────────────────────────────────────────────────
+# ── deterministics ────────────────────────────────────────────────────────────
 
 
-def test_a_rule_reads_a_derived_parameter_by_name(site_dims):
-    vector = ParameterVector(parameters=[Parameter(name="intercept", support=REAL, units=None),
-                                         Parameter(name="slope", support=REAL, units="K-1")])
-    derived = DerivedParameters(parameter_vector=vector, coords={"site": site_dims.coords["site"]}, derived_parameters=[
-        DerivedParameter(name="respiration", units="yr-1", indexed_by=("site",), given=("intercept", "slope"),
-                         constants={"anomaly": xr.DataArray([-1.0, 0.0, 2.0], dims="site", coords={"site": list(SITES)})},
-                         function=lambda intercept, slope, anomaly: jnp.exp(intercept + slope * anomaly)),
-    ])
+def test_a_rule_reads_a_deterministic_by_name(site_dims):
+    anomaly = xr.DataArray([-1.0, 0.0, 2.0], dims="site", coords={"site": list(SITES)})
+    respiration = DeterministicSpec(
+        ArraySpec("respiration", units="yr-1", support=POSITIVE, indexed_by=("site",)),
+        function=lambda intercept, slope, anomaly: jnp.exp(intercept + slope * anomaly),
+        constants={"anomaly": anomaly},
+    )
+    model = joint(
+        FactorSpec(ArraySpec("intercept", units=None), law=normal(mean=0.0, standard_deviation=1.0)),
+        FactorSpec(ArraySpec("slope", units="K-1"), law=normal(mean=0.0, standard_deviation=1.0)),
+        respiration,
+    ).bind(coords={"site": site_dims.coords["site"]})
+    posterior = condition_on(model, {})
     sipnet_map = SIPNETParameterMap(rules=[Copy(value_name="respiration", sipnet_parameter_name="base_soil_respiration_rate")])
-    check_sipnet_parameter_map_fits(sipnet_map, {"respiration": derived["respiration"]}, site_dims=site_dims)
-    theta = jnp.asarray([[np.log(0.01), 0.5], [np.log(0.02), -0.1]])
-    natural = vector.flat_to_values(vector.to_natural(theta))
-    derived_values = derived.values(natural)
-    values = xr.merge([vector.values_to_dataset(natural, batch_dims=("sample",)),
-                       derived.values_to_dataset(derived_values, batch_dims=("sample",))])
-    fields = sipnet_map.sipnet_parameter_fields(values, site_dims=site_dims)
-    np.testing.assert_allclose(fields["base_soil_respiration_rate"], derived_values["respiration"], rtol=1e-12)
+    check_sipnet_parameter_map_fits(sipnet_map, {spec.name: spec for spec in respiration.outputs}, site_dims=site_dims)
+    theta = np.asarray([[np.log(0.01), 0.5], [np.log(0.02), -0.1]])
+    fields = sipnet_map.sipnet_parameter_fields(posterior.to_labeled(theta), site_dims=site_dims)
+    expected = np.exp(theta[:, :1] + theta[:, 1:] * anomaly.values)
+    np.testing.assert_allclose(fields["base_soil_respiration_rate"], expected, rtol=1e-12)
     assert fields["base_soil_respiration_rate"].dims == ("sample", "site")
 
 
@@ -610,26 +620,12 @@ def test_a_vector_input_with_one_number_outside_an_interval_is_reported(site_dim
 # ── the probability layer's forms ─────────────────────────────────────────────
 
 
-def array_specs() -> list[ArraySpec]:
-    """The fixture vector's parameters as the probability layer declares them."""
-    return [
-        ArraySpec("photosynthetic_capacity", units="nmol g-1 s-1", support=POSITIVE),
-        ArraySpec("respiration_share", units="1", support=OPEN_UNIT_INTERVAL),
-        ArraySpec("allocation", units="1", support=SIMPLEX, indexed_by=("pft",),
-                  element_axes={"allocation_part": ALLOCATION}),
-        ArraySpec("base_soil_respiration", units="yr-1", support=POSITIVE, indexed_by=("pft",)),
-        ArraySpec("initial_soil_carbon", units="g m-2", support=POSITIVE, indexed_by=("site",)),
-    ]
-
-
 @pytest.fixture(scope="module")
-def labeled(vector, site_dims) -> dict[str, xr.DataArray]:
-    """The fixture values as labeled values, through a Layout, with a
-    component on a stacked dim and theta beside them, which the map ignores."""
-    theta = jax.random.normal(jax.random.key(0), (8, vector.unconstrained.size))
-    values_by_name = vector.flat_to_values(vector.to_natural(theta))
-    layout = Layout(array_specs(), coords={"pft": site_dims.coords["pft"], "site": site_dims.coords["site"]})
-    labeled = layout.values_to_labeled(values_by_name, batch_dims=("sample",))
+def labeled(layout) -> dict[str, xr.DataArray]:
+    """The fixture values as labeled values, with a component on a stacked
+    dim and theta beside them, which the map ignores."""
+    theta = jax.random.normal(jax.random.key(0), (8, layout.unconstrained.size))
+    labeled = layout.flat_to_labeled(layout.to_natural(theta), batch_dims=("sample",))
     observations = pd.MultiIndex.from_arrays([np.asarray([1, 27], dtype=np.int32), ["a", "b"]], names=["site", "part"])
     labeled["observed"] = xr.DataArray(
         [1.0, 2.0], dims="observation", coords=xr.Coordinates.from_pandas_multiindex(observations, "observation"))
@@ -672,7 +668,7 @@ def test_values_are_a_dataset_or_a_mapping_of_arrays(sipnet_map, site_dims, bad)
 
 
 def test_the_map_fits_array_specs(sipnet_map, site_dims):
-    specs = {spec.name: spec for spec in array_specs()}
+    specs = descriptions()
     check_sipnet_parameter_map_fits(sipnet_map, specs, site_dims=site_dims)
     wrong_units = dict(specs, initial_soil_carbon=ArraySpec("initial_soil_carbon", units="kg m-2", indexed_by=("site",)))
     with pytest.raises(ValueError, match="requires 'g m-2'"):

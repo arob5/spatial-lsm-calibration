@@ -18,7 +18,12 @@ import xarray as xr
 from scipy import stats
 from tensorflow_probability.substrates import jax as tfp
 
-from conftest import dated_observed_values, static_observed_values, windowed_observed_values
+from conftest import (
+    dated_observed_values,
+    static_observed_values,
+    windowed_observed_values,
+)
+from sipnet_calibration.fields import batch_coordinate
 from sipnet_calibration.observation import (
     CALENDAR_YEAR,
     OBSERVED,
@@ -32,8 +37,18 @@ from sipnet_calibration.observation import (
     ReduceOverWindows,
     SelectTimestep,
 )
-from sipnet_calibration.observation.model import observed_components, prediction_components
-from sipnet_calibration.probability import REAL, ArraySpec, DeterministicSpec, FactorSpec, condition_on, joint
+from sipnet_calibration.observation.model import (
+    observed_components,
+    prediction_components,
+)
+from sipnet_calibration.probability import (
+    REAL,
+    ArraySpec,
+    DeterministicSpec,
+    FactorSpec,
+    condition_on,
+    joint,
+)
 from sipnet_calibration.probability.labels import as_constants, as_coords
 
 tfd = tfp.distributions
@@ -221,11 +236,11 @@ def test_window_lengths_follow_each_observation(lai):
     np.testing.assert_array_equal(vector.constants("lai")[WINDOW_LENGTH].values / 86_400.0, [1.0, 3.0, 2.0, 3.0])
 
 
-def test_the_observed_constant_agrees_with_y_by_label(vector):
+def test_the_observed_constant_agrees_with_the_observed_values_by_label(vector):
     observed = vector.constants("lai")[OBSERVED]
-    index = vector.index
+    values = vector["lai"].observed_values
     for (site, time), value in zip(observed.indexes["lai_observation"], observed.values):
-        assert vector.y[index.get_loc((site, "lai", time))] == value
+        assert float(values.sel(site=site, time=time)) == value
 
 
 def test_a_static_source_has_no_time_constants(vector):
@@ -276,7 +291,7 @@ def test_to_fields_unstacks_a_batch(vector):
     assert field.dims == ("sample", "site", "time")
     assert float(field.sel(sample=1, site=2, time=TIMES[2])) == 8.0
     assert np.isnan(float(field.sel(sample=1, site=1, time=TIMES[1])))
-    assert field["sample"].attrs == vector.fields(np.zeros((1, vector.dimension)))["lai"]["sample"].attrs
+    assert field["sample"].attrs == batch_coordinate("sample", np.arange(2)).attrs
 
 
 def test_to_fields_fills_what_an_array_lacks(vector):

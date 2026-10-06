@@ -2,7 +2,7 @@
 reading labeled values at the sites.
 
 The coords are the site ids and the classes some site carries, in declared
-order; a membership is each site's class, or each class's coarser class;
+order; a label map is each site's class, or each class's coarser class;
 values are read pointwise at each site's labels, batch dims first and
 element axes last; ``site_fields`` are fields; ``select`` is the selection
 of sites by class. Every check is provoked once.
@@ -13,10 +13,11 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 import pytest
+import xarray as xr
 
 from conftest import site_table_of
 from sipnet_calibration.fields import validate_field
-from sipnet_calibration.parameters import POSITIVE, SIMPLEX, Parameter, ParameterVector
+from sipnet_calibration.probability import POSITIVE, SIMPLEX, ArraySpec, Layout
 from sipnet_calibration.site_dims import SiteDims
 
 SITES = (1, 27, 4711)
@@ -35,24 +36,24 @@ def site_dims() -> SiteDims:
 
 
 @pytest.fixture(scope="module")
-def vector(site_dims) -> ParameterVector:
-    return ParameterVector(
-        parameters=[
-            Parameter(name="share", units="1"),
-            Parameter(name="allocation", support=SIMPLEX, units="1", shape=(3,), indexed_by=("pft",),
-                      element_labels={"part": ("leaf", "wood", "root")}),
-            Parameter(name="soil", support=POSITIVE, units="kg m-2", indexed_by=("site",)),
-            Parameter(name="rate", support=POSITIVE, units="yr-1", indexed_by=("site", "pft")),
+def layout(site_dims) -> Layout:
+    return Layout(
+        [
+            ArraySpec("share", units="1"),
+            ArraySpec("allocation", units="1", support=SIMPLEX, indexed_by=("pft",),
+                      element_axes={"part": ("leaf", "wood", "root")}),
+            ArraySpec("soil", units="kg m-2", support=POSITIVE, indexed_by=("site",)),
+            ArraySpec("rate", units="yr-1", support=POSITIVE, indexed_by=("site", "pft")),
         ],
         coords={"site": site_dims.coords["site"], "pft": site_dims.coords["pft"]},
     )
 
 
 @pytest.fixture(scope="module")
-def values(vector):
-    theta = np.random.default_rng(0).standard_normal((2, vector.unconstrained.size))
-    natural = vector.to_natural(theta)
-    return vector.flat_to_values(natural), vector.flat_to_dataset(natural, batch_dims=("sample",))
+def values(layout):
+    theta = np.random.default_rng(0).standard_normal((2, layout.unconstrained.size))
+    values_by_name = layout.flat_to_values(layout.to_natural(theta))
+    return values_by_name, xr.Dataset(layout.values_to_labeled(values_by_name, batch_dims=("sample",)))
 
 
 # ── the dims ──────────────────────────────────────────────────────────────────
@@ -98,7 +99,7 @@ def test_the_site_table_keeps_what_was_named():
     assert repr(site_dims) == "SiteDims(sites=3, site_labels=['pft'], covariate_names=['temperature'])"
 
 
-# ── memberships and covariates ────────────────────────────────────────────────
+# ── label maps and covariates ─────────────────────────────────────────────────
 
 
 def test_labels_along_site_are_each_sites_class(site_dims):
@@ -142,14 +143,14 @@ def test_a_covariate_is_a_constant_on_site(site_dims):
 
 
 def test_values_are_read_pointwise_at_each_sites_labels(site_dims, values):
-    values_by_parameter, dataset = values
+    values_by_name, dataset = values
     at_sites = site_dims.at_sites(dataset)
     pft = [site_dims.coords["pft"].get_loc(p) for p in PFT]
-    np.testing.assert_allclose(at_sites["allocation"], np.asarray(values_by_parameter["allocation"])[:, pft])
-    rate = np.asarray(values_by_parameter["rate"])
+    np.testing.assert_allclose(at_sites["allocation"], np.asarray(values_by_name["allocation"])[:, pft])
+    rate = np.asarray(values_by_name["rate"])
     np.testing.assert_allclose(at_sites["rate"], rate[:, np.arange(3), pft])
-    np.testing.assert_allclose(at_sites["soil"], values_by_parameter["soil"])
-    np.testing.assert_allclose(at_sites["share"], np.repeat(np.asarray(values_by_parameter["share"])[:, None], 3, axis=1))
+    np.testing.assert_allclose(at_sites["soil"], values_by_name["soil"])
+    np.testing.assert_allclose(at_sites["share"], np.repeat(np.asarray(values_by_name["share"])[:, None], 3, axis=1))
 
 
 def test_batch_dims_come_first_and_element_axes_last(site_dims, values):

@@ -3,8 +3,8 @@ and the pushforward.
 
 The families are one value's law from a few numbers; their densities are
 compared with SciPy's at draws, the simplex's against the density of its
-additive log-ratios, and the three conjugate families' arguments are
-checked.
+additive log-ratios, the fits to samples against their closed forms, and
+every family's arguments are checked.
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ from tensorflow_probability.substrates import jax as tfp
 from sipnet_calibration.probability import (
     POSITIVE,
     SIMPLEX,
+    UNIT_INTERVAL,
     Interval,
     InverseWishart,
     as_law,
@@ -26,8 +27,10 @@ from sipnet_calibration.probability import (
     inverse_wishart,
     log_normal,
     log_normal_from_interval,
+    log_normal_from_samples,
     logit_normal,
     logit_normal_from_interval,
+    logit_normal_from_samples,
     normal,
     pushforward,
     softmax_normal,
@@ -103,6 +106,60 @@ def test_softmax_normal_draws_follow_its_log_ratios():
     ratios = np.log(x[:, :-1] / x[:, -1:])
     np.testing.assert_allclose(ratios.mean(axis=0), np.log(center[:-1] / center[-1]), atol=0.02)
     np.testing.assert_allclose(ratios.std(axis=0), logit_sd, rtol=0.03)
+
+
+def test_a_closed_interval_puts_the_logit_normal_on_its_interior():
+    assert type(logit_normal(median=0.3, logit_sd=1.0, support=UNIT_INTERVAL)) is tfd.LogitNormal
+
+
+def test_fitting_to_samples_is_the_normal_of_their_logits():
+    support = Interval(1.0, 5.0)
+    samples = 1.0 + 4.0 * np.asarray(logit_normal(median=0.25, logit_sd=0.3).sample(2000, seed=KEY))
+    fitted = logit_normal_from_samples(samples, support=support)
+    assert type(fitted) is tfd.TransformedDistribution
+    fraction = (samples - 1.0) / 4.0
+    t = np.log(fraction) - np.log1p(-fraction)
+    np.testing.assert_allclose(fitted.distribution.loc, t.mean(), rtol=1e-12)
+    np.testing.assert_allclose(fitted.distribution.scale, t.std(), rtol=1e-12)
+    assert float(fitted.bijector.forward(fitted.distribution.loc)) == pytest.approx(2.0, rel=0.02)
+    on_unit = logit_normal_from_samples(fraction)
+    assert type(on_unit) is tfd.LogitNormal
+    np.testing.assert_allclose(on_unit.distribution.loc, t.mean(), rtol=1e-12)
+
+
+def test_softmax_normal_takes_one_logit_sd_per_label():
+    center = np.array([[0.25, 0.25, 0.25, 0.25], [0.18, 0.40, 0.07, 0.35]])
+    law = softmax_normal(center=center, logit_sd=[5.0, 0.1])
+    np.testing.assert_allclose(law.distribution.stddev(), [[5.0] * 3, [0.1] * 3])
+    np.testing.assert_allclose(law.distribution.loc, np.log(center[:, :-1] / center[:, -1:]))
+
+
+CENTER = (0.18, 0.40, 0.07, 0.35)
+
+
+@pytest.mark.parametrize(
+    ("build", "error", "message"),
+    [
+        (lambda: log_normal(median=-1.0, geometric_sd=2.0), ValueError, "not finite and positive"),
+        (lambda: log_normal(median=1.0, geometric_sd=0.5), ValueError, "give a value above 1"),
+        (lambda: log_normal_from_interval(lower=2.0, upper=1.0), ValueError, "upper does not exceed lower"),
+        (lambda: log_normal_from_interval(lower=1.0, upper=2.0, mass=1.0), ValueError, r"outside \(0, 1\)"),
+        (lambda: logit_normal(median=1.2, logit_sd=1.0), ValueError, "give a value inside it"),
+        (lambda: logit_normal(median=0.5, logit_sd=1.0, support=POSITIVE), ValueError, "on a finite interval"),
+        (lambda: logit_normal(median=0.5, logit_sd=1.0, support=SIMPLEX), TypeError, "must be an Interval"),
+        (lambda: log_normal_from_samples([1.0]), ValueError, "at least two"),
+        (lambda: log_normal_from_samples([1.0, -1.0]), ValueError, "outside the support"),
+        (lambda: log_normal_from_samples([1.0, 1.0]), ValueError, "all equal"),
+        (lambda: softmax_normal(center=(0.5, 0.6), logit_sd=1.0), ValueError, "summing to 1"),
+        (lambda: softmax_normal(center=(1.0,), logit_sd=1.0), ValueError, "k >= 2"),
+        (lambda: softmax_normal(center=CENTER, logit_sd=(1.0, 1.0)), ValueError, "one value per unconstrained"),
+        (lambda: softmax_normal(center=[CENTER[1:] + (0.18,)] * 3, logit_sd=(1.0, 1.0, 1.0)), ValueError,
+         "could be one value per label"),
+    ],
+)
+def test_the_value_families_refuse_bad_arguments(build, error, message):
+    with pytest.raises(error, match=message):
+        build()
 
 
 @pytest.mark.parametrize(

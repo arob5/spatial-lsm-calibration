@@ -1,10 +1,6 @@
 """The probability layer: models declared in specs, bound to labels, and
 conditioned on data, independent of the rest of the package.
 
-It is being built beside :mod:`sipnet_calibration.parameters`, which it
-replaces; until then the parameter layer reads its supports, coercion,
-probe points, families and builders from here, through re-export shims.
-
 Where this sits
 ---------------
 ::

@@ -18,8 +18,8 @@ Foundations, which everything else may import:
     (:class:`~sipnet_calibration.conventions.ReadOnlyCopies`).
 :mod:`~sipnet_calibration.validation`
     Argument coercion, ``as_<thing>(value, *, message_name)``: site ids,
-    integers, Flat vectors and batches, boxes, names, frozen mappings; and the
-    checks they are written with.
+    integers, batched Flat, boxes, names, frozen mappings; and the checks
+    they are written with.
 :mod:`~sipnet_calibration.io`
     Writing a file safely through a ``.partial`` path, and the md5 and
     timestamp its provenance records.
@@ -55,32 +55,29 @@ The data sources, each a spec, a reader, a builder, a loader and a field view:
 The inverse problem:
 
 :mod:`~sipnet_calibration.probability`
-    The probability layer, independent of the rest of the package, which is
-    replacing the parameter layer: so far its supports, the declaration of a
-    component (``ArraySpec``), coords with stacked dims, constants and label
-    maps, and the layout of named arrays with its three forms.
-:mod:`~sipnet_calibration.parameters`
-    The parameter layer, independent of the rest of the package but for the
-    probability layer it reads its supports from: what is calibrated
-    (supports, parameters, the vector and its three forms), what is computed
-    from it (derived parameters), and what is believed beforehand (the
-    prior).
+    The probability layer, independent of the rest of the package: the
+    declaration of a component (``ArraySpec``) and its support, laws and
+    their families, factors, deterministics and simulators joined into a
+    model, bound at coords and conditioned into a posterior, the layout of
+    named arrays with its three forms, the Gaussian observation model and
+    the conjugate rules.
 :mod:`~sipnet_calibration.site_dims`
-    The sites and the dims they define: coords for a vector, constants and
-    memberships for its functions, and values read at the sites.
+    The sites and the dims they define: coords for a model, constants and
+    label maps for its functions, and values read at the sites.
 :mod:`~sipnet_calibration.sipnet_parameter_map`
     How the values at a site become SIPNET parameters: rules, fixed values
     and external inputs.
 :mod:`~sipnet_calibration.calibration`
-    The objects together: the record of a calibration, and an example.
+    A calibration's record, from its posterior and SIPNET parameter map,
+    and an example.
 :mod:`~sipnet_calibration.observation`
     The observation vector, the observation operators and the time
     alignment they are written with; its ``model`` module, which the
     package does not import, makes the sources' components for the
     probability layer.
 :mod:`~sipnet_calibration.forward`
-    The forward model, unconstrained parameters to predictions, run through
-    PyEns.
+    The forward model, labeled values to predictions, run through PyEns:
+    SIPNET's runs and the simulator a model reads them through.
 :mod:`~sipnet_calibration.compute`
     The SCC's PyEns backend preset.
 
@@ -102,7 +99,7 @@ Dependencies
 ------------
 The dependency runs one way, from the foundations up::
 
-    probability  (imports nothing of the package)  <-  parameters
+    probability  (imports nothing of the package)
     probability, smc, validation  <-  inference
 
     conventions  <-  validation  <-  sites
@@ -113,10 +110,9 @@ The dependency runs one way, from the foundations up::
         <-  calibration, forward  <-  experiments
 
 :mod:`~sipnet_calibration.probability` imports nothing of the package outside
-itself, and :mod:`~sipnet_calibration.parameters` nothing but it, which
-``tests/test_package.py`` enforces; the adapter layer
+itself, which ``tests/test_package.py`` enforces; the adapter layer
 (``site_dims``, ``sipnet_parameter_map``, ``forward``) imports it, and the
-seam between them is the labeled natural values.
+seam between them is the labeled values.
 :mod:`~sipnet_calibration.io` depends on nothing here, and the data sources
 and :mod:`~sipnet_calibration.projection` write through it; ``site_dims``
 reads ``site_labels``' column name and the site table through ``sites``.
@@ -125,13 +121,12 @@ reads ``site_labels``' column name and the site table through ``sites``.
 field contract, its batch dims, the window coordinates of the two
 observation data sources, and the SIPNET parameter fields alias and
 validator, which is why neither ``initial_conditions`` nor ``observation``
-imports the parameter layer); ``observation.model`` alone of the observation
-package imports the probability layer. ``sipnet_parameter_map`` depends on
-``probability``, ``parameters``, ``site_dims``, ``fields`` and
-``initial_conditions``, and is
-the one that imports pySIPNET's parameter specs; ``calibration`` on it and
-the parameter layer; and ``forward`` on ``fields``, ``observation``,
-``parameters``, ``site_dims`` and ``sipnet_parameter_map``.
+imports the probability layer); ``observation.model`` alone of the observation
+package imports it. ``sipnet_parameter_map`` depends on ``probability``,
+``site_dims``, ``fields`` and ``initial_conditions``, and is the one that
+imports pySIPNET's parameter specs; ``calibration`` on it and the
+probability layer; and ``forward`` on ``fields``, ``observation``,
+``probability``, ``site_dims`` and ``sipnet_parameter_map``.
 :mod:`~sipnet_calibration.projection` depends on ``validation`` and ``io``
 only, and :mod:`~sipnet_calibration.plotting` on ``conventions``,
 ``validation``, ``fields``, the site table and the projection; nothing outside

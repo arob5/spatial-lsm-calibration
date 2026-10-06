@@ -15,7 +15,6 @@ import numpy as np
 import pytest
 from tensorflow_probability.substrates import jax as tfp
 
-from sipnet_calibration.parameters.parameter import Parameter
 from sipnet_calibration.probability.spec import ArraySpec
 from sipnet_calibration.probability.support import (
     OPEN_UNIT_INTERVAL,
@@ -118,14 +117,20 @@ def test_another_bijector_that_changes_the_shape_takes_default_axes():
     assert list(spec.unconstrained().element_axes) == ["allocation_axis_0"]
 
 
-def test_the_unconstrained_spec_agrees_with_the_parameter_layers():
-    """ArraySpec is Parameter with element_axes for shape and labels."""
-    for support, shape, labels in [(POSITIVE, (), None), (SIMPLEX, (4,), {"part": PARTS}), (OPEN_UNIT_INTERVAL, (2,), {"k": ("a", "b")})]:
-        parameter = Parameter(name="x", support=support, units="1", shape=shape, element_labels=labels)
-        spec = ArraySpec("x", units="1", support=support, element_axes=labels or {})
-        assert spec.shape == parameter.shape and spec.unconstrained_shape == parameter.unconstrained_shape
-        theirs = parameter.unconstrained().element_labels
-        assert [list(v) for v in spec.unconstrained().element_axes.values()] == [list(v) for v in theirs.values()]
+@pytest.mark.parametrize(
+    ("support", "labels", "shapes", "unconstrained_labels"),
+    [
+        (POSITIVE, None, ((), ()), {}),
+        (SIMPLEX, {"part": PARTS}, ((4,), (3,)), {"part": list(PARTS[:3])}),
+        (OPEN_UNIT_INTERVAL, {"k": ("a", "b")}, ((2,), (2,)), {"k": ["a", "b"]}),
+    ],
+)
+def test_the_unconstrained_spec_keeps_the_labels_its_bijector_keeps(support, labels, shapes, unconstrained_labels):
+    """A simplex's unconstrained value drops its last element label; an
+    elementwise bijector keeps every label."""
+    spec = ArraySpec("x", units="1", support=support, element_axes=labels or {})
+    assert (spec.shape, spec.unconstrained_shape) == shapes
+    assert {axis: list(v) for axis, v in spec.unconstrained().element_axes.items()} == unconstrained_labels
 
 
 # ── the checks ────────────────────────────────────────────────────────────────
@@ -179,6 +184,8 @@ def test_dims_are_unique_and_unreserved():
         ArraySpec("x", units=None, indexed_by=("theta_entry",))
     with pytest.raises(TypeError, match="one string"):
         ArraySpec("x", units=None, indexed_by="site")
+    with pytest.raises(TypeError, match="was given as a set, which has no order to keep"):
+        ArraySpec("x", units=None, indexed_by={"site", "pft"})
 
 
 @pytest.mark.parametrize(
