@@ -1282,24 +1282,24 @@ def test_conversion_fields_refuse_an_unlabeled_site():
 
 
 def test_conversion_fields_merge_into_a_sipnet_parameter_maps():
-    """The initial conditions' batch dim crosses the vector's sample."""
+    """The initial conditions' batch dim crosses the posterior's sample."""
     import jax
 
     from sipnet_calibration.calibration import example_calibration
+    from sipnet_calibration.probability import condition_on, joint
+    from sipnet_calibration.site_dims import SiteDims
 
     initial = to_sipnet_initial_condition_fields(
         ensemble_state(), leaf_carbon_per_area=32.0, fine_root_fraction=0.2,
         coarse_root_fraction=0.25, deciduous=False,
     )
-    from sipnet_calibration.site_dims import SiteDims
-
     site_table = pd.DataFrame(
         {"site_id": initial[SITE].values, "lon": initial["lon"].values, "lat": initial["lat"].values}
     )
     site_dims = SiteDims(site_table=site_table, site_labels={"pft": ("a", "b")})
-    vector, prior, sipnet_map = example_calibration(site_dims)
-    theta = prior.sample(jax.random.key(0), 3)
-    values = vector.flat_to_dataset(vector.to_natural(theta), batch_dims=("sample",))
+    prior_factors, sipnet_map = example_calibration(site_dims)
+    posterior = condition_on(joint(*prior_factors).bind(coords=site_dims.coords), {})
+    values = posterior.to_labeled(posterior.sample_prior(jax.random.key(0), 3))
     # The map writes soil_carbon, which the conversion sets too: drop it from
     # one of the two, as the conversion's docstring says.
     merged = xr.merge(

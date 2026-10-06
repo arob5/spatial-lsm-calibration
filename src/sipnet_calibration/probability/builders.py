@@ -295,8 +295,7 @@ class _OverDim(Builder):
 
     @cached_property
     def reads(self) -> tuple[str, ...]:
-        # Read when a factor asks, so a builder made for the parameter
-        # layer, which passes everything a prior term names, never meets it.
+        # Read when a factor asks, not when the builder is made.
         if self.reads_of is None:
             return ()
         reads = function_reads(self.reads_of, message_name=f"{self.name}'s law")

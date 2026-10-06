@@ -240,7 +240,7 @@ def to_sipnet_initial_condition_fields(
     and the same refusals, one value per element, as SIPNET parameter fields
     (:data:`~sipnet_calibration.fields.SIPNETParameterFields`), which merge
     into a SIPNET parameter map's once the variables both set are dropped from
-    one (``xr.merge([sipnet_map.sipnet_parameter_fields(vector, theta),
+    one (``xr.merge([sipnet_map.sipnet_parameter_fields(values, site_dims=site_dims),
     initial_condition_fields.drop_vars(both)])``, where ``both`` is
     ``soil_carbon`` for
     :func:`~sipnet_calibration.calibration.example_calibration`).

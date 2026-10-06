@@ -1,11 +1,16 @@
-"""The probability layer reproduces today's prior, bit for bit.
+"""The probability layer reproduces the parameter layer's priors, bit for bit.
 
-``tests/data/write_probability_references.py`` wrote, from the parameter
-layer, five priors' draws, densities and natural values. Each case is
-declared here again in the probability layer's terms, bound at the same
-labels and conditioned on nothing, and its posterior must give the same
-theta order, the same draws from the same key, the same log density and
-the same natural values, to the last bit.
+``tests/data/probability_references/`` holds five priors' draws, densities
+and natural values as the parameter layer computed them, written by a script
+removed with that layer (``tests/data/write_probability_references.py``,
+last run at commit d89a336). Each case is declared here again in the
+probability layer's terms, bound at the same labels and conditioned on
+nothing, and its posterior must give the same theta order, the same draws
+from the same key, the same log density and the same natural values, to the
+last bit.
+
+The files depend on the JAX and TFP builds: if an upgrade moves their bits,
+rerun the script from that commit's tree in the new environment.
 """
 
 from __future__ import annotations
@@ -18,7 +23,9 @@ import pytest
 import xarray as xr
 from tensorflow_probability.substrates import jax as tfp
 
-from conftest import REPOSITORY, example_calibration_factors
+from conftest import REPOSITORY, site_table_of
+from sipnet_calibration import calibration
+from sipnet_calibration.site_dims import SiteDims
 from sipnet_calibration.probability import (
     OPEN_UNIT_INTERVAL,
     POSITIVE,
@@ -77,7 +84,8 @@ def single_site_mcmc_vs_eki(reference):
 
 
 def example_calibration(reference):
-    return joint(*example_calibration_factors()).bind(coords={"pft": list(PFT), "site": list(SITES)})
+    site_dims = SiteDims(site_table=site_table_of(*SITES), site_labels={"pft": PFT_OF_SITE})
+    return joint(*calibration.example_calibration(site_dims)[0]).bind(coords={"pft": list(PFT), "site": list(SITES)})
 
 
 def hierarchy(reference):

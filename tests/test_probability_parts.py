@@ -17,6 +17,7 @@ import xarray as xr
 from tensorflow_probability.substrates import jax as tfp
 
 from sipnet_calibration.probability import (
+    OPEN_UNIT_INTERVAL,
     POSITIVE,
     ArraySpec,
     DeterministicSpec,
@@ -31,7 +32,7 @@ from sipnet_calibration.probability import (
     softmax_normal,
 )
 
-tfd = tfp.distributions
+tfd, tfb = tfp.distributions, tfp.bijectors
 
 SOIL_CARBON = ArraySpec("soil_carbon", units="kg m-2", support=POSITIVE, indexed_by=("site",))
 SPREAD = ArraySpec("spread", units="1", support=POSITIVE)
@@ -212,3 +213,45 @@ def test_a_builder_of_a_kwargs_function_is_refused_when_a_factor_reads_it():
     builder = iid_over_dim(lambda **values: tfd.Normal(0.0, 1.0))
     with pytest.raises(TypeError, match="cannot be read off its signature"):
         FactorSpec(SOIL_CARBON, law=builder)
+
+
+def test_a_bare_family_law_is_named_for_its_family():
+    share = ArraySpec("share", units="1", support=OPEN_UNIT_INTERVAL)
+    assert FactorSpec(share, law=logit_normal(median=0.3, logit_sd=0.8)).law_name == "logit-normal"
+
+
+_RATE_MARGINAL = log_normal(median=2.0, geometric_sd=1.5)
+_SHARE_MARGINAL = logit_normal(median=0.3, logit_sd=0.8)
+_CORRELATION = [[1.0, 0.6], [0.6, 1.0]]
+
+
+@pytest.mark.parametrize(
+    ("marginals", "correlation", "message"),
+    [
+        ({"rate": tfd.Gamma(jnp.float64(3.0), jnp.float64(2.0)), "share": _SHARE_MARGINAL}, _CORRELATION,
+         "not a scalar pushforward of a Gaussian"),
+        ({"rate": softmax_normal(center=(0.5, 0.5), logit_sd=1.0), "share": _SHARE_MARGINAL}, _CORRELATION,
+         "not a scalar pushforward"),
+        ({"rate": _RATE_MARGINAL,
+          "share": tfd.TransformedDistribution(tfd.Gamma(jnp.float64(2.0), jnp.float64(1.0)), tfb.Sigmoid())},
+         _CORRELATION, "not a scalar pushforward of a Gaussian"),
+        ({"rate": _RATE_MARGINAL, "share": _SHARE_MARGINAL}, [[1.0, 0.6], [0.5, 1.0]], "symmetric"),
+        ({"rate": _RATE_MARGINAL, "share": _SHARE_MARGINAL}, [[2.0, 0.6], [0.6, 1.0]], "unit diagonal"),
+        ({"rate": _RATE_MARGINAL, "share": _SHARE_MARGINAL}, [[1.0, 1.5], [1.5, 1.0]], "positive definite"),
+        ({"rate": _RATE_MARGINAL, "share": _SHARE_MARGINAL}, [[1.0]], r"shape \(1, 1\)"),
+    ],
+    ids=["gamma", "simplex", "gamma through a sigmoid", "asymmetric", "diagonal", "indefinite", "size"],
+)
+def test_the_copula_refuses_bad_arguments(marginals, correlation, message):
+    with pytest.raises(ValueError, match=message):
+        gaussian_copula(marginals, correlation=correlation)
+
+
+def test_a_fixed_law_called_with_values_refuses_them():
+    # A factor passes a builder only what it reads, nothing for a fixed law,
+    # so the builder's own call is the one way to give it more.
+    with pytest.raises(TypeError, match=r"iid Normal is a fixed law, but it is given \['spread'\]"):
+        iid_over_dim(tfd.Normal(jnp.float64(0.0), jnp.float64(1.0)))((3,), spread=1.0)
+    copula = gaussian_copula({"rate": _RATE_MARGINAL, "share": _SHARE_MARGINAL}, correlation=_CORRELATION)
+    with pytest.raises(TypeError, match="gaussian copula is a fixed law"):
+        copula((), c=1.0)

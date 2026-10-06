@@ -1780,7 +1780,7 @@ def test_sipnet_overrides_are_validated():
         validate_sipnet_overrides({"aMax": 1.0})
 
 
-def test_a_parameter_datasets_label_dim_is_refused_with_advice():
+def test_a_labeled_values_label_dim_is_refused_with_advice():
     from sipnet_calibration.fields import validate_field
 
     array = xr.DataArray([0.1, 0.2], dims="pft", coords={"pft": ["a", "b"]}, attrs={"units": "1"})

@@ -2261,7 +2261,7 @@ class ObservationVector:
     # kept: observation_sources, observation_source_names, sites, site_table,
     # output_variable_names, sipnet_parameter_names_read, describe, select,
     # restrict_to_sites, predict
-    # retired once PR #69 has migrated: y, dimension, index, positions, flat, fields
+    # retired in R1, once PR #69 had migrated: y, dimension, index, positions, flat, fields
 
     @property
     def coords(self) -&gt; frozendict:
@@ -2532,6 +2532,23 @@ class SIPNETSimulator(Simulator):
 </ul>
 <p><code>calibration.describe_calibration(posterior, sipnet_parameter_map)</code>
 replaces today's three-argument form.</p>
+<p><i>As built in R1:</i> <code>ForwardModel</code>, <code>ForwardEvaluation</code>
+and the corner check over a <code>ParameterVector</code> are removed; the
+corner check lives on in <code>SIPNETSimulator.check_given</code>. With the
+observation vector's Flat API gone, <code>SIPNETRunsEvaluation.predictions</code>
+holds per observation vector a read-only mapping
+<code>{prediction name: (R, n_k)}</code>, each source's predictions in its
+observation dim's order, which the calling process fills per site from the
+worker's reading of <code>predict</code>'s fields at the site's labels;
+<code>SIPNETSimulator</code> passes them through instead of reordering from
+Flat. <code>describe_calibration(posterior, map)</code> returns a table per
+component and input (but a simulator's outputs), with
+<code>Posterior.describe()</code>'s role, the <code>ArraySpec</code>, the
+declaring part's law, given and provenance, and the SIPNET parameters
+depending on it through deterministics; and the map's table with its
+<code>role</code>, <code>calibrated</code> meaning a dependence on a parameter
+of the posterior. <code>example_calibration(site_dims)</code> returns
+<code>(prior_factors, sipnet_parameter_map)</code>.</p>
 </section>
 
 <section id="inference">

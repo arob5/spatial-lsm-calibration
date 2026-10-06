@@ -24,11 +24,14 @@ from sipnet_calibration.probability import (
     ArraySpec,
     DeterministicSpec,
     FactorSpec,
+    Interval,
     ModelSpec,
+    gaussian_copula,
     iid_over_dim,
     independent_over_dim,
     joint,
     log_normal,
+    logit_normal,
     normal,
     softmax_normal,
 )
@@ -355,6 +358,50 @@ _RATE = jnp.float64(3.0)
 def test_a_law_with_no_density_on_its_support_is_refused(part):
     with pytest.raises(ValueError, match="has no density against the reference measure"):
         joint(part).bind(coords={"site": SITES})
+
+
+@pytest.mark.parametrize(
+    ("part", "error", "message"),
+    [
+        (FactorSpec(ArraySpec("rate", units="1", support=POSITIVE),
+                    law=iid_over_dim(log_normal(median=1.0, geometric_sd=2.0))),
+         TypeError, "law over a component's index dims, given to a component indexed by nothing"),
+        (FactorSpec([ArraySpec("rate", units="1", support=POSITIVE, indexed_by=("site",)),
+                     ArraySpec("share", units="1", support=POSITIVE, indexed_by=("site",))],
+                    law=gaussian_copula({"rate": log_normal(median=1.0, geometric_sd=2.0),
+                                         "share": log_normal(median=1.0, geometric_sd=2.0)},
+                                        correlation=np.eye(2))),
+         TypeError, r"law of components indexed by nothing, given components of index shape \(3,\)"),
+        (FactorSpec(ArraySpec("rate", units="1", support=POSITIVE, indexed_by=("site",)),
+                    law=independent_over_dim(log_normal, median=1.0, geometric_sd=2.0)),
+         ValueError, r"TFP batch shape \(\) for the index shape \(3,\); give at least one argument per label"),
+    ],
+    ids=["iid unindexed", "copula indexed", "independent of one law"],
+)
+def test_bind_refuses_a_builder_for_the_wrong_index(part, error, message):
+    with pytest.raises(error, match=message):
+        joint(part).bind(coords={"site": SITES})
+
+
+def test_a_copula_is_a_correlated_gaussian_of_its_marginals_arguments():
+    # One marginal on the reals and one logit-normal on (1, 5), a pushforward
+    # of a Normal through Sigmoid(low=1, high=5), the component's own bijector.
+    support = Interval(1.0, 5.0)
+    marginals = {"offset": normal(mean=0.5, standard_deviation=2.0),
+                 "share": logit_normal(median=2.0, logit_sd=0.5, support=support)}
+    correlation = np.array([[1.0, -0.4], [-0.4, 1.0]])
+    model = joint(FactorSpec([ArraySpec("offset", units="1"), ArraySpec("share", units="1", support=support)],
+                             law=gaussian_copula(marginals, correlation=correlation))).bind(coords={})
+    assert model.describe().loc["offset+share", "evaluated_by"] == "base density"
+    draws = model.sample(KEY, 5)
+    offset, share = np.asarray(draws["offset"]), np.asarray(draws["share"])
+    fraction = (share - 1.0) / 4.0
+    t = np.log(fraction) - np.log1p(-fraction)
+    sigma = np.array([2.0, 0.5])
+    gaussian = st.multivariate_normal([0.5, np.log(0.25 / 0.75)], sigma[:, None] * correlation * sigma[None, :])
+    jacobian = np.log(4.0 * fraction * (1.0 - fraction))
+    np.testing.assert_allclose(model.log_prob(draws), gaussian.logpdf(np.stack([offset, t], -1)) - jacobian,
+                               rtol=1e-10)
 
 
 def test_a_mixture_of_densities_is_a_density():

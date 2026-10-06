@@ -91,10 +91,8 @@ Functions and classes
 
 Notes
 -----
-Today's ``ParameterVector`` is this class over parameters, with an
-``order``; a layout has none, since its order is the canonical one, which is
-``ParameterVector``'s default order whenever each parameter's dims are in
-the coords' order.
+A layout takes no ``order``: its order is the canonical one, the components
+in declaration order and each block in C order over its dims.
 
 Usage
 -----

@@ -1,7 +1,6 @@
 """The probe points: fixed points of unconstrained space at which bijectors,
 deterministic values and laws are checked, and the comparison of two
-bijectors there. Private to the probability layer, and read by the
-parameter layer through its re-export.
+bijectors there. Private to the probability layer.
 """
 
 from __future__ import annotations

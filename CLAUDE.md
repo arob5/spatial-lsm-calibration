@@ -202,82 +202,69 @@ them.
 | **observation** | one entry of **y**: one observed value of one observation source at one site (and time) | "cell", "observed cell" |
 | **model output** | SIPNET's output as a labeled `xr.Dataset`, one run or a stack | `dataset` as a variable name for it |
 | **run** | one SIPNET execution: one site, one sample, and one member of each driving data source | "cell", "slot", "pair" |
-| **run index** | the rows of a forward evaluation: its `batch_dim` and any crossed dims of the external inputs, `ForwardEvaluation.run_index` | |
+| **run index** | the rows of an evaluation of the runs: its `batch_dim` and any crossed dims of the external inputs, `SIPNETRunsEvaluation.run_index` | |
 
-**The calibration.** Two layers and one seam. The **parameter layer**,
-`sipnet_calibration.parameters`, is `ParameterVector` (what is calibrated),
-`DerivedParameters` (what is computed from it) and `Prior` (what is believed
-beforehand), and knows nothing of sites, SIPNET or the rest of the package.
-The **adapter layer** is `SiteDims` (what each site is), `SIPNETParameterMap`
-(how the values at a site become SIPNET parameters there) and `ForwardModel`.
-The seam between them is the **labeled natural values**, an `xr.Dataset` with
-one variable per parameter and derived parameter.
-
-| Word | Meaning | Retires |
-|---|---|---|
-| **parameter** | one unknown of the calibration, a `Parameter`: an array-valued quantity with a support, units, one value's `shape`, and the dims it is indexed by; always distinct from a **SIPNET parameter**, which is always called by its full name | "calibration parameter" |
-| **dim** / **dim label** | a dim a parameter is indexed by (`Parameter.indexed_by`), and one of its labels, in `ParameterVector.coords`; in the adapter layer a dim is `site` or a site-labels name, whose labels are the site ids or the classes some site carries (`SiteDims.coords`) | "group", "copy", `varies_by`, `group_dim`, `dim=`, `dim_index` |
-| **value** | a parameter's value at one tuple of labels of its dims, of shape `Parameter.shape`; `shape` is always one value's, never the block's | |
-| **element** / **element axes** / **element labels** | one number of one value; a value's axes are its element axes, named, with their labels (strings), by its element labels (`Parameter.element_labels`), which name the element axes of the labeled forms | "natural" / "unconstrained size and names", `k` and `e`, `natural_names`, "component" for an element |
-| **block** | all of a parameter's values, one at each tuple of labels of its dims: **block shape** `(*index shape, *shape)`, the **index shape** `[len(coords[d]) for d in indexed_by]`, the labels in use; values by parameter put the batch in front, `(*batch, *block shape)` | "block" for one value |
-| **event** | only TFP's sense: the axes one draw of a distribution covers. A prior term's event is its parameters' blocks; one value's distribution, which `iid_over_dim` repeats over a block, has the element axes as its event; a support's or bijector's `event_ndims` is how many trailing element axes it constrains jointly (0 on an interval, 1 on the simplex) | "event" for element axes |
-| **support** | a set of values, a `Support` (`Interval`, `Simplex`, ...): the set a parameter's values lie in, whose default bijector is `bijector_for(support)`; a rule's domain is one too (`ValueRequirement.domain`) | "the open set", `Bounds`, `OpenInterval` |
-| **constant** | a value a derived parameter, prior term or SIPNET rule reads that is the same in every draw: an `xr.DataArray`, `float64` or `bool`, scalar or keyed by label on dims of the coords or element axes, read at the labels in use (`parameters.labels` defines it) | |
-| **membership** | for each label of one dim, the label of another it belongs to (a site's PFT, a PFT's biome): an `xr.DataArray` named for the other dim (`SiteDims.labels`), passed to a derived parameter's function as `int64` positions into that dim's labels; only derived parameters read memberships | `site_positions`, `dim_label_positions` |
-| **prior term** | one factor of the prior, a `PriorTerm`: the distribution of the blocks of the parameters it names (`parameter_names`; several indexed alike are a **joint term**), possibly **given** other parameters or derived parameters and reading constants | the dict key of a term, `TermKey`, `term_name` |
-| **prior function** | a function returning a prior term's distribution (`PriorFunction`): one a user writes is `f(**given, **constants)`, its event shape coming from what it reads; the builders `iid_over_dim`, `independent_over_dim` and `gaussian_copula` return ones the prior also passes the index shape, privately | `f(index_shape, ...)` for a user's function |
-| **derived parameter** | a deterministic quantity `y = f(x)`, a `DerivedParameter` in a `DerivedParameters` over one vector: `indexed_by`, one value's shape, units and optionally a support like a parameter's, computed by a pure array function of what it is **given** (parameters and other derived parameters, the same word as a prior term's), constants and memberships; no entries of theta and no prior. A SIPNET convention (a unit reference, a formula of sipnet.c) is a `Compute` rule instead | `derived_from`, `parameter_names` for its inputs, `compute`, "pointwise" |
-| **site dims** | the sites and the dims they define, a `SiteDims`: each site's id, location, site covariates and site labels | the parameter vector's `site_table`, `site_labels`, `sites` |
-| **site covariate** | a `float64` column of the site table, named in `SiteDims(covariate_names=)`, read as a constant (`SiteDims.covariate`) | `site_covariate_names` |
-| **external input** | an uncertain value a SIPNET rule reads that is propagated, not calibrated, paired with theta by dim name (`sipnet_parameter_map.ExternalInputs`) | the `to_sipnet_parameter_fields` hook |
-| **role** | what a SIPNET parameter written depends on: `calibrated` (a parameter or derived parameter), `propagated` (external inputs only), `constant` (a rule of constants and fixed values), or `fixed` | |
-
-**The probability layer**, `sipnet_calibration.probability`, is replacing the
-parameter layer (CLAUDE.md's "The probability-layer refactor"). The words it
-has brought so far; the rest of its vocabulary is the design's §6 until a PR
-moves it here.
+**The calibration.** Two layers and one seam. The **probability layer**,
+`sipnet_calibration.probability`, declares a model in specs, binds it to
+labels and conditions it on data, and knows nothing of sites, SIPNET or the
+rest of the package. The **adapter layer** is `SiteDims` (what each site
+is), `SIPNETParameterMap` (how the values at a site become SIPNET parameters
+there), and `SIPNETRuns` and `SIPNETSimulator` (SIPNET run for a batch of
+values, and the forward map as a model's simulator). The seam between them
+is the **labeled values**, a dict of `xr.DataArray`s, one per component.
 
 | Word | Meaning | Retires / not to be confused with |
 |---|---|---|
 | **component** | a named array a draw of a model holds, declared by an `ArraySpec` (`probability.spec`): a parameter, a derived value, an observed value, a prediction | "component" for an element; not a **field** |
+| **parameter** | a component of the target, what theta holds (`Posterior.parameter_names`): an array-valued quantity with a support, units, one value's shape, and the dims it is indexed by; always distinct from a **SIPNET parameter**, which is always called by its full name | "calibration parameter"; the `Parameter` class |
+| **spec** | a declaration, holding no labels and no numbers; its class ends in `Spec` (`ArraySpec`, `FactorSpec`, `DeterministicSpec`, `ModelSpec`) | the distribution it becomes once bound |
+| **dim** / **dim label** | a dim a component is indexed by (`ArraySpec.indexed_by`), and one of its labels, in the coords a model is bound at; in the adapter layer a dim is `site` or a site-labels name, whose labels are the site ids or the classes some site carries (`SiteDims.coords`) | "group", "copy", `varies_by`, `group_dim`, `dim=`, `dim_index` |
 | **stacked dim** | a dim whose labels are a `pandas.MultiIndex` with named levels (integers, strings or `datetime64[ns]`), how a ragged set of labels, such as the `(site, time)` pairs a source observes, becomes one dim; a level may be named wherever a dim may, and merges with a plain dim of its name in a layout's index | a batch dim |
-| **label map** | a one-dimensional `xr.DataArray` on a dim of the coords, named for its target (a dim or an element axis), whose values are the target's labels; a function receives it as `int64` positions (`probability.labels`) | "membership", once R1 removes the parameter layer |
-| **layout** | named arrays as one flat vector, a `Layout` (`probability.layout`): components in declaration order, each block in C order, with no `order` argument; theta's and y's | |
-| **values by name** / `ValuesByName` | a layout's structured, traceable form: `{name: (*batch, *block shape)}` | |
-| **labeled values** / `LabeledValues` | a layout's labeled form: a `dict` of one `xr.DataArray` per component on `(*batch dims, *indexed_by, *element axes)`, a dict because two stacked dims with a `site` level cannot share a Dataset; `encode_labeled_values` makes the Dataset netCDF holds | a `ParameterDataset` |
+| **value** | a component's value at one tuple of labels of its dims, of shape `ArraySpec.shape`; `shape` is always one value's, never the block's | |
+| **element** / **element axes** | one number of one value; a value's axes are its element axes, named, with their labels (strings) or a length (`ArraySpec.element_axes`), which name the element axes of the labeled forms | "natural" / "unconstrained size and names", `k` and `e`, `natural_names`, `element_labels`, "component" for an element |
+| **block** | all of a component's values, one at each tuple of labels of its dims: **block shape** `(*index shape, *shape)`, the **index shape** `[len(coords[d]) for d in indexed_by]`, the labels in use; values by name put the batch in front, `(*batch, *block shape)` | "block" for one value |
+| **event** | the components a factor declares (`FactorSpec.event`). TFP's sense, the axes one draw of a distribution covers, is always written "TFP event shape"; one value's law, which `iid_over_dim` repeats over a block, has the element axes as its TFP event shape; a support's or bijector's `event_ndims` is how many trailing element axes it constrains jointly (0 on an interval, 1 on the simplex) | "event" for element axes |
+| **support** | a set of values, a `Support` (`Interval`, `Simplex`, `PositiveDefinite`, ...): the set a component's values lie in, whose default bijector is `bijector_for(support)`; a rule's domain is one too (`ValueRequirement.domain`) | "the open set", `Bounds`, `OpenInterval` |
+| **constant** | a value a law, deterministic or SIPNET rule reads that is the same in every draw: an `xr.DataArray`, `float64` or `bool`, scalar or keyed by label on dims of the coords or element axes, read at the labels in use (`probability.labels` defines it) | |
 | **own dim** | a dim of a constant that is neither a dim of the coords nor an element axis, passed whole, which its reader declares in `own_dims=` | |
+| **label map** | a one-dimensional `xr.DataArray` on a dim of the coords, named for its target (a dim or an element axis), whose values are the target's labels (a site's PFT, a PFT's biome: `SiteDims.labels`); a function receives it as `int64` positions (`probability.labels`) | "membership", `memberships`, `site_positions`, `dim_label_positions` |
+| **layout** | named arrays as one flat vector, a `Layout` (`probability.layout`): components in declaration order, each block in C order, with no `order` argument; theta's and y's | the parameter vector |
+| **values by name** / `ValuesByName` | a layout's structured, traceable form: `{name: (*batch, *block shape)}`, the form every law, deterministic and rule function computes on | `ValuesByParameter`, `NaturalValues` |
+| **labeled values** / `LabeledValues` | a layout's labeled form: a `dict` of one `xr.DataArray` per component on `(*batch dims, *indexed_by, *element axes)`, a dict because two stacked dims with a `site` level cannot share a Dataset; with the external inputs, what the SIPNET parameter map reads; `encode_labeled_values` makes the Dataset netCDF holds | `ParameterDataset`, "labeled natural values" |
+| **part** / **factor** / **deterministic** | a part is a factor (a conditional law over its event, a `FactorSpec`) or a deterministic (components computed by a pure function, a `DeterministicSpec`, or by a simulator) | a factor: "prior term", `PriorTerm`; a deterministic: "derived parameter", `DerivedParameter`, `derived_from`, `compute`, "pointwise" |
+| **law** | the concrete distribution a factor evaluates to for one draw of what it reads: a TFP distribution, or an object implementing `probability.laws.Law`, such as a `GaussianLaw`; an EnsKit `Gaussian` of one block or a numpyro distribution (GPJax's among them) is adapted to one by `as_law` (`GaussianLaw`, `NumpyroLaw`), and `pushforward` of a base that is not TFP's is a `PushforwardLaw` | a factor, which declares one |
+| **law function** | a function returning a factor's law, `f(**given, **constants)`, its TFP event shape coming from what it reads; the builders `iid_over_dim`, `independent_over_dim` and `gaussian_copula` return ones the layer also passes the index shape, privately | "prior function", `PriorFunction`, `f(index_shape, ...)` for a user's function |
+| **given** | the components and inputs a part's function reads, inferred from its keywords (the keyword rule), never stated | `given=` |
+| **input** | a node with no parents and no law, declared by an `ArraySpec` in `joint(..., inputs=)` and bound by `bind(..., inputs=)` | an external input, the SIPNET adapter's word |
+| **bind** | give a model spec the labels of its dims and its inputs' values, making a `FactoredDistribution` | |
+| **target** / **barren** / **observed** | after `condition_on`: observed factors are conditioned on; barren ones are unobserved with no observed descendant, dropped; the rest are the target, whose components are theta's; an observed factor with no target ancestor is constant (`O_c`) | |
+| **draw** | one joint value of every component; a batch of draws has batch dim `sample` | |
+| **simulator** | a deterministic computed outside JAX for a whole batch of samples, which may fail at some of them: a `Simulator` (`probability.parts`), called once per batch with labeled values and returning a `SimulatorOutput` (its outputs, and at which samples each was computed); `SIPNETSimulator` is the forward map as one | the forward model's runs, `SIPNETRuns`; `ForwardModel` |
+| **valid** (a sample) | every simulator output the likelihood reads was computed at it and every likelihood factor's density is finite there; an invalid sample's log likelihood is `-inf` (`PosteriorEvaluation.valid`) | `SIPNETRunsEvaluation.valid`, a row whose runs all succeeded in the domain |
 | **observation dim** | a source's stacked dim, `"<source>_observation"`, whose labels are the `(site, time)` pairs it observes (`(site,)` if static), sorted by site, then time: `ObservationVector.coords`, `ObservationSource.observation_labels`, `observation_dim_name()` | a batch dim |
 | **observed component** | a source's observed values as a component, named for the source, on its observation dim (`observation.model.observed_components`, values `observed_values_by_component()`) | |
 | **prediction** | the forward model's value of an observed quantity, on the source's observation dim and in its units: `predicted_<source>` (`ObservationVector.prediction_name`, `observation.model.prediction_components`) | "predictions", the Flat `(J, N)`, which keeps its meaning |
-| **spec** | a declaration, holding no labels and no numbers; its class ends in `Spec` (`ArraySpec`, `FactorSpec`, `DeterministicSpec`, `ModelSpec`) | the distribution it becomes once bound |
-| **law** | the concrete distribution a factor evaluates to for one draw of what it reads: a TFP distribution, or an object implementing `probability.laws.Law`, such as a `GaussianLaw`; an EnsKit `Gaussian` of one block or a numpyro distribution (GPJax's among them) is adapted to one by `as_law` (`GaussianLaw`, `NumpyroLaw`), and `pushforward` of a base that is not TFP's is a `PushforwardLaw` | a factor, which declares one |
 | **Gaussian factor** | a factor whose law is a `GaussianSpec` (`probability.parts`): its one component, on `REAL` and indexed by one dim at most, centered on a mean component, with a covariance declared by a **covariance spec** (`probability.covariance`); its law at a draw is a `GaussianLaw`, holding one of EnsKit's operators | a law function returning a Gaussian, which is opaque |
 | **covariance spec** / **scope** | a declaration of a covariance as structure over labels (`DiagonalSpec`, `DenseSpec`, `SumSpec`, `ScaledSpec`, `BlockDiagonalSpec`, `SubmatrixSpec`); its scope is the entries it covers, the event or one group of a `BlockDiagonalSpec`, whose groups are the entries sharing labels at a level (`by=`) | "cell" for a block |
 | **noise factor** | a source's Gaussian factor, its observed component centered on its prediction (`observation.model.noise_factor`), holding the source's constants its covariance reads | |
 | **held** (values) | what a posterior fixes whatever theta is: the observed values, the inputs, the constants, and the deterministics computed from them alone with no simulator; a Gaussian factor's covariance computable from held values is a **held covariance**, built and factored once at `condition_on` | |
 | **Gaussian likelihood** | the likelihood written as `y ~ N(G(theta), R)` when every `O_theta` factor is Gaussian with a covariance the held values fix (`Posterior.gaussian_likelihood() -> GaussianLikelihood`): `R` block-diagonal over the factors in y's order, `G` their means (`forward`) | |
-| **factor** / **deterministic** / **part** | a part is a factor (a conditional law over its **event**, the components it declares) or a deterministic (components computed by a pure function, or by a simulator); a factor replaces a prior term, a deterministic a derived parameter | |
-| **simulator** | a deterministic computed outside JAX for a whole batch of samples, which may fail at some of them: a `Simulator` (`probability.parts`), called once per batch with labeled values and returning a `SimulatorOutput` (its outputs, and at which samples each was computed); `SIPNETSimulator` is the forward map as one | the forward model's runs, `SIPNETRuns` |
-| **valid** (a sample) | every simulator output the likelihood reads was computed at it and every likelihood factor's density is finite there; an invalid sample's log likelihood is `-inf` (`PosteriorEvaluation.valid`) | `ForwardEvaluation.valid`, a row whose runs all succeeded |
-| **given** (probability layer) | the components and inputs a part's function reads, inferred from its keywords (the keyword rule), never stated | `given=` of the parameter layer |
-| **input** | a node with no parents and no law, declared by an `ArraySpec` in `joint(..., inputs=)` and bound by `bind(..., inputs=)` | an external input, the SIPNET adapter's word |
-| **bind** | give a model spec the labels of its dims and its inputs' values, making a `FactoredDistribution` | |
-| **target** / **barren** / **observed** | after `condition_on`: observed factors are conditioned on; barren ones are unobserved with no observed descendant, dropped; the rest are the target, whose components are theta's; an observed factor with no target ancestor is constant (`O_c`) | |
-| **draw** | one joint value of every component; a batch of draws has batch dim `sample` | |
 | **conjugate rule** / **marginal** | the scale rule or the block rule (`probability.conjugacy`, the design's §7.13 R1 and R2): a component whose inverse-gamma or inverse-Wishart prior is conjugate to the one Gaussian factor reading it; integrated out (`FactoredDistribution.marginalize`), that factor becomes its marginal, a Student-t or a matrix Student-t (`probability.scale_mixtures`) | |
 | **full conditional** | a parameter's closed-form law given every other component, by a conjugate rule (`Posterior.full_conditional -> FullConditional`), drawn from an evaluation's residuals with no new simulator run | |
+| **site dims** | the sites and the dims they define, a `SiteDims`: each site's id, location, site covariates and site labels | the parameter vector's `site_table`, `site_labels`, `sites` |
+| **site covariate** | a `float64` column of the site table, named in `SiteDims(covariate_names=)`, read as a constant (`SiteDims.covariate`) | `site_covariate_names` |
+| **external input** | an uncertain value a SIPNET rule reads that is propagated, not calibrated, paired with the samples by dim name (`sipnet_parameter_map.ExternalInputs`), given to `SIPNETRuns.evaluate`; a model's own fixed values are its inputs | the `to_sipnet_parameter_fields` hook |
+| **role** | what a SIPNET parameter written depends on (`calibration.ROLES`): `calibrated` (a parameter, directly or through deterministics), `propagated` (other values only: inputs, external inputs), `constant` (a rule of constants and fixed values), or `fixed` | |
 
 **Representations.**
 
 | Word | Meaning | Retires |
 |---|---|---|
 | **field** | one `xr.DataArray` holding one variable under the field contract below | "canonical field", a Dataset called a field |
-| **Fields** (a representation) | the observation vector's labeled form, a `dict[str, Field]` | Fields for the parameter vector, whose labeled form is a `ParameterDataset`, and not a collection of fields; `SiteDims.site_fields()` is its per-site view |
-| **Flat** | a vector's unlabeled numeric form: one vector `(D,)`/`(N,)`, or a batch `(n_samples, D)`/`(n_samples, N)`, called "batched Flat" where the shape matters | "block" for it |
-| **values by parameter** / `ValuesByParameter` | the parameter vector's structured, traceable form: `{name: (*batch, *block shape)}`, the form every prior, derived and rule function computes on | `NaturalValues` |
-| **labeled natural values** / `ParameterDataset` | the parameter vector's labeled form, one variable per parameter on `(*batch dims, *indexed_by, *element axes)`; with the derived parameters' and the external inputs, what the SIPNET parameter map reads | |
-| **entry** | one position of a Flat vector | "column" (parameter vector), "cell" (observation vector) |
-| **segment** | the contiguous entries of one site, or one piece, in Flat | "block" in `forward.py` |
+| **Fields** (a representation) | an observation vector's fields, a `dict[str, Field]` by source: what `predict` returns and `to_fields` makes from labeled values | Fields for labeled values, which are not fields; `SiteDims.site_fields()` is their per-site view |
+| **Flat** | a layout's unlabeled numeric form: one vector, theta `(D,)` or y `(N,)`, or a batch `(n_samples, D)`/`(n_samples, N)`, called "batched Flat" where the shape matters | "block" for it |
+| **entry** | one position of a Flat vector | "column" (of theta), "cell" (of y) |
+| **segment** | the contiguous labels of one site in an observation dim, or the contiguous entries of one component in Flat | "block" in `forward.py` |
 | **SIPNET parameter fields** / `sipnet_parameter_fields` | the `xr.Dataset` of SIPNET parameter values, `fields.SIPNETParameterFields` (its form is in `fields.py`'s data model) | "SIPNET table", `table` for a Dataset |
 | **SIPNET overrides** / `sipnet_overrides` | one run's flat `dict[str, float]`, the keywords `SIPNETModel` takes | `sipnet_parameters` for this |
 | **SIPNET parameters** / `sipnet_parameters` | **only** a pySIPNET `SIPNETParameters` | the operator keyword of that name |
@@ -310,13 +297,14 @@ never a timestep or a site position. *grid*: `SITE_GRID`, a raster grid, or a
 PyEns `Grid` (always "PyEns grid").
 
 **Notation.** `J` samples, `D` the dimension of theta
-(`parameter_vector.unconstrained.size`), `N` the dimension of y
-(`ObservationVector.dimension`), `S` sites (`n_sites`), `K` observation sources;
-`theta` Flat unconstrained parameters, `y` Flat observations, `G`
-the forward map (`ForwardModel`), `M_s` SIPNET at site s, `H_k` the observation
-operator of source k, `T` the unconstrained-to-natural transform.
-"Predictions" is always a Flat `(N,)`/`(J, N)`; its labeled form is
-`predicted_fields`.
+(`posterior.dimension`), `N` the dimension of y
+(`posterior.gaussian_likelihood().y`), `S` sites (`n_sites`), `K`
+observation sources; `theta` Flat unconstrained parameters, `y` Flat
+observations, `G` the forward map (`GaussianLikelihood.forward`, through a
+`SIPNETSimulator`), `M_s` SIPNET at site s, `H_k` the observation operator of
+source k, `T` the unconstrained-to-natural transform. "Predictions" is
+always a Flat `(N,)`/`(J, N)`; a source's labeled form is its prediction,
+`predicted_<source>`, and its fields `ObservationVector.to_fields`'.
 
 ### Field contract
 
@@ -351,8 +339,6 @@ form is stated in its home module's data model:
 | `ObservedValues` | `observation.source` | `validate_observed_values` |
 | `SIPNETParameterFields` | `fields` | `validate_sipnet_parameter_fields` |
 | `SIPNETOverrides` | `fields` | `validate_sipnet_overrides` |
-| `ValuesByParameter` | `parameters.vector` | `validate_values_by_parameter` |
-| `ParameterDataset` | `parameters.vector` | `validate_parameter_dataset` |
 | `ValuesByName` | `probability.layout` | `validate_values_by_name` |
 | `LabeledValues` | `probability.layout` | `validate_labeled_values` |
 | `ExternalInputs` | `sipnet_parameter_map` | `validate_external_inputs` |
@@ -362,42 +348,41 @@ The validators of the field forms are strict: each requires everything
 checks a mapping of pySIPNET flat parameter names to numbers.
 `SIPNETParameterFields` and `SIPNETOverrides` live in `fields` beside
 `ModelOutput`, the model's input beside its output, so `initial_conditions`
-and `observation` never import `parameters` (and with it TFP).
+and `observation` never import `probability` (and with it TFP).
 
 ### Vector-like classes
 
-`ParameterVector`, `ObservationVector` and their pieces follow one convention.
-A parameter vector's pieces are its `Parameter`s, what theta holds
-(`vector[name]`, `in`, `iter`, `len` and `describe()` cover them); an
-observation vector's are its `ObservationSource`s. The derived parameters,
-the prior and the SIPNET parameter map are separate objects
-(`parameters/derived.py`, `parameters/prior.py`, `sipnet_parameter_map.py`),
-and a prior and a forward model are paired by passing `prior.parameter_vector`
-and `prior.derived_parameters` to both; a driver given two vectors from
-elsewhere calls `parameters.check_parameter_vectors_share_a_layout`.
+`ObservationVector`, `Layout` and their pieces follow one convention. An
+observation vector's pieces are its `ObservationSource`s; a layout's are its
+components' `ArraySpec`s (`layout[name]`, `in`, `iter`, `len`). A model's
+parts, its binding and its conditioning are the probability layer's
+(`ModelSpec`, `FactoredDistribution`, `Posterior`), and the SIPNET parameter
+map is a separate object (`sipnet_parameter_map.py`) a `SIPNETRuns` holds.
 
 | Aspect | Convention |
 |---|---|
-| Construction | `@dataclass(frozen=True, eq=False, kw_only=True)`; validation in `__post_init__` through one grouped check (`check_observation_vector_is_valid`, `check_observation_source_is_valid`, `check_parameter_is_valid`, `check_parameter_vector_is_valid`); nothing mutable reachable: mappings frozen (`frozendict`, which pickles and hashes), arrays copied and read-only (`conventions.ReadOnlyCopies` for xarray data) |
+| Construction | `@dataclass(frozen=True, eq=False, kw_only=True)`; validation in `__post_init__` through one grouped check (`check_observation_vector_is_valid`, `check_observation_source_is_valid`); nothing mutable reachable: mappings frozen (`frozendict`, which pickles and hashes), arrays copied and read-only (`conventions.ReadOnlyCopies` for xarray data) |
 | Pieces | `vector[name]`, `name in vector` (`False` for anything else, an unhashable value included), `iter(vector)` and `reversed(vector)` (piece names), `len(vector)` (number of pieces), `<piece>_names` |
-| Size | `dimension` (N) on the observation vector; `size` on the parameter vector, whose theta has `D = unconstrained.size` entries |
-| Entries | `index`: a `pd.MultiIndex` over the entries (`(parameter, *dims, element)`; `(site, observation_source, time)`); `positions(**selectors) -> int64 array` on both, an unknown label a `KeyError` as in `select` |
-| Sites | the observation vector's `sites` (ids, ascending; its values are sorted by site and time as a normalization, since their order carries nothing) and `site_table` (from its observed values' `lon`/`lat`, which its sources must agree on); the parameter vector has none: `SiteDims` holds the sites (`sites`, ascending, refused if unsorted), their locations, site covariates and site labels |
-| Selection | `select(...)`: an unknown label raises `KeyError`; the result keeps vector order whatever the request order, so Flat order never changes by selection; duplicates are refused. The parameter vector's is `select(parameter=[...], <dim>=[...])`, a parameter not indexed by a selected dim kept whole; `DerivedParameters.select` keeps a derived parameter whose names given are kept, and `Prior.select` refuses to drop what a kept term covers or is given; the observation vector's is `select(*, observation_source_names=None, sites=None)`, and `restrict_to_sites(sites)` the intersecting form, which the forward model's advice uses |
-| Representations | the parameter vector: Flat, values by parameter and the labeled form, converted by `flat_to_values`/`values_to_flat`, `values_to_dataset`/`dataset_to_values` and `flat_to_dataset`/`dataset_to_flat`, with `to_natural`/`to_unconstrained` between the spaces; the observation vector: `flat(fields) -> Flat`, `fields(flat_values, *, batch_dim=SAMPLE) -> Fields` |
-| Flat's array type | JAX everywhere: both vectors, the prior and `ForwardModel` return `jax.Array` Flat and accept any array-like; internals that fill arrays in place work in NumPy and convert on return. 64-bit JAX is on for the whole package |
-| Description | `describe()`: one row per piece; `index`: one row per entry; `__repr__` one summary line. `calibration.describe_calibration(vector, prior, sipnet_map)` joins the objects' descriptions into the record written beside a run: one table per parameter and one per SIPNET parameter, with its role |
+| Size | `size` on a layout, theta having `D = posterior.parameters.unconstrained.size` entries; an observation vector has none, y's order and size being its posterior's |
+| Entries | a layout's `index`: a `pd.MultiIndex` over the entries (`(component, *dims, *levels, element)`), and `positions(**selectors) -> int64 array`, an unknown label a `KeyError` as in `select`; an observation vector's observations are its `coords`, one observation dim per source |
+| Sites | the observation vector's `sites` (ids, ascending; each source's observations are sorted by site and time as a normalization, since their order carries nothing) and `site_table` (from its observed values' `lon`/`lat`, which its sources must agree on); a model's sites are its `SiteDims`' (`sites`, ascending, refused if unsorted), with their locations, site covariates and site labels |
+| Selection | `select(...)`: an unknown label raises `KeyError`; the result keeps the declared order whatever the request order, so Flat order never changes by selection; duplicates are refused. A layout's is `select(component=[...], <dim or level>=[...])`, and `FactoredDistribution.select` binds the model again at fewer labels; the observation vector's is `select(*, observation_source_names=None, sites=None, time=None)`, and `restrict_to_sites(sites)` the intersecting form |
+| Representations | a layout: Flat, values by name and labeled values, converted by `<source>_to_<target>` (`flat_to_values`, `values_to_labeled`, ...), with `to_natural`/`to_unconstrained` between the spaces; the observation vector: `observed_values_by_component()` and `constants()` on the observation dims, `to_fields(labeled) -> Fields` back |
+| Flat's array type | JAX everywhere: the layout, the posterior and the inference adapters return `jax.Array` Flat and accept any array-like; internals that fill arrays in place work in NumPy and convert on return. 64-bit JAX is on for the whole package |
+| Description | `describe()`: one row per piece; `__repr__` one summary line. `calibration.describe_calibration(posterior, sipnet_parameter_map)` joins the descriptions into the record written beside a run: one table per component and input, and one per SIPNET parameter, with its role |
 | Directions | where a map, a rule or an operator lists SIPNET parameter names, the name says which way: `sipnet_parameter_names_written`, `sipnet_parameter_names_read` |
 | Section comments | `# ── identity ──`, `# ── selection ──`, `# ── representations ──` or `# ── coordinates ──`, `# ── evaluation ──` |
 
-`ForwardModel` is a regular class with read-only properties (its arguments
-and what it derives from them, so the run machinery cannot go stale; its
-climate a `frozendict`, its external inputs a copy); `ForwardEvaluation` is
-`frozen, eq=False` with JAX `theta`, `predictions` and `valid`. A data
-source's ensemble enters as external inputs, crossed with theta's rows by
-PyEns when its dim is not `batch_dim`; `forward(theta)` refuses crossed dims,
-and the reduction over them is the experiment's. No base class is shared by
-the vectors: they share an interface, not an implementation, and their shared
+`SIPNETRuns` is a regular class with read-only properties (its arguments, so
+the run machinery cannot go stale; its climate a `frozendict`);
+`SIPNETRunsEvaluation` is `frozen, eq=False` with JAX `predictions` (one
+read-only mapping per observation vector, by prediction name), `in_domain`
+and `valid`. A data source's ensemble enters `SIPNETRuns.evaluate` as
+external inputs, crossed with the samples by PyEns when its dim is not
+`batch_dim`, and the reduction over them is the experiment's;
+`SIPNETSimulator` takes none, a model's own fixed values being its inputs.
+No base class is shared by the
+vectors: they share an interface, not an implementation, and their shared
 coercion lives in `validation.py`.
 
 ### Where shared things live
@@ -407,8 +392,8 @@ coercion lives in `validation.py`.
   (`DATA_SOURCE_MEMBER_NAMES`), coordinates, `SOURCE_INDEX`, the `site_id`
   column, the `time_bounds` variable and its `BOUNDS` dim,
   `NON_BATCH_DIM_NAMES`, `SIPNET_ROW_LABEL_NAMES`, `RESERVED_NAMES` (what
-  no parameter, derived parameter, element axis, external input, site-labels
-  name or site covariate may be named), the attributes of
+  no component, element axis, external input, site-labels name or site
+  covariate may be named), the attributes of
   `site`/`lon`/`lat`/`sample` and of a data source's member dim
   (`DATA_SOURCE_MEMBER_ATTRIBUTES`), `SITE_DTYPE`, `BATCH_LABEL_DTYPE`,
   `NAME_PATTERN`, `STALE_TIME_ATTRIBUTE_NAMES`, `CF_CONVENTIONS`,
@@ -463,9 +448,7 @@ coercion lives in `validation.py`.
   `check_sites_are_the_site_table`), and `N_SITES`. No lookup is written as a
   hand `set_index("site_id")`; `site_lookup` is the keyed form.
 - **`probability/`**, the probability layer, imports nothing of the package
-  outside itself, and **`parameters/`**, the parameter layer it is replacing,
-  nothing but it (its supports, private coercion and probe points, which
-  `parameters` re-exports); `tests/test_package.py` enforces both, and that
+  outside itself; `tests/test_package.py` enforces it, and that
   EnsKit is imported by `probability/_linalg.py` alone, the one shim over
   its operators and `Gaussian`, and numpyro and GPJax by no file: the layer
   adapts their distributions recognized by class name
@@ -527,14 +510,14 @@ the ones most often broken.
   string. A module-level tuple of names is `*_NAMES` (`TIME_COORD_NAMES`,
   `SPATIAL_DIM_NAMES`).
 - **A variable holding one representation of a concept says which**, in the
-  glossary's words. The parameter vector's unconstrained Flat is `theta` and
-  its natural Flat `natural_flat`, its values by parameter
-  `values_by_parameter`, its labeled form `parameter_dataset`; SIPNET
-  parameter fields are `sipnet_parameter_fields`;
-  the observation vector's Flat is `y`. A pySIPNET object is named for its class
-  (`sipnet_result`, `sipnet_output`, `sipnet_parameters`); the labeled xarray of
-  a run's output is `model_output`. Nobody should have to ask whether a value is
-  a `ParameterVector`, a `Parameter` or a SIPNET parameter.
+  glossary's words. A posterior's unconstrained Flat is `theta` and its
+  natural Flat `natural_flat`, its values by name `values_by_name`, its
+  labeled form `labeled_values`; SIPNET parameter fields are
+  `sipnet_parameter_fields`; the observations' Flat is `y`. A pySIPNET object
+  is named for its class (`sipnet_result`, `sipnet_output`,
+  `sipnet_parameters`); the labeled xarray of a run's output is
+  `model_output`. Nobody should have to ask whether a value is a layout, an
+  `ArraySpec` or a SIPNET parameter.
 - **`sipnet_` prefixes anything in pySIPNET's vocabulary**: names, values,
   objects. The bare word or `calibration_` is this repository's vocabulary.
   `pysipnet_` is not used: this repository reaches SIPNET only through
@@ -552,7 +535,7 @@ the ones most often broken.
   verb**, for what the call does (`SelectTimestep`, `ComputeLeafAreaIndex`).
   This is not a rule for every callable class: a protocol, a record, or an
   object with an interface of its own beyond the call is a noun
-  (`ObservationOperator`, `ForwardModel`, a model object).
+  (`ObservationOperator`, `SIPNETRuns`, a model object).
 - **Private helpers are named for what they do or what they return**: a verb
   phrase (`_sort_by_site_and_time`, `_drop_padding_rows`) or a noun phrase
   (`_read_only_float64_array`, `_observation_restricted_to`). Never a bare
@@ -847,13 +830,15 @@ while exercising the root's copy, which is the case worth remembering.
 
 ## The probability-layer refactor
 
-`sipnet_calibration.parameters` is being replaced, PR by PR, by a generic
-probability layer, `sipnet_calibration.probability`, from which the prior and
-the observation model are both built. Three documents govern it:
+`sipnet_calibration.parameters`, the parameter layer, was replaced, PR by
+PR, by a generic probability layer, `sipnet_calibration.probability`, from
+which the prior and the observation model are both built; R1 removed the
+parameter layer, today's `ForwardModel` and the observation vector's Flat
+API, and is the plan's last PR. Three documents govern it:
 
 - `docs/probability-refactor/design.html`, the design (open it in a browser).
-  Its §12 is the PR plan and its §13 the decisions. Until a PR moves its words
-  into the glossary above, its §6 is the vocabulary of the new layer.
+  Its §12 is the PR plan and its §13 the decisions. Its §6 vocabulary is in
+  the glossary above since R1.
 - `docs/probability-refactor/HANDOFF.md`, the state of the refactor: which PRs
   are merged, open or next, what each session learned, the deviations from the
   design, and the questions waiting for Andrew. It is the source of truth for
@@ -868,7 +853,8 @@ these steps without asking. It stops only where a step says to.
    Statuses lag, since a PR's own row is written before it is merged: check
    every `open #n` row with `gh pr view <n> --json state`, and treat a merged
    one as merged (this session's PR updates its row). The next PR is the first
-   row whose status is neither merged nor open.
+   row whose status is neither merged nor open. If every row is merged, the
+   refactor is complete: clean up as step 3 says, tell Andrew, and stop.
 2. **Check that what it needs is merged.** For each PR in its "needs" column,
    `gh pr view <number> --json state,mergedAt`. If any is not `MERGED`, **stop**,
    and tell Andrew which PR is waiting and on what. Do nothing else.
@@ -923,13 +909,12 @@ these steps without asking. It stops only where a step says to.
      - prompt: "Continue the probability-layer refactor. Follow 'The
        probability-layer refactor' in CLAUDE.md.";
      - tldr: the PR just opened, and which PR the next session will take.
-   - The next session waits, at step 2, for this PR to be merged.
+   - The next session waits, at step 2, for this PR to be merged. When the PR
+     just opened is the plan's last row, there is no next PR, and no chip.
 
 The rules elsewhere in this file still hold. In particular:
 - stage explicit paths, and never switch the root checkout's branch;
-- the companion packages are read-only;
-- PR #69 (`feat/single-site-mcmc-vs-eki`) belongs to another session: read
-  it, never edit it.
+- the companion packages are read-only.
 
 ## Running on the SCC
 
@@ -961,16 +946,15 @@ The layout below is the **agreed target**, specified in
 `logs/2026-08-28_Plotting Design Spec.md` in the Obsidian vault. The src-layout
 reorg has landed, so the paths below are the real ones; `sites.py`,
 `constraints.py`, `initial_conditions/`, `drivers.py`, `projection.py`, the
-`parameters/` package, the first modules of the `probability/` package,
-`site_dims.py`, `sipnet_parameter_map.py`,
+`probability/` package, `site_dims.py`, `sipnet_parameter_map.py`,
 `calibration.py`, `site_labels.py`, `forward.py`, `compute.py`, `smc.py`,
 the `inference/` package and the `observation/` package are implemented, `fields.py` has the model-output
 adapters, the plotting package has series, maps and grids, and the other
 modules carry the contract each is to satisfy.
 `initial_conditions` is a package rather than a module: it spans several
 artifacts, and giving each its own file keeps that artifact's schema, writer,
-reader and checks together. `parameters` and `probability` are packages for
-another reason: each is a layer, which imports nothing of the rest.
+reader and checks together. `probability` is a package for another reason:
+it is a layer, which imports nothing of the rest.
 
 ```
 pyproject.toml            # name = "sipnet-calibration"; src layout
@@ -1044,8 +1028,8 @@ src/sipnet_calibration/
                           # processed file per source; read_raw(),
                           # build_site_labels(),
                           # load_site_labels(), site_labels_field() -> CF flags
-  probability/            # the probability layer, replacing parameters/:
-                          # imports nothing of the package outside itself
+  probability/            # the probability layer: imports nothing of the
+                          # package outside itself
                           # (tested); __init__ re-exports it
     support.py            # Support (Interval, Simplex, PositiveDefinite:
                           # contains, closure), REAL, POSITIVE, NON_NEGATIVE,
@@ -1126,49 +1110,12 @@ src/sipnet_calibration/
                           # coercion; the one shim over EnsKit's operators
                           # and Gaussian; numpyro's distributions recognized
                           # by class name, with no import
-  parameters/             # the parameter layer: imports nothing of the package
-                          # outside itself but probability/ (tested);
-                          # __init__ re-exports it
-    support.py            # re-exports probability.support's supports
-    parameter.py          # Parameter: support, units, shape, string element
-                          # labels, indexed_by, T; unconstrained()
-    vector.py             # ParameterVector: parameters, coords {dim: labels},
-                          # order; index (parameter, *dims, element),
-                          # entry_names, select()/positions(); Flat, values by
-                          # parameter and the labeled form, converted by
-                          # <source>_to_<target>; unconstrained, to_natural(),
-                          # to_unconstrained(), contains(); ValuesByParameter,
-                          # ParameterDataset; check_parameter_vectors_share_a_layout
-    derived.py            # DerivedParameter, y = f(given, constants,
-                          # memberships), a declaration; DerivedParameters over
-                          # a vector, held and computed in dependency order:
-                          # derived_parameter_names, values(),
-                          # values_to_dataset(), select(), parameters_behind()
-    labels.py             # coords, constants and memberships: what a labeled
-                          # value given to a function is, and how it is read
-                          # at the labels in use (the contract's one home)
-    families.py           # re-exports probability.families' first seven
-    prior_functions.py    # PriorFunction; re-exports probability.builders'
-                          # iid_over_dim, independent_over_dim, gaussian_copula
-    prior.py              # Prior: what is believed beforehand, over a sequence
-                          # of PriorTerms, each naming its parameters, with
-                          # given= and constants=, its distribution a TFP
-                          # distribution or a prior function f(**given,
-                          # **constants); sample() in topological order of the
-                          # given links, log_prob() (base density or change of
-                          # variables, the log-Jacobian private), select(),
-                          # describe()
-    _description.py, _distributions.py, _probes.py, _validation.py
-                          # private: the shared description checks and
-                          # labeled form; the last three re-export what the
-                          # prior shares with probability's laws and builders,
-                          # its probe points and coercion
   site_dims.py            # SiteDims: the sites and the dims they define; coords,
-                          # labels() (memberships), covariate(), at_sites(),
+                          # labels() (label maps), covariate(), at_sites(),
                           # site_fields(), select()
   sipnet_parameter_map.py # SIPNETParameterMap: how the values at a site become
-                          # SIPNET parameters, from labeled values (a Dataset,
-                          # or the probability layer's dict) and a
+                          # SIPNET parameters, from labeled values (the
+                          # probability layer's dict, or a Dataset) and a
                           # SiteDims. Rules (Copy, Copy.same_names, CopySimplex,
                           # Compute; photosynthesis_rules,
                           # initial_condition_rules) reading
@@ -1178,19 +1125,17 @@ src/sipnet_calibration/
                           # dependencies(), sipnet_parameter_names_depending_on();
                           # ExternalInputs; sipnet_parameter_fields(),
                           # out_of_domain(); support_from_sipnet_domain; the fit
-                          # check, against parameters or ArraySpecs
-  calibration.py          # describe_calibration() (two tables: per parameter,
-                          # per SIPNET parameter with its role),
-                          # example_calibration()
+                          # check, against ArraySpecs
+  calibration.py          # describe_calibration(posterior, map) (two tables:
+                          # per component and input, per SIPNET parameter with
+                          # its role), example_calibration() -> (factors, map)
   forward.py              # SIPNETRuns: labeled values -> SIPNET once per run
                           # through PyEns, the observation operators applied on
                           # the worker, predictions per observation vector and
-                          # model output from one pass (SIPNETRunsEvaluation);
+                          # model output from one pass (SIPNETRunsEvaluation,
+                          # with its run index and predictions per source);
                           # SIPNETSimulator, the forward map as a Simulator;
-                          # ForwardModel: theta (J, D) and external inputs ->
-                          # predictions (R, N) through SIPNETRuns, until R1;
-                          # ForwardEvaluation with its run index; the failure
-                          # split; the composition and corner checks
+                          # the failure split; the corner check
   compute.py              # scc_backend(): the SCC GridEngineBackend preset
   smc.py                  # tempered SMC from a base density q to the
                           # posterior, importance sampling its one-step case;
@@ -1237,9 +1182,7 @@ src/sipnet_calibration/
                           # ObservationSource, one source's fields, operator
                           # and optional standard_deviation;
                           # observation_labels
-    vector.py             # ObservationVector: index (site,
-                          # observation_source, time), y, flat()/fields(),
-                          # positions(),
+    vector.py             # ObservationVector: select(), restrict_to_sites(),
                           # predict(); for the probability layer, coords (one
                           # observation dim per source),
                           # observation_dim_name(), constants(),
@@ -1360,62 +1303,56 @@ plotting code. The load-bearing rules:
   what it declares, the checks at the boundary, the verbs an operator is
   written with and the default binding. Which operator reads an observation
   source is a modeling decision an experiment writes in `config.py`.
-- **The forward model is runs, a simulator and today's callable over
-  existing pieces.** `forward.SIPNETRuns(sipnet_model, sipnet_parameter_map=,
-  site_dims=, climate=, backend=, out_of_domain=)` runs SIPNET once per sample
-  and site for labeled values and returns, from one pass, predictions per
-  observation vector and model output (`evaluate`); `SIPNETSimulator(runs,
+- **The forward model is runs and a simulator over existing pieces.**
+  `forward.SIPNETRuns(sipnet_model, sipnet_parameter_map=, site_dims=,
+  climate=, backend=, out_of_domain=)` runs SIPNET once per sample and site
+  for labeled values and returns, from one pass, predictions per observation
+  vector and model output (`evaluate`); `SIPNETSimulator(runs,
   observation_vector=)` is the forward map as the probability layer's
   `Simulator`, which never sees theta, runs only the sites its vector
   observes, and marks a source's prediction invalid only where a run at one
-  of the source's sites failed. `forward.ForwardModel(model, parameter_vector, sipnet_parameter_map,
-  site_dims=, derived_parameters=, climate=, backend=, external_inputs=,
-  out_of_domain=, observation_vector=)`, until R1, is EKI's `(J, D) -> (J, N)`
-  through `SIPNETRuns`; its
-  module docstring says how the pieces compose: the labeled natural values
-  (the parameter layer's seam) merged with the external inputs, read at the
-  site dims' sites by the map. The rules a session can get wrong: the observation
-  operators run **on the worker**, each run receiving only its site's slice of
-  the observation vector and returning that slice's Flat, which the calling
-  process writes at `positions(site=)` (right because the vector is site-major,
-  which `__init__` checks per site); a run at a site no observation source
-  observes returns nothing, so an observation source costs nothing at the sites
-  it does not observe. External inputs pair with theta by dim name: one on
-  `batch_dim` zips with theta's rows (labels `0` to `J - 1`), one on any other
-  batch dim is crossed, and PyEns enumerates the runs; each run's output is
-  placed by its coordinate on the run index `(batch_dim, *crossed dims)`, so
-  the row order is the repository's, not PyEns's. Values outside their
-  domains (a rule input outside its requirement's, a SIPNET parameter outside
-  pySIPNET's) raise before anything runs, and the map is checked at the
-  corners of theta when the model is built; `out_of_domain="fail_row"` marks
-  their rows invalid instead, a truncation of the prior that `Prior` does not
-  know. A run that fails at its parameters (`SIPNETRunError`,
-  pydantic's `ValidationError`, a timeout, or a non-finite value in a read
-  variable, `ModelOutputNotFiniteError`; across a process boundary matched on
-  PyEns's fully qualified `RemoteError.type_name`) makes its **whole row**
-  NaN, and anything else a worker returns is the machinery failing and is
-  raised with the collected runs on the error's `evaluation`, as is a
-  prior-predictive batch in which every run failed. The prior-predictive output
-  is stacked by `fields.stack_model_outputs`, so it carries no `time_bounds` or
-  SIPNET row labels; `freq=` is for that path only, and aggregates each run's
-  variables one at a time with `observation.aggregate_time` by the method that
-  keeps its kind, as a predictive-check figure does, the Dataset gaining
+  of the source's sites failed. The module docstring says how the pieces
+  compose: the labeled values (the layers' seam) merged with the external
+  inputs, read at the site dims' sites by the map. The rules a session can
+  get wrong: the observation operators run **on the worker**, each run
+  receiving only its site's slice of the observation vector and returning
+  that slice's predictions per source, which the calling process writes in
+  the site's segment of each source's observation dim (right because an
+  observation dim is sorted by site, which the plan checks per site and
+  source); a run at a site no observation source observes returns nothing,
+  so an observation source costs nothing at the sites it does not observe.
+  External inputs pair with the samples by dim name: one on `batch_dim` zips
+  with the samples (labels `0` to `J - 1`), one on any other batch dim is
+  crossed, and PyEns enumerates the runs; each run's output is placed by its
+  coordinate on the run index `(batch_dim, *crossed dims)`, so the row order
+  is the repository's, not PyEns's. Values outside their domains (a rule
+  input outside its requirement's, a SIPNET parameter outside pySIPNET's)
+  raise before anything runs, and `SIPNETSimulator.check_given` checks the
+  map at the corners of the target when a posterior is built;
+  `out_of_domain="fail_row"` marks their rows out of the domain instead, a
+  truncation of the prior that the model's factors do not know. A run that
+  fails at its parameters (`SIPNETRunError`, pydantic's `ValidationError`, a
+  timeout, or a non-finite value in a read variable,
+  `ModelOutputNotFiniteError`; across a process boundary matched on PyEns's
+  fully qualified `RemoteError.type_name`) makes its predictions NaN, the
+  rest of its row kept, and anything else a worker returns is the machinery
+  failing and is raised with the collected runs on the error's `evaluation`,
+  as is a batch asking for model output in which every run failed. The model
+  output is stacked by `fields.stack_model_outputs`, so it carries no
+  `time_bounds` or SIPNET row labels; `freq=` aggregates each run's variables
+  one at a time with `observation.aggregate_time` by the method that keeps
+  its kind, as a predictive-check figure does, the Dataset gaining
   pySIPNET's `resampling_frequency` and `timestep_length_source`. Under any
   backend but `SequentialBackend` the drivers must be file-backed.
   `compute.scc_backend` is the SCC preset.
-- **The observation vector is site-major.** `ObservationVector.index` is a
-  `(site, observation_source, time)` MultiIndex over the observations (the
-  observed, not-NaN values), sites ascending, then observation sources in
-  declaration order, then times, with `NaT` for a static source; `y` is Flat in
-  that order, `flat()`/`fields()` convert, and `positions()` finds a site's or
-  an observation source's segment. A source may carry its measurement
-  standard deviations (`standard_deviation=`). Today's inference layer
-  builds its covariance and likelihood from `y`, `index` and `positions`;
-  the probability layer's noise factors (`observation.model.noise_factor`)
-  read the vector's observation dims and `constants()` instead, which are
-  each one source's, by site and then time, not Flat's order, and the
-  posterior's `y` and `gaussian_likelihood().noise_covariance` are in the
-  posterior's own order.
+- **The observation vector holds no order of y.** Each source's
+  observations are the labels of its observation dim (`coords`), sorted by
+  site and then time, and the noise factors
+  (`observation.model.noise_factor`) read the vector's observation dims and
+  `constants()`; the posterior conditioned on `observed_values_by_component()`
+  owns y's order, in which `gaussian_likelihood().y` and its
+  `noise_covariance` are. A source may carry its measurement standard
+  deviations (`standard_deviation=`).
   A batch dim on an observation source's values is
   refused: the experiment reduces an ensemble of observed values before it
   enters; a scalar batch label is metadata and is kept. An `ObservationSource`
@@ -1601,47 +1538,48 @@ plotting code. The load-bearing rules:
 
 ### TensorFlow Probability (JAX substrate)
 - `tfd.LogNormal`, `tfd.LogitNormal` and any `TransformedDistribution` expose `.distribution`
-  (the base) and `.bijector`. The coordinates are the parameter's, never the prior's:
-  `Parameter.bijector` is its support's default unless overridden, and
-  `sipnet_calibration.parameters.prior` evaluates a term by its base density only when its
-  distribution's bijector agrees with the parameter's at the probe points, by change of
-  variables otherwise.
+  (the base) and `.bijector`. The coordinates are the component's, never the law's:
+  `ArraySpec.bijector` is its support's default unless overridden, and a bound factor
+  (`probability._bound`) is evaluated by its law's base density only when the law's
+  bijector agrees with the component's at the probe points, by change of variables
+  otherwise.
 - Bijectors are compared by their images, never by equality:
   `tfb.Sigmoid() == tfb.Sigmoid(low=0., high=1.)` is `False`.
 - `LogNormal` and `LogitNormal` default to `Exp` and `Sigmoid` as their event-space
   bijector, `Gamma` and `HalfNormal` to `Softplus`; `MixtureSameFamily` has none
-  (`None`), which is why the prior's support check also draws.
+  (`None`), which is why `bind`'s support check also draws.
 - `tfd.GaussianProcess(kernel, index_points, mean_fn)` with a `tfp.math.psd_kernels` kernel is a
   multivariate normal over the index points (event `(S,)`, batch `()`, analytic `.mean()` and
   `.covariance()`), so a GP prior needs no other package (issue #33). Built without x64 it is
-  `float32`, which the prior refuses; importing `sipnet_calibration` turns x64 on for the
+  `float32`, which `bind` refuses; importing `sipnet_calibration` turns x64 on for the
   process, the package's one import-time side effect.
 - TFP bijectors **cache** forward/inverse pairs: `b.forward(b.inverse(x))` hands `x` back
   unchanged, so a check that an input lies in a bijector's image must re-apply `forward` to a
   fresh copy of the array.
 - Several TFP distributions (`MultivariateNormalTriL`, `Weibull`, `Gumbel`, ...) are
   `TransformedDistribution` subclasses over an internal reparameterization; their `.bijector` is
-  not a map from unconstrained space. The prior reads `.distribution`/`.bijector` only off an
-  exact `TransformedDistribution`, `LogNormal` or `LogitNormal`.
-- A prior over the index dims puts the bijector outside the batch: `iid_over_dim` builds
+  not a map from unconstrained space. A bound factor reads `.distribution`/`.bijector` only off
+  an exact `TransformedDistribution`, `LogNormal` or `LogitNormal` (`laws.CARRIES_ITS_BIJECTOR`).
+- A law over a block puts the bijector outside the batch: `iid_over_dim` builds
   `TransformedDistribution(Sample(base, index_shape), b)`, whose base density is exact in theta.
 - With the pinned build, a distribution built from `TransformedDistribution` pickles but fails
   `pickle.loads`; `LogNormal` and `LogitNormal` round-trip. Send PyEns workers plain data
-  (SIPNET parameter fields through `pyens.xarray.fields_from_dataset`), never a vector or prior.
+  (SIPNET parameter fields through `pyens.xarray.fields_from_dataset`), never a model or a law.
 - Moments do **not** pass through a non-affine bijector: `TransformedDistribution(...).mean()`
   raises `NotImplementedError`. Take them from `.distribution`.
 - On the simplex, densities differ by their reference measure. `SoftmaxCentered`'s
   `forward_log_det_jacobian` is against the embedded volume element, `0.5 * logdet(J^T J)`,
   which differs from `log|det J|` of the first `k - 1` rows by `0.5 log k`; a `Dirichlet`'s
   density is against Lebesgue measure on the first `k - 1` coordinates.
-  The prior's private log-Jacobian takes the latter, by autodiff, whatever the bijector.
+  The probability layer's private log-Jacobian (`probability._bound.log_jacobian`) takes the
+  latter, by autodiff, whatever the bijector.
 - `IteratedSigmoidCentered` rounds a simplex coordinate to exactly 0 at `theta = 20 * 1` in
   float64, so the probe checks accept a bijector's image in the support's closure and skip
   probes that land on its boundary.
 - In float64, `Gamma(0.02)` draws exactly 0, whose log is `-inf`, about once in 10^4 draws,
-  depending on TFP's batch shape; the prior's draw-based support check catches it.
+  depending on TFP's batch shape; `bind`'s draw-based support check catches it.
 - Sampling takes `seed=` a `jax.random` key; `jax.random.fold_in(key, zlib.crc32(name))` is
-  how the prior keys a term by its name, and the probability layer a factor.
+  how the probability layer keys a factor by its name.
 - `probability.families.InverseWishart` (a `TransformedDistribution` subclass over
   `WishartTriL`) matches `scipy.stats.invwishart`, but its
   `experimental_default_event_space_bijector()` refuses float64 input with the pinned build;
@@ -1678,7 +1616,7 @@ plotting code. The load-bearing rules:
   different structures"). `fields_from_dataset` makes the labeled form from a
   coordinate, so a `Grid` built by hand beside it must use an equal `Axis`;
   passing the same object is simplest (`fields_from_dataset` accepts `axes=`;
-  `ForwardModel` builds its site axis once and passes it to every grid).
+  `SIPNETRuns` builds its site axis once and passes it to every grid).
   `tests/test_fields.py` pins both halves of the rule against PyEns.
 
 ### EnsKit

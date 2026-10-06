@@ -28,7 +28,6 @@ from tensorflow_probability.substrates import jax as tfp
 from conftest import (
     BLOW_UP,
     REPOSITORY,
-    example_calibration_factors,
     scaled_niwot_model,
     site_table_of,
     two_source_observation_vector,
@@ -84,7 +83,7 @@ class CopyRate:
 
 
 def _sipnet_map():
-    return example_calibration(SITE_DIMS)[2]
+    return example_calibration(SITE_DIMS)[1]
 
 
 def _runs(sipnet_map=None, **keywords):
@@ -105,7 +104,7 @@ def _noise_factors(observation_vector):
 
 
 def _model(observation_vector, simulator, factors=None, *, inputs=(), input_values=None):
-    factors = example_calibration_factors() if factors is None else factors
+    factors = list(example_calibration(SITE_DIMS)[0]) if factors is None else factors
     spec = joint(*_noise_factors(observation_vector), simulator, *factors, inputs=list(inputs))
     return spec.bind(coords={**SITE_DIMS.coords, **observation_vector.coords}, inputs=input_values)
 
@@ -163,7 +162,7 @@ def test_the_gaussian_likelihoods_forward_map_is_todays_predictions_in_ys_order(
         for name in vector.observation_source_names
     ]
     simulator = SIPNETSimulator(_runs(), observation_vector=vector)
-    model = joint(*noise, simulator, *example_calibration_factors()).bind(coords={**SITE_DIMS.coords, **vector.coords})
+    model = joint(*noise, simulator, *list(example_calibration(SITE_DIMS)[0])).bind(coords={**SITE_DIMS.coords, **vector.coords})
     likelihood = condition_on(model, vector.observed_values_by_component()).gaussian_likelihood()
     predictions, valid, _ = likelihood.forward(reference["theta"].values)
     stored = pd.MultiIndex.from_arrays(
@@ -204,7 +203,7 @@ def _rate_posterior():
     rate = FactorSpec(ArraySpec("rate", units=RATE_UNITS, support=POSITIVE, indexed_by=("site",)),
                       law=iid_over_dim(log_normal(median=100.0, geometric_sd=1.5)), provenance="Test rate.")
     simulator = SIPNETSimulator(_runs(rate_map, out_of_domain="fail_row"), observation_vector=vector)
-    return _posterior(vector, simulator, factors=[rate, *example_calibration_factors()[1:]]), vector
+    return _posterior(vector, simulator, factors=[rate, *list(example_calibration(SITE_DIMS)[0])[1:]]), vector
 
 
 def test_a_failed_run_invalidates_only_the_predictions_of_its_site():
@@ -242,8 +241,10 @@ def test_one_pass_serves_two_vectors_and_daily_output(posterior, reference):
         runs.evaluate(values, observation_vectors=[lai]),
         runs.evaluate(values, output_variable_names=["wood_carbon"], freq="1D"),
     ]
-    np.testing.assert_array_equal(together.predictions[0], alone[0].predictions[0])
-    np.testing.assert_array_equal(together.predictions[1], alone[1].predictions[0])
+    for k in (0, 1):
+        assert list(together.predictions[k]) == list(alone[k].predictions[0])
+        for name, values in together.predictions[k].items():
+            np.testing.assert_array_equal(values, alone[k].predictions[0][name])
     xr.testing.assert_identical(together.model_output, alone[2].model_output)
     assert together.model_output.attrs["resampling_frequency"] == "1D"
     xr.testing.assert_identical(together.run_succeeded, alone[2].run_succeeded)
@@ -309,7 +310,7 @@ def test_a_model_selected_at_one_site_runs_one_site():
 
 
 def test_the_map_is_checked_against_the_declared_components():
-    factors = example_calibration_factors()
+    factors = list(example_calibration(SITE_DIMS)[0])
     soil = factors[-1]
     wrong_units = FactorSpec(ArraySpec("initial_soil_carbon", units="kg m-2", support=POSITIVE, indexed_by=("site",)),
                              law=soil.law, provenance="Wrong units.")
@@ -318,7 +319,7 @@ def test_the_map_is_checked_against_the_declared_components():
 
 
 def test_the_map_is_checked_at_the_corners_of_the_target():
-    factors = example_calibration_factors()
+    factors = list(example_calibration(SITE_DIMS)[0])
     unbounded = FactorSpec(ArraySpec("leaf_fall_fraction", units="1", support=REAL),
                            law=normal(mean=0.5, standard_deviation=0.1), provenance="Unbounded.")
     with pytest.raises(ValueError, match="outside their domains, at a corner"):
@@ -332,7 +333,7 @@ def test_an_external_initial_state_is_an_input_the_simulator_reads():
     """F7: the initial soil carbon held at each site's value, declared an input."""
     soil = xr.DataArray([20_000.0, 40_000.0], dims="site", coords={"site": list(SITES)})
     posterior = _posterior(
-        factors=example_calibration_factors()[:-1],
+        factors=list(example_calibration(SITE_DIMS)[0])[:-1],
         inputs=[ArraySpec("initial_soil_carbon", units="g m-2", support=POSITIVE, indexed_by=("site",))],
         input_values={"initial_soil_carbon": soil},
     )

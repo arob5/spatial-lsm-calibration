@@ -7,14 +7,14 @@ Where this sits
 
     sites.select_sites, site_labels.load_site_labels   (the site table, the site labels)
       -> site_dims.SiteDims                           (each site's id, location, covariates, labels)
-      -> parameters.ParameterVector(coords=site_dims.coords)
-         DerivedParameter(constants=..., memberships=site_dims.labels(...)), PriorTerm(constants=...)
+      -> probability: joint(...).bind(coords={**site_dims.coords, ...})
+         DeterministicSpec(label_maps={"pft": site_dims.labels("pft")}), FactorSpec(constants=...)
       -> sipnet_parameter_map, forward                (values read at the sites)
 
-The parameter layer knows nothing of sites; :class:`SiteDims` is how a
-calibration over sites talks to it. It gives the vector its coords, gives
-derived and prior functions their constants, derived functions their
-memberships, and reads labeled values at the sites.
+The probability layer knows nothing of sites; :class:`SiteDims` is how a
+calibration over sites talks to it. It gives a model its coords, gives laws
+and deterministics their constants (site covariates) and label maps (site
+labels), and reads labeled values at the sites.
 
 What it reads
 -------------
@@ -29,14 +29,14 @@ Data model
 ascending), and one dim per site-labels name, whose labels are the classes
 some site carries, in their declared order (a categorical's categories, or
 sorted for plain labels). :attr:`SiteDims.coords` holds them as
-``{dim: pd.Index}``, what a vector over these sites is built with.
+``{dim: pd.Index}``, what a model over these sites is bound at.
 
-**A membership** (:meth:`SiteDims.labels`) is an ``xr.DataArray`` of
+**A label map** (:meth:`SiteDims.labels`) is an ``xr.DataArray`` of
 strings, named for one dim, on another: each site's class along ``site``,
 or each class's class under a coarser site-labels name (a PFT's biome).
 
-**The values at the sites** (:meth:`SiteDims.at_sites`). Every variable of a
-labeled Dataset is read at every site: a dim of the coords is replaced by
+**The values at the sites** (:meth:`SiteDims.at_sites`). Every labeled
+value is read at every site: a dim of the coords is replaced by
 ``site``, pointwise, so a value on ``(site, pft)`` is read at each site's own
 PFT, and a variable on none of them is broadcast. The other dims are kept:
 those with integer labels, or none, are batch dims and come first; those
@@ -56,11 +56,11 @@ Usage
 
     site_dims = SiteDims(site_table=select_sites(load_sites(), site_ids=[620, 865, 1037]),
                          site_labels={"pft": load_site_labels("reanalysis_3pft")})
-    vector = ParameterVector(parameters=[...], coords=site_dims.coords)
+    model = joint(*factors).bind(coords=site_dims.coords)
     site_dims.labels("pft")                     # each site's PFT, on site, named "pft"
-    site_dims.at_sites(parameter_dataset)       # every value on (sample, site, ...)
+    site_dims.at_sites(xr.Dataset(values))      # every value on (sample, site, ...)
     boreal = site_dims.select(pft=["boreal.coniferous"])
-    vector.select(site=boreal.sites, pft=["boreal.coniferous"])
+    model.select(site=boreal.sites, pft=["boreal.coniferous"])
 """
 
 from __future__ import annotations
@@ -176,8 +176,8 @@ class SiteDims:
     @property
     def coords(self) -> frozendict:
         """``{"site": the site ids (int32), <site-labels name>: the classes
-        some site carries, in declared order}``: what a vector over these
-        sites is built with."""
+        some site carries, in declared order}``: what a model over these
+        sites is bound at."""
         coords = {SITE: pd.Index(self._table[SITE_ID].to_numpy(SITE_DTYPE), name=SITE)}
         for name in self.site_labels:
             column = self._table[name]
@@ -188,7 +188,7 @@ class SiteDims:
     # ── labels and constants ──────────────────────────────────────────────────
 
     def labels(self, dim: str, *, along: str = SITE) -> xr.DataArray:
-        """A membership: a DataArray on *along*, named *dim*, holding each
+        """A label map: a DataArray on *along*, named *dim*, holding each
         *along* label's *dim* label.
 
         Along ``"site"``, each site's class. Along another site-labels dim,
@@ -486,13 +486,13 @@ def check_selector_is_not_site(name: str) -> None:
 
 
 def check_along_is_a_dim(along: Any, site_dims: SiteDims) -> None:
-    """A membership runs along ``site`` or a site-labels name."""
+    """A label map runs along ``site`` or a site-labels name."""
     if along != SITE and along not in site_dims.site_labels:
         raise KeyError(f"{along!r} is neither 'site' nor a site-labels name ({list(site_dims.site_labels)}).")
 
 
 def check_dims_differ(dim: str, along: str) -> None:
-    """A membership maps one dim to another."""
+    """A label map maps one dim to another."""
     if dim == along:
         raise ValueError(f"labels({dim!r}, along={along!r}) maps a dim to itself; name two dims.")
 

@@ -1,15 +1,15 @@
 """Tests for Layout: named arrays as one flat vector, its three forms, its
 spaces, its selection, and labeled values as one netCDF-ready Dataset.
 
-Layout is ParameterVector without an order: on every case where a
-parameter's dims are in the coords' order the two agree entry for entry, in
-both spaces. Beyond it, a layout holds stacked dims, whose levels merge with
-plain dims of their names in the index and in selection. Every check is
-provoked once.
+A layout's entries are its components in declaration order, each block in
+C order over its dims and element axes, in both spaces; it holds stacked
+dims, whose levels merge with plain dims of their names in the index and in
+selection. Every check is provoked once.
 """
 
 from __future__ import annotations
 
+import itertools
 import pickle
 import time
 
@@ -20,8 +20,6 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from sipnet_calibration.parameters.parameter import Parameter
-from sipnet_calibration.parameters.vector import ParameterVector
 from sipnet_calibration.probability import names
 from sipnet_calibration.probability.labels import aligned_constants, aligned_label_maps
 from sipnet_calibration.probability.layout import (
@@ -49,30 +47,19 @@ OBSERVATIONS = pd.MultiIndex.from_arrays(
     names=["site", "time"],
 )
 
-SHARE = Parameter(name="share", support=OPEN_UNIT_INTERVAL, units="1")
-ALLOCATION = Parameter(name="allocation", support=SIMPLEX, units="1", shape=(4,), indexed_by=("pft",),
-                       element_labels={"allocation_part": PARTS})
-SOIL = Parameter(name="soil", support=POSITIVE, units="kg m-2", indexed_by=("site",))
-RATE = Parameter(name="rate", support=POSITIVE, units="yr-1", indexed_by=("pft", "site"))
-LOADING = Parameter(name="loading", units=None, shape=(2, 3))
+SHARE = ArraySpec("share", support=OPEN_UNIT_INTERVAL, units="1")
+ALLOCATION = ArraySpec("allocation", support=SIMPLEX, units="1", indexed_by=("pft",),
+                       element_axes={"allocation_part": PARTS})
+SOIL = ArraySpec("soil", support=POSITIVE, units="kg m-2", indexed_by=("site",))
+RATE = ArraySpec("rate", support=POSITIVE, units="yr-1", indexed_by=("pft", "site"))
+LOADING = ArraySpec("loading", units=None, element_axes={"row": 2, "column": 3})
 SHARED = (SHARE, ALLOCATION, SOIL, RATE, LOADING)
-
-
-def spec_of(parameter: Parameter) -> ArraySpec:
-    """The ArraySpec declaring what *parameter* does."""
-    axes = {axis: list(labels) for axis, labels in parameter.element_labels.items()}
-    return ArraySpec(parameter.name, units=parameter.units, support=parameter.support,
-                     indexed_by=parameter.indexed_by, element_axes=axes)
-
-
-@pytest.fixture(scope="module")
-def vector() -> ParameterVector:
-    return ParameterVector(parameters=SHARED, coords={"pft": PFT, "site": SITES})
+COORDS = {"pft": PFT, "site": SITES}
 
 
 @pytest.fixture(scope="module")
 def layout() -> Layout:
-    return Layout([spec_of(p) for p in SHARED], coords={"pft": PFT, "site": SITES})
+    return Layout(SHARED, coords=COORDS)
 
 
 @pytest.fixture(scope="module")
@@ -81,7 +68,7 @@ def stacked() -> Layout:
     a site level, and a positive-definite value."""
     return Layout(
         [
-            spec_of(SOIL),
+            SOIL,
             ArraySpec("covariance", units="Mg2 ha-2", support=POSITIVE_DEFINITE,
                       element_axes={"year": YEARS, "other_year": YEARS}),
             ArraySpec("lai", units="1", indexed_by=("lai_observation",)),
@@ -94,56 +81,74 @@ def theta_of(layout: Layout, n: int = 3, seed: int = 0) -> np.ndarray:
     return np.random.default_rng(seed).standard_normal((n, layout.unconstrained.size))
 
 
-def same_index(layout_index: pd.MultiIndex, vector_index: pd.MultiIndex) -> bool:
-    """Whether two indexes name the same entries, levels compared by value
-    as strings, the parameter level being the component level."""
-    first = layout_index.to_frame(index=False).astype(str)
-    second = vector_index.to_frame(index=False).rename(columns={"parameter": "component"}).astype(str)
-    return first.equals(second)
+def expected_entries(specs, coords) -> list[tuple]:
+    """``(component, *dim labels, element)`` per entry: the components in
+    order, each block in C order over its dims, then its element axes; the
+    element is a value's one label, or the tuple of its labels."""
+    entries = []
+    for spec in specs:
+        dims = [list(coords[d]) for d in spec.indexed_by]
+        elements = list(itertools.product(*[list(v) for v in spec.element_axes.values()]))
+        for labels in itertools.product(*dims, elements):
+            *dim_labels, element = labels
+            element = () if not element else (str(element[0]) if len(element) == 1 else str(element))
+            entries.append((spec.name, *[str(label) for label in dim_labels], *((element,) if element != () else ())))
+    return entries
 
 
-# ── parity with ParameterVector ───────────────────────────────────────────────
+def entries_of(layout: Layout) -> list[tuple]:
+    """``(component, *labels)`` per entry of *layout*'s index, its missing
+    levels dropped and its labels as strings."""
+    frame = layout.index.to_frame(index=False)
+    return [tuple(str(v) for v in row if not pd.isna(v)) for row in frame.itertuples(index=False)]
 
 
-def test_the_layout_is_the_parameter_vectors(layout, vector):
-    assert layout.size == vector.size and layout.unconstrained.size == vector.unconstrained.size
-    assert same_index(layout.index, vector.index)
-    assert same_index(layout.unconstrained.index, vector.unconstrained.index)
-    assert layout.entry_names == vector.entry_names
+# ── the canonical order ───────────────────────────────────────────────────────
 
 
-def test_the_conversions_are_the_parameter_vectors(layout, vector):
+@pytest.mark.parametrize("space", ["natural", "unconstrained"])
+def test_the_entries_are_in_declaration_then_c_order(layout, space):
+    mine = layout if space == "natural" else layout.unconstrained
+    specs = SHARED if space == "natural" else [spec.unconstrained() for spec in SHARED]
+    assert entries_of(mine) == expected_entries(specs, COORDS)
+    assert mine.size == len(expected_entries(specs, COORDS))
+
+
+def test_the_natural_values_are_each_blocks_bijector(layout):
     theta = theta_of(layout)
     natural = layout.to_natural(theta)
-    assert np.array_equal(natural, vector.to_natural(theta))
-    assert np.array_equal(layout.to_unconstrained(natural), vector.to_unconstrained(natural))
-    assert np.array_equal(layout.contains(natural), vector.contains(natural))
-    ours, theirs = layout.flat_to_values(natural), vector.flat_to_values(natural)
-    assert all(np.array_equal(ours[name], theirs[name]) for name in layout)
-    dataset = vector.flat_to_dataset(natural, batch_dims=("sample",))
+    unconstrained = layout.unconstrained.flat_to_values(theta)
+    values = layout.flat_to_values(natural)
+    for spec in SHARED:
+        assert np.allclose(values[spec.name], spec.bijector.forward(unconstrained[spec.name]))
+    assert np.allclose(layout.to_unconstrained(natural), theta)
+    assert bool(np.all(layout.contains(natural)))
     labeled = layout.flat_to_labeled(natural, batch_dims=("sample",))
-    for name in layout:
-        assert np.array_equal(labeled[name].values, dataset[name].values)
-        assert labeled[name].dims == dataset[name].dims
+    for spec in SHARED:
+        assert labeled[spec.name].dims == ("sample", *spec.indexed_by, *spec.element_axes)
+        assert np.array_equal(labeled[spec.name].values, values[spec.name])
 
 
 @pytest.mark.parametrize(
     "selectors",
-    [{"site": [865]}, {"pft": ["temperate"], "site": [1037, 620]}, {"parameter": ["soil", "rate"]}],
+    [{"site": [865]}, {"pft": ["temperate"], "site": [1037, 620]}, {"component": ["soil", "rate"]}],
 )
-def test_selection_is_the_parameter_vectors(layout, vector, selectors):
-    ours = {("component" if k == "parameter" else k): v for k, v in selectors.items()}
-    for mine, theirs in [(layout, vector), (layout.unconstrained, vector.unconstrained)]:
-        assert np.array_equal(mine.positions(**ours), theirs.positions(**selectors))
-        assert same_index(mine.select(**ours).index, theirs.select(**selectors).index)
+def test_positions_are_the_entries_the_selection_names(layout, selectors):
+    for mine in (layout, layout.unconstrained):
+        frame = mine.index.to_frame(index=False)
+        keep = np.ones(len(frame), dtype=bool)
+        for level, labels in selectors.items():
+            column = frame[level]
+            keep &= column.isna().to_numpy() | column.astype(str).isin([str(v) for v in labels]).to_numpy()
+        assert np.array_equal(mine.positions(**selectors), np.flatnonzero(keep))
+        assert entries_of(mine.select(**selectors)) == [entries_of(mine)[i] for i in np.flatnonzero(keep)]
 
 
 def test_a_block_is_in_c_order_whatever_the_coords_order():
-    """Where a parameter's dims are not in the coords' order, the
-    ParameterVector's default order sorts by the coords' dims; a layout keeps
-    the block's C order."""
-    rate = Parameter(name="rate", support=POSITIVE, units="yr-1", indexed_by=("site", "pft"))
-    layout = Layout([spec_of(rate)], coords={"pft": PFT, "site": SITES})
+    """Where a component's dims are not in the coords' order, a layout keeps
+    the block's C order rather than the coords'."""
+    rate = ArraySpec("rate", support=POSITIVE, units="yr-1", indexed_by=("site", "pft"))
+    layout = Layout([rate], coords={"pft": PFT, "site": SITES})
     index = layout.index
     assert [(int(s), p) for s, p in zip(index.get_level_values("site"), index.get_level_values("pft"))] == [
         (s, p) for s in SITES.tolist() for p in PFT
@@ -401,9 +406,9 @@ def test_batch_dims_are_checked(layout):
     [
         ([], {}, ValueError, "at least one component"),
         ([object()], {}, TypeError, "ArraySpecs"),
-        ([spec_of(SOIL), spec_of(SOIL)], {"site": SITES}, ValueError, "more than once"),
-        ([spec_of(SOIL)], {}, KeyError, "coords lack"),
-        ([spec_of(SHARE)], {"site": SITES}, ValueError, "no component is indexed by"),
+        ([SOIL, SOIL], {"site": SITES}, ValueError, "more than once"),
+        ([SOIL], {}, KeyError, "coords lack"),
+        ([SHARE], {"site": SITES}, ValueError, "no component is indexed by"),
         ([ArraySpec("x", units=None, indexed_by=("site", "obs"))], {"site": SITES, "obs": OBSERVATIONS}, ValueError, "both have"),
         ([ArraySpec("x", units=None, indexed_by=("obs",))],
          {"obs": OBSERVATIONS.set_names(["site", "element"])}, ValueError, "reserves"),
