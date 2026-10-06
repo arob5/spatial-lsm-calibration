@@ -1,0 +1,59 @@
+flat_name,sipnet_name,units,domain,proposed_value,source,conversion,bety_q025,bety_q50,bety_q975,flag
+total_wood_carbon,plantWoodInit,g m-2,non_negative,10658.4,"initial_conditions (site 4977 median, runs.initial_state + to_sipnet_initial_conditions)",1000*initial_wood_carbon/(1-fineRootFrac-coarseRootFrac) = 8633/(1-0.03-0.16),,,,
+leaf_area_index,laiInit,m2 m-2,non_negative,0,"initial_conditions (site 4977 median, runs.initial_state + to_sipnet_initial_conditions)",0: deciduous start on Jan 1,,,,
+litter_carbon,litterInit,g m-2,non_negative,0,pysipnet default,set by to_sipnet_initial_conditions (pySIPNET default); inert,,,,inert: litter_pool off (sipnet.c:1889-1893)
+soil_carbon,soilInit,g m-2,non_negative,15000,"initial_conditions (site 4977 median, runs.initial_state + to_sipnet_initial_conditions)",1000*initial_soil_organic_carbon,,,,
+soil_wetness_fraction,soilWFracInit,1,non_negative,0.610879,"initial_conditions (site 4977 median, runs.initial_state + to_sipnet_initial_conditions)",initial_soil_moisture_saturation/100,,,,
+snow_water_equivalent,snowInit,cm,non_negative,0,pysipnet default,set by to_sipnet_initial_conditions (pySIPNET default),,,,transient
+fine_root_fraction,fineRootFrac,1,unit_interval,0.03,literature,fine root C ~300 g m-2 (~0.035 x aboveground wood C) -> 320/10658,,,,template/Niwot 0.2 gave a fine-root pool of ~2880 g C m-2; the pool collapses to ~25-90 g C m-2 in the run anyway (fineRootAllocation*NPP/fineRootTurnoverRate)
+coarse_root_fraction,coarseRootFrac,1,unit_interval,0.16,literature,coarse root C ~0.2 x aboveground wood C (root:shoot) -> 1705/10658,,,,"inferred root:shoot split, to verify against Harvard allometry"
+max_photosynthesis_rate,aMax,nmol g-1 s-1,positive,112,template,"template.param_v2 aMax 112 nmol g-1 s-1 (= 7.4 umol m-2 s-1 at BETY SLA 15.2 m2 kg-1) | BETY conversion: ud_convert(Amax*SLA/1000,'umol','nmol') = Amax*SLA (write.configs.SIPNET.R:358-361)",28.4242,58.0703,83.247,BETY Amax median 3.8 umol m-2 s-1 (-> 58 nmol g-1 s-1) is low for temperate deciduous leaves; with it GPP ~690 and the site is a net source
+daily_mean_photosynthesis_fraction,aMaxFrac,1,open_unit_interval,0.860623,bety,AmaxFrac (write.configs.SIPNET.R:369),0.769842,0.860623,0.925929,
+foliar_respiration_fraction,baseFolRespFrac,1,positive,0.0894,bety (derived),"BETY median leaf_respiration_rate_m2 0.659 / (aMax 112 / SLA 15.17) = 0.089; R:379-381 formula with template aMax | BETY conversion: max(min(leaf_respiration_rate_m2/Amax,1),0) (write.configs.SIPNET.R:379-381)",0.0979994,0.166887,0.392428,recomputed to keep BETY's area-based Rd with the template aMax; foliar resp ~ 400-450 g C m-2 yr-1 is still ~30% of GPP
+min_photosynthesis_temperature,psnTMin,degC,real,0.041553,bety,Vm_low_temp (write.configs.SIPNET.R:386),-6.53162,0.0415533,6.60206,
+optimum_photosynthesis_temperature,psnTOpt,degC,real,24,template, | BETY conversion: psnTOpt (write.configs.SIPNET.R:391),27.5542,43.0492,67.0405,BETY median 43.0 C (27.6-67.0) is implausible for a temperate deciduous canopy (optimum ~20-27 C); template 24 used
+vapor_pressure_deficit_slope,dVpdSlope,kPa-1,positive,0.049919,bety,dVPDSlope (write.configs.SIPNET.R:435),0.00336166,0.0499194,0.0968226,
+vapor_pressure_deficit_exponent,dVpdExp,1,positive,2,literature,Braswell et al. (2005) eq. A10 fixes the exponent at 2 (sipnet.c:625-626 comment) | BETY conversion: dVpdExp (write.configs.SIPNET.R:440),1.02966,1.49719,1.96827,BETY 1.5; negligible effect on this run (a3 vs a2)
+half_saturation_light,halfSatPar,mol m-2 d-1,positive,15.5915,bety,half_saturation_PAR (write.configs.SIPNET.R:422),4.59341,15.5915,26.3357,
+light_extinction_coefficient,attenuation,1,positive,0.500493,bety,extinction_coefficient (write.configs.SIPNET.R:374),0.388009,0.500493,0.612083,
+leaf_on_day,leafOnDay,d,positive,144,template,,,,,inert: gdd branch returns first (sipnet.c:705-731)
+leaf_off_day,leafOffDay,d,positive,285,template,,,,,template 285; step function (vault note 4.6)
+leaf_on_growing_degree_days,gddLeafOn,K d,non_negative,500,bety,GDD (write.configs.SIPNET.R:601),457.95,500,542.1,BETY sample is a near point mass (458-542); leaf-on DOY 108-133 in the run
+leaf_on_soil_temperature,soilTempLeafOn,degC,real,12,template,,,,,inert: soil_phenol off
+leaf_on_growth,leafGrowth,g m-2,non_negative,113.84,bety,leafGrowth (write.configs.SIPNET.R:617),50.669,113.84,248.583,must be >0 for a leafless start (sipnet.c:816); 113.8 -> LAI 3.7 at leaf-on
+leaf_off_fall_fraction,fracLeafFall,1,unit_interval,0.995004,bety,fracLeafFall (write.configs.SIPNET.R:612),0.990329,0.995004,0.999712,ok (0.995)
+leaf_allocation,leafAllocation,1,open_unit_interval,0.177931,bety,leaf_allocation_fraction (write.configs.SIPNET.R:527),0.142007,0.177931,0.216887,
+leaf_turnover_rate,leafTurnoverRate,yr-1,positive,0.13,template, | BETY conversion: leaf_turnover_rate (write.configs.SIPNET.R:446),0.514598,0.749712,0.985667,BETY 0.75 yr-1 double-counts leaf loss already done by fracLeafFall at leaf-off; template 0.13 used
+leaf_on_reallocation_fraction,leafOnReallocFrac,1,unit_interval,0.2,template,,,,,
+base_wood_respiration_rate,baseVegResp,yr-1,positive,0.011752,bety,stem_respiration_rate*12.01e-6/1000*86400*vegRespQ10^(-25/10) (write.configs.SIPNET.R:461-468),0.000615808,0.0117525,0.0338168,"same per-day vs per-year slip as fine roots (R:461-468 vs sipnet.c:1873); the trait taken literally (x365 = 4.3 yr-1) is absurd, and the BETY stem_respiration_rate draws look unconstrained (3-97, median 50); the slipped value 0.0118 is of the template's order (0.006) and gives wood resp ~220 g C m-2 yr-1"
+wood_respiration_q10,vegRespQ10,1,positive,1.80944,bety,veg_respiration_Q10 (write.configs.SIPNET.R:454),1.44885,1.80944,2.21116,
+growth_respiration_fraction,growthRespFrac,1,unit_interval,0.272493,bety,growth_resp_factor (write.configs.SIPNET.R:396),0.064281,0.272493,0.595503,inert: growth_resp flag off
+frozen_soil_foliar_respiration_factor,frozenSoilFolREff,1,unit_interval,0,template,,,,,template 0: foliar resp off when tsoil < frozenSoilThreshold
+frozen_soil_threshold,frozenSoilThreshold,degC,real,0,template,,,,,
+base_fine_root_respiration_rate,baseFineRootResp,yr-1,positive,0.000509,bety,root_respiration_rate*12.01e-6/1000*86400*fineRootQ10^(-25/10) (write.configs.SIPNET.R:484-491),0.000169971,0.000508511,0.00317539,"PEcAn converts umol CO2 kg-1 s-1 to g C g-1 d-1 (R:484-491) but SIPNET reads it as yr-1 and divides by 365 (sipnet.c:1902): 365x smaller than the trait; likely (inferred) per g dry mass, not per g C. Near-zero root respiration"
+base_coarse_root_respiration_rate,baseCoarseRootResp,yr-1,positive,0.006,template,,,,,
+fine_root_respiration_q10,fineRootQ10,1,positive,3.19766,bety,fine_root_respiration_Q10 (write.configs.SIPNET.R:479),1.5106,3.19766,4.89852,
+coarse_root_respiration_q10,coarseRootQ10,1,positive,3.20614,bety,coarse_root_respiration_Q10 (write.configs.SIPNET.R:496),1.521,3.20615,4.88672,
+base_soil_respiration_rate,baseSoilResp,yr-1,positive,0.01007,bety,som_respiration_rate (write.configs.SIPNET.R:541),0.00403125,0.0100704,0.0196597,soil C falls ~65 g C m-2 yr-1 in the final run
+soil_respiration_q10,soilRespQ10,1,positive,2.9,template,,,,,not in BETY; template
+soil_respiration_moisture_exponent,soilRespMoistEffect,1,non_negative,1,template,,,,,
+litter_breakdown_rate,litterBreakdownRate,yr-1,positive,0.4,template,,,,,inert: litter_pool off
+litter_respired_fraction,fracLitterRespired,1,unit_interval,0.5,template,,,,,inert: litter_pool off
+fine_root_allocation,fineRootAllocation,1,open_unit_interval,0.065478,bety,root_allocation_fraction (write.configs.SIPNET.R:517),0.041019,0.0654776,0.0978551,with fineRootTurnoverRate 1.55 yr-1 the fine-root pool equilibrates at ~25 g C m-2
+wood_allocation,woodAllocation,1,open_unit_interval,0.396711,bety,wood_allocation_fraction (write.configs.SIPNET.R:522),0.23852,0.396711,0.571943,"coarse-root allocation is the remainder 1-0.178-0.397-0.065 = 0.36, large; coarse roots grow ~80 g C m-2 yr-1"
+fine_root_turnover_rate,fineRootTurnoverRate,yr-1,positive,1.55048,bety,root_turnover_rate (write.configs.SIPNET.R:474),0.34577,1.55048,7.18736,
+coarse_root_turnover_rate,coarseRootTurnoverRate,yr-1,positive,0.056,template,,,,,
+wood_turnover_rate,woodTurnoverRate,yr-1,positive,0.004821,bety,wood_turnover_rate (write.configs.SIPNET.R:532),0.0030339,0.0048213,0.00715051,
+water_removal_fraction,waterRemoveFrac,d-1,positive,0.088,template,,,,,
+frozen_soil_water_fraction,frozenSoilEff,1,unit_interval,1,template,,,,,template 1 (Niwot 0)
+water_use_efficiency,wueConst,mg g-1 kPa,positive,12.0976,bety,wueConst (write.configs.SIPNET.R:450),7.90951,12.0976,17.5285,
+soil_water_holding_capacity,soilWHC,cm,positive,88.1,literature,PEcAn write.configs.SIPNET.R:783-812 porosity x thickness over 2 m; data/README.md:1284-1306 reports median 88.1 cm (range 72.6-100.7) over a 100-site sample,,,,"template 12 cm makes GPP water-limited by ~330 g C m-2 yr-1 at a mesic site; 88.1 is a pool median, not this site's own value; a 2 m porosity integral overstates plant-available water"
+interception_evaporation_fraction,immedEvapFrac,1,unit_interval,0.1,template,,,,,
+fast_flow_fraction,fastFlowFrac,1,unit_interval,0,template,,,,,
+snow_melt_rate,snowMelt,cm K-1 d-1,positive,0.15,template,,,,,
+aerodynamic_resistance_constant,rdConst,1,positive,1150.07,bety,rdConst (write.configs.SIPNET.R:597),940.963,1150.07,1377.41,BETY 1150 vs template 300 / Niwot 36.5; enters soil evaporation and sublimation only
+soil_resistance_intercept,rSoilConst1,1,real,8.2,template,,,,,
+soil_resistance_slope,rSoilConst2,1,positive,4.3,template,,,,,
+leaf_water_pool_depth,leafPoolDepth,cm d-1,non_negative,0.200384,bety,leafWHC (write.configs.SIPNET.R:585),0.106371,0.200384,0.294499,inert: leaf_water flag off
+leaf_carbon_per_area,leafCSpWt,g m-2,positive,30.7092,bety,"ud_convert(leafC/SLA,'kg/m2','g/m2') (write.configs.SIPNET.R:348-349)",27.3605,30.7092,35.0632,LMA ~66 g m-2 at leafC 0.466; peak LAI = leaf_carbon/leafCSpWt 7-8 in the final run (MODIS 5-7)
+leaf_carbon_fraction,cFracLeaf,1,open_unit_interval,0.466075,bety,leafC/100 (write.configs.SIPNET.R:336-339),0.464368,0.466075,0.4678,

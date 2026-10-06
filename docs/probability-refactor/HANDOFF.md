@@ -31,7 +31,7 @@ and proofs are the design's §12; the column below is a summary.
 | P9 | `refactor/probability-p9-foreign-laws` | merged #86 | P3 | numpyro and EnsKit `Gaussian` adapters; GPJax as an optional test group |
 | E1 | `refactor/probability-e1-enskit` | merged #88 | P9 | Re-pin from pyEKI to EnsKit's `main` (`TARPS-group/EnsKit`, package `enskit`), which moves JAX 0.8 to 0.10 and TFP's nightly with it; the `_linalg` shim on `enskit.linalg` and `enskit.distribution`; `GaussianLaw` and `as_law` on EnsKit's block `Gaussian`; `test_inference` and `test_smc` off the deleted `pyeki.eki`; P1's references rewritten if their bytes move; CLAUDE.md's companion table, upgrade command and pyEKI facts |
 | E2 | `refactor/probability-e2-enskit-eki` | open #89 | E1 | EnsKit's EKI driver: `eki_problem` in the terms of `enskit.algorithms.eki`; `initial_ensemble` an EnsKit `Ensemble` |
-| #69 | `feat/single-site-mcmc-vs-eki` | not this refactor's | P7, E2 | PR #69 migrates in its own session, onto the probability layer and EnsKit together |
+| #69 | `feat/single-site-mcmc-vs-eki` | migrated, open #69 | P7, E2 | PR #69 migrates in its own session, onto the probability layer and EnsKit together |
 | R1 | `refactor/probability-r1-removal` | waiting | #69 migrated | Delete `parameters`, today's `ForwardModel`, the Flat API, the old `describe_calibration`; move the vocabulary into CLAUDE.md's glossary |
 
 The plan allows P2 and P4 to run in parallel with P1. The workflow takes one PR
@@ -1316,3 +1316,93 @@ batch of runs, `problem.forward(result.ensemble["theta"])`, which replaces
   longer the final ensemble's. Its experiment still imports `pyeki.gauss`,
   `pyeki.linalg` and `pyeki.eki`, none of which exist on `main`.
 - Then R1, which waits on #69's migration.
+
+### 2026-10-05: #69's migration
+
+**Done.** PR #69's experiment (`experiments/single_site_mcmc_vs_eki/`, after
+merging `main` into its branch) runs on the probability layer and EnsKit, and
+uses nothing R1 deletes: no `parameters`, `ForwardModel`,
+`ForwardEvaluation`, old `describe_calibration`, pyEKI, or Flat API of the
+observation vector (`y`, `positions`, `flat`, `fields`, `index`). A grep of the
+code under `experiments/` for them is empty (the exploration records under
+`parameter_analysis/` still name the old classes in prose).
+
+- `model/calibration.py` (replacing `inverse_problem.py`) assembles the
+  model in one place: `joint(*prior.prior_factors(), SIPNETSimulator(...),
+  *noise.noise_factors(vector), inputs=prior.input_specs())`, bound at
+  `{"site": [4977], **vector.coords}` with the initial-state medians as
+  inputs, and `condition_on` the vector's observed values.
+  `calibration_posterior()` and `validation_posterior()` share theta.
+- `model/prior.py`: one `FactorSpec` per parameter, its provenance on the
+  factor; the two initial states nothing calibrates are inputs, their
+  supports the domains `initial_condition_rules` reads them on.
+- `model/noise.py`: one `noise_factor` per source, each covariance
+  `BlockDiagonalSpec(SumSpec(measurement, discrepancy), by="site")` (soil
+  carbon a `SumSpec` of two diagonals). The measurement standard
+  deviations moved onto the sources (`ObservationSource(standard_deviation=)`,
+  `model/observations.py`).
+- `run/eki.py`: `eki_problem(posterior)`, `eki.iterate` with
+  `kalman.Matheron()` and `AdaptiveESSSchedule`, each step checkpointed as
+  before; the final ensemble's evaluation is `eki.evaluate` plus
+  `HistoryRecord.from_evaluation` (the terminal record). Synthetic data are
+  one `posterior.replicate` at a prior draw, conditioned with
+  `condition_on(posterior.model, ...)`, so `R` stays the vector's.
+- `run/_predictive.py`: `posterior.evaluate` under both posteriors, daily
+  output by the simulator's own `SIPNETRuns` on `simulator_inputs`.
+- `model/diagnostics.py`: `y`, `R`'s blocks and the measurement errors are
+  read from the posterior and its vector by label.
+
+**Equivalence**, against the branch's code before the merge (4deb46d) in
+its own environment: theta's order equal; prior draws, the prior's center
+and natural values bit-identical; log prior within 4e-15; `y` identical;
+`R`'s blocks within 1e-15 relative, calibration and validation; the noise
+summary identical; a two-sample forward evaluation's predictions and log
+likelihoods bit-identical. Smoke tests at J = 4 to 6 of every entry point
+but `prepare_drivers` (unchanged): prior predictive, EKI on both data and
+`--resume`, posterior predictive, diagnose, draw_figures, compare_setups,
+fit_nee_discrepancy, check_inputs.
+
+**Changes the layer forced:** theta's entry names lose the transform
+(`log(x)` is `x`, P2); the initial EKI ensemble is a different random
+stream (§10.2); `history.csv`'s `centre_misfit` is EnsKit's
+`center_misfit`; the calibration record is three tables (`model.describe()`,
+`posterior.describe()`, the map's `describe()`), without the per-SIPNET-
+parameter `role` column, until R1's `describe_calibration(posterior, map)`;
+the noise summary lost its count of NEE windows with no reported
+uncertainty.
+
+**Gaps in the layer found** (none blocks; each is an open item for R1 or
+later):
+
+- An evaluation's values have no labeled form: the experiment labels
+  predictions with `Layout(prediction_components(vector), coords=...)`;
+  a `PosteriorEvaluation.to_labeled()` would replace it.
+- No prior mean in theta: `prior.prior_center` reads each bound law's
+  base mean (TFP's `TransformedDistribution.distribution`), as
+  `prior_gaussian` did.
+- A predictive needs three SIPNET passes (calibration, validation, daily
+  output) where `SIPNETRuns.evaluate` could make one, since nothing scores
+  or labels a `SIPNETRunsEvaluation`'s predictions under a posterior
+  (related: "`predict` runs SIPNET again").
+- Binding and conditioning the one-site model takes about 30 s, most of it
+  outside SIPNET; each entry point builds one or two posteriors.
+
+**Review.** One Standard round: code, mutation (against the equivalence
+harness, the experiment having no tests), docs. No pairing or ordering bug:
+predictions, `y`, `R` and the measurement errors line up by label, and the
+posterior predictive's predictions equal the EKI step's at the same theta.
+Fixed: the final ensemble's evaluation repaired an invalid member into the
+posterior ensemble where pyEKI's raised (it raises again, reported as an
+error); a missing input or an `EKIError` now ends `run/eki.py` with its
+`error:` message; the initial states are the model's inputs in the
+glossary's word (`prior.INPUT_NAMES`, `input_values`), not external
+inputs; provenance strings read their numbers from `config`; stale wording.
+Not acted on: the step's `.npz` is written before its history row (as
+before); bare "member" for EKI rows in the run's text and files (as
+before); the noise summary counts the carbon fraction's error as
+discrepancy (as before).
+
+**What R1 must know.** #69's experiment and `presentation_2026_09_30`
+import none of what R1 deletes. Andrew's uncommitted
+`report/report.qmd` in #69's worktree still imports `inverse_problem` and
+`prior.calibration()`; it is his to update.

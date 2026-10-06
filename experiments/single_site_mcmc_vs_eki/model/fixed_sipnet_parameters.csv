@@ -1,0 +1,40 @@
+sipnet_parameter_name,sipnet_name,units,value,justification
+litter_carbon,litterInit,g m-2,0.0,phase 1 base set: pysipnet default
+snow_water_equivalent,snowInit,cm,0.0,phase 1 base set: pysipnet default
+fine_root_fraction,fineRootFrac,1,0.03,phase 1 base set: literature
+coarse_root_fraction,coarseRootFrac,1,0.16,Screened 0.19. Fixed at phase-1 0.16 (initial split only). | phase 1 base set: literature
+daily_mean_photosynthesis_fraction,aMaxFrac,1,0.860623,"Degenerate with aMax/baseFolRespFrac/cFracLeaf (sipnet.c:614,617,633); fixed at BETY median, read by ComputePhotosynthesisRates. | phase 1 base set: bety"
+vapor_pressure_deficit_slope,dVpdSlope,kPa-1,0.049919,Screened 0.30. Fixed at BETY median. | phase 1 base set: bety
+vapor_pressure_deficit_exponent,dVpdExp,1,2.0,phase 1 base set: literature
+light_extinction_coefficient,attenuation,1,0.500493,"Screened 0.49 (day NEE only). Fixed at BETY median: flux-side it acts as attenuation/leafCSpWt with leaf carbon (phase 1 3.2), which leafGrowth/allocation already move. | phase 1 base set: bety"
+leaf_on_day,leafOnDay,d,144.0,phase 1 base set: template
+leaf_off_day,leafOffDay,d,285.0,"Screened 0.16. Fixed at template 285 (Harvard leaf fall DOY ~280-300, approximate). | phase 1 base set: template"
+leaf_on_soil_temperature,soilTempLeafOn,degC,12.0,phase 1 base set: template
+leaf_off_fall_fraction,fracLeafFall,1,0.995004,phase 1 base set: bety
+leaf_turnover_rate,leafTurnoverRate,yr-1,0.13,Screened 0.18. Fixed at template 0.13 (phase 1: BETY 0.75 double counts leaf fall). | phase 1 base set: template
+leaf_on_reallocation_fraction,leafOnReallocFrac,1,0.2,phase 1 base set: template
+wood_respiration_q10,vegRespQ10,1,1.80944,Screened 0.22. Fixed at BETY median; its effect is decorrelated from the 10 C rate by the re-referencing. | phase 1 base set: bety
+growth_respiration_fraction,growthRespFrac,1,0.272493,phase 1 base set: bety
+frozen_soil_foliar_respiration_factor,frozenSoilFolREff,1,0.0,phase 1 base set: template
+frozen_soil_threshold,frozenSoilThreshold,degC,0.0,phase 1 base set: template
+base_fine_root_respiration_rate,baseFineRootResp,yr-1,0.185785,"BETY root_respiration_rate median converted to SIPNET's yr-1 (sipnet.c:1902 divides by 365), undoing PEcAn's per-day slip (write.configs.SIPNET.R:461-468); pool is small, so inert in practice"
+fine_root_respiration_q10,fineRootQ10,1,3.19766,phase 1 base set: bety
+coarse_root_respiration_q10,coarseRootQ10,1,3.20614,phase 1 base set: bety
+soil_respiration_moisture_exponent,soilRespMoistEffect,1,1.0,Screened 0.19. Fixed at template 1. | phase 1 base set: template
+litter_breakdown_rate,litterBreakdownRate,yr-1,0.4,phase 1 base set: template
+litter_respired_fraction,fracLitterRespired,1,0.5,phase 1 base set: template
+fine_root_turnover_rate,fineRootTurnoverRate,yr-1,1.55048,Screened 0.03. Fixed at BETY median. | phase 1 base set: bety
+coarse_root_turnover_rate,coarseRootTurnoverRate,yr-1,0.056,Screened 0.20. Fixed at template 0.056. | phase 1 base set: template
+wood_turnover_rate,woodTurnoverRate,yr-1,0.004821,Screened 0.29 (wood change only). Fixed at BETY median; AGB data (6 values over 6 years) barely separate it from wood allocation. | phase 1 base set: bety
+water_removal_fraction,waterRemoveFrac,d-1,0.088,Screened 0.45. Fixed: one water-limitation direction is calibrated through soilWHC (phase 1 rec. 8; probe: raising it to 0.5 recovers less JJA uptake than soilWHC 88). | phase 1 base set: template
+frozen_soil_water_fraction,frozenSoilEff,1,1.0,phase 1 base set: template
+water_use_efficiency,wueConst,mg g-1 kPa,12.0976,Screened 0.43. Fixed at BETY median for the same reason (one water direction). | phase 1 base set: bety
+interception_evaporation_fraction,immedEvapFrac,1,0.1,phase 1 base set: template
+fast_flow_fraction,fastFlowFrac,1,0.0,phase 1 base set: template
+snow_melt_rate,snowMelt,cm K-1 d-1,0.15,phase 1 base set: template
+aerodynamic_resistance_constant,rdConst,1,1150.07,phase 1 base set: bety
+soil_resistance_intercept,rSoilConst1,1,8.2,phase 1 base set: template
+soil_resistance_slope,rSoilConst2,1,4.3,phase 1 base set: template
+leaf_water_pool_depth,leafPoolDepth,cm d-1,0.200384,phase 1 base set: bety
+leaf_carbon_per_area,leafCSpWt,g m-2,30.7092,Screened 0.43 (LAI conversion). Fixed at the BETY median 30.7: BETY 2.5-97.5% is only +-12%. | phase 1 base set: bety
+leaf_carbon_fraction,cFracLeaf,1,0.466075,"Degenerate direction (as above); BETY median, read by ComputePhotosynthesisRates. | phase 1 base set: bety"
