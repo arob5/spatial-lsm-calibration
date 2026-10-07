@@ -1,8 +1,13 @@
 """The prior predictive's figures.
 
 Reads what ``run/prior_predictive.py`` wrote and draws it through
-:mod:`sipnet_calibration.plotting`; nothing here runs a model. Run as a
-script, it draws every figure into ``config.FIGURE_DIRECTORY``.
+:mod:`sipnet_calibration.plotting`; nothing here runs a model. The prior
+predictive is of the data, noise included, under one model: at each prior
+draw, replicated data :math:`\\mathcal G(\\theta_m) + \\sqrt{s_m} L z_m`
+(``analysis/predictive.py``), with :math:`L L^\\top` the model's reference
+covariance and :math:`s_m` a draw of each scale's prior where the noise is
+inferred, 1 where it is fixed. The model output, the one run at the prior's
+center and the annual totals are the model's own, without noise.
 
 The time series and pools, against the observations:
 
@@ -14,10 +19,9 @@ The time series and pools, against the observations:
 - :func:`plot_daily_trajectories` (``prior_predictive_trajectories``): the
   fluxes and pools behind them, day by day.
 
-In these the ensemble is the prior's draws (role ``prior``: a median and 50%
-and 90% bands), the one run is at the prior's center (a solid line), and
-observations are black points with error bars of the noise model's total
-standard deviation; the held-out tower's are hollow.
+In these the ensemble is the replicated data (role ``prior``: a median and
+50% and 90% bands), the one run is at the prior's center (a solid line), and
+observations are black points; the held-out tower's are hollow.
 
 The summaries, sized for slides (:data:`SLIDE_STYLE`):
 
@@ -30,10 +34,11 @@ The summaries, sized for slides (:data:`SLIDE_STYLE`):
   prior predictive against both towers' annual totals;
 - :func:`plot_coverage` (``prior_predictive_coverage``): per observation
   source, the fraction of observations inside the prior predictive's 50% and
-  90% intervals, noise included.
+  90% intervals.
 
-:func:`draw_prior_predictive_figures` draws them all; ``run/prior_predictive.py``
-calls it at the end of the run.
+:func:`draw_prior_predictive_figures` draws them all for one model, into
+``config.FIGURE_DIRECTORY / "prior_predictive" / <error model>_<noise>``;
+``run/prior_predictive.py`` calls it for every model at the end of the run.
 """
 
 import matplotlib.pyplot as plt
@@ -48,8 +53,11 @@ from sipnet_calibration.plotting import plot_time_series
 from sipnet_calibration.plotting.style import role_style, use_project_style
 
 from .. import config
+from ..analysis.predictive import replicated_fields
 from ..model import inputs
+from ..model.likelihood import NoiseModel
 from ..model.outputs import load_predictive
+from ..models import Model, fixed_posterior, heldout_posterior
 from .common import (
     NEE_TITLES,
     PARAMETER_TITLES,
@@ -71,6 +79,7 @@ __all__ = [
     "plot_nee_windows",
     "plot_pool_observations",
     "plot_prior_marginals",
+    "prior_predictive_of_the_data",
 ]
 
 #: How each predictive is drawn, by its kind: its ensemble's role, its
@@ -80,14 +89,14 @@ PREDICTIVES = frozendict(
         "prior": frozendict(
             {
                 "role": "prior",
-                "ensemble_label": "ensemble (prior draws)",
+                "ensemble_label": "prior predictive (noise included)",
                 "name": "prior predictive",
             }
         ),
         "posterior": frozendict(
             {
                 "role": "posterior",
-                "ensemble_label": "ensemble (EKI posterior)",
+                "ensemble_label": "posterior predictive (noise included)",
                 "name": "posterior predictive",
             }
         ),
@@ -107,7 +116,7 @@ _GRAMS_CARBON_PER_UMOL_SECOND = 12.011e-6
 def plot_nee_windows(
     outputs: dict, *, kind: str = "prior", zoom_year: int = 2015
 ) -> plt.Figure:
-    """Both NEE sources: the whole record (left) and one year with error bars (right)."""
+    """Both NEE sources: the whole record (left) and one year (right)."""
     figure, axes = plt.subplots(
         len(config.NEE_WINDOWS), 2, figsize=(12, 6), width_ratios=(2.2, 1), sharey="row"
     )
@@ -115,9 +124,9 @@ def plot_nee_windows(
         whole, year = axes[row]
         for vector in ("calibration", "validation"):
             _draw_predictions(whole, outputs, vector, name, kind)
-            _draw_observed(whole, outputs, vector, name, error_bars=False)
+            _draw_observed(whole, outputs, vector, name)
         _draw_predictions(year, outputs, "calibration", name, kind)
-        _draw_observed(year, outputs, "calibration", name, error_bars=True)
+        _draw_observed(year, outputs, "calibration", name)
         year.set_xlim(
             np.datetime64(f"{zoom_year}-01-01"), np.datetime64(f"{zoom_year + 1}-01-01")
         )
@@ -141,7 +150,7 @@ def plot_pool_observations(outputs: dict, *, kind: str = "prior") -> plt.Figure:
         strict=True,
     ):
         _draw_predictions(ax, outputs, "calibration", name, kind)
-        _draw_observed(ax, outputs, "calibration", name, error_bars=True)
+        _draw_observed(ax, outputs, "calibration", name)
         ax.set_xlabel("")
     axes[0].set_title("MODIS leaf area index (June-August composites)")
     axes[1].set_title("LandTrendr aboveground biomass (dry)")
@@ -303,8 +312,8 @@ def plot_nee_annual(outputs: dict, *, kind: str = "prior") -> plt.Figure:
 def plot_coverage(
     outputs: dict, *, kind: str = "prior", vector: str = "calibration"
 ) -> plt.Figure:
-    """Per source, the fraction of observations inside the 50% and 90% predictive intervals."""
-    rng = np.random.default_rng(0)
+    """Per source, the fraction of observations inside the 50% and 90%
+    predictive intervals, *outputs*' predictions being replicated data."""
     rows = []
     source_labels = {
         name: label
@@ -315,15 +324,13 @@ def plot_coverage(
         observed = outputs["observed"][vector][name]
         predicted = outputs["predicted"]["ensemble"][vector][name]
         y = np.atleast_1d(observed["value"].to_numpy())
-        sd = np.atleast_1d(observed["noise_standard_deviation"].to_numpy())
         samples = (
             predicted.transpose(SAMPLE, ...)
             .to_numpy()
             .reshape(predicted.sizes[SAMPLE], -1)
         )
-        noisy = samples + rng.standard_normal(samples.shape) * sd
         for level in (0.5, 0.9):
-            low, high = np.quantile(noisy, [(1 - level) / 2, (1 + level) / 2], axis=0)
+            low, high = np.quantile(samples, [(1 - level) / 2, (1 + level) / 2], axis=0)
             rows.append(
                 {
                     "source": label,
@@ -380,10 +387,7 @@ def plot_coverage(
     ax.set_xlim(0, 1.08)
     ax.set_xlabel("fraction of observations (dashed: the nominal level)")
     held_out = ", held-out tower" if vector == "validation" else ""
-    ax.set_title(
-        f"{PREDICTIVES[kind]['name'].capitalize()} coverage{held_out}, "
-        "noise model included"
-    )
+    ax.set_title(f"{PREDICTIVES[kind]['name'].capitalize()} coverage{held_out}")
     ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.2), ncol=2)
     return figure
 
@@ -391,8 +395,8 @@ def plot_coverage(
 # ── drawing the run ──
 
 
-def draw_prior_predictive_figures() -> None:
-    """Draw every figure of the prior predictive into ``config.FIGURE_DIRECTORY``.
+def draw_prior_predictive_figures(model: Model) -> None:
+    """Draw every figure of the prior predictive under *model*'s noise.
 
     Raises
     ------
@@ -401,14 +405,15 @@ def draw_prior_predictive_figures() -> None:
     """
     use_project_style()
     directory = config.PRIOR_PREDICTIVE_DIRECTORY
-    outputs = load_predictive(directory)
+    outputs = prior_predictive_of_the_data(load_predictive(directory), model)
     parameters = pd.read_csv(directory / "parameters.csv", index_col=0)
+    figures = config.FIGURE_DIRECTORY / "prior_predictive" / model.name.replace("/", "_")
     for name, draw in (
         ("prior_predictive_nee", plot_nee_windows),
         ("prior_predictive_pools", plot_pool_observations),
         ("prior_predictive_trajectories", plot_daily_trajectories),
     ):
-        save_figure(draw(outputs), name)
+        save_figure(draw(outputs), name, figures)
     with plt.rc_context(SLIDE_STYLE):
         for name, figure in (
             ("prior_marginals", plot_prior_marginals(parameters)),
@@ -416,7 +421,26 @@ def draw_prior_predictive_figures() -> None:
             ("prior_predictive_nee_annual", plot_nee_annual(outputs)),
             ("prior_predictive_coverage", plot_coverage(outputs)),
         ):
-            save_figure(figure, name)
+            figure.suptitle(f"{model.name}: {figure.get_suptitle()}".rstrip(": "))
+            save_figure(figure, name, figures)
+
+
+def prior_predictive_of_the_data(outputs: dict, model: Model) -> dict:
+    """*outputs* (``load_predictive``) with the ensemble's predictions replaced
+    by replicated data under *model*: each scale drawn from its prior per
+    sample where the noise is inferred, 1 where it is fixed."""
+    rng = np.random.default_rng(config.PRIOR_PREDICTIVE_SEED)
+    posteriors = {"calibration": fixed_posterior(model), "validation": heldout_posterior(model)}
+    predicted = {}
+    for vector, posterior in posteriors.items():
+        noise_model = NoiseModel(posterior, inferred=model.noise == "inferred")
+        ensemble = outputs["predicted"]["ensemble"][vector]
+        n_samples = next(iter(ensemble.values())).sizes[SAMPLE]
+        scales = noise_model.draw_prior_scales(rng, n_samples) if noise_model.inferred else {}
+        predicted[vector] = replicated_fields(
+            ensemble, outputs["observed"][vector], noise_model, scales, rng
+        )
+    return {**outputs, "predicted": {**outputs["predicted"], "ensemble": predicted}}
 
 
 # ── helpers ──
@@ -440,10 +464,8 @@ def _draw_predictions(ax, outputs: dict, vector: str, name: str, kind: str) -> N
         )
 
 
-def _draw_observed(
-    ax, outputs: dict, vector: str, name: str, *, error_bars: bool
-) -> None:
-    """A source's observed values, with the noise model's standard deviation."""
+def _draw_observed(ax, outputs: dict, vector: str, name: str) -> None:
+    """A source's observed values."""
     observed = outputs["observed"][vector].get(name)
     if observed is None:
         return
@@ -453,7 +475,6 @@ def _draw_observed(
         ax=ax,
         role="observation",
         show="points",
-        standard_deviation=observed["noise_standard_deviation"] if error_bars else None,
         label=HELD_OUT_LABEL if held_out else OBSERVED_LABEL,
         markersize=2.5,
         **({"markerfacecolor": "none"} if held_out else {}),
@@ -488,16 +509,7 @@ def _draw_static(ax, outputs: dict, name: str, kind: str) -> None:
             color=role_style("posterior")["color"],
             label=SINGLE_RUN_LABEL,
         )
-    ax.errorbar(
-        [0.5],
-        [float(observed["value"])],
-        yerr=[float(observed["noise_standard_deviation"])],
-        fmt="o",
-        color="black",
-        markersize=4,
-        capsize=3,
-        label=OBSERVED_LABEL,
-    )
+    ax.plot([0.5], [float(observed["value"])], "o", color="black", markersize=4, label=OBSERVED_LABEL)
     ax.set_xlim(-0.5, 1.0)
     ax.set_xticks([0.0, 0.5], ["model", "observed"])
     ax.set_ylabel(f"soil carbon ({observed['value'].attrs.get('units')} C)")

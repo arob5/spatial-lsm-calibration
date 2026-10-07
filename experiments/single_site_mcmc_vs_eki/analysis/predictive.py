@@ -26,7 +26,11 @@ from sipnet_calibration.conventions import SAMPLE
 
 from ..model.likelihood import NoiseModel
 
-__all__ = ["check_observed_values_are_the_noise_models", "replicated_observations"]
+__all__ = [
+    "check_observed_values_are_the_noise_models",
+    "replicated_fields",
+    "replicated_observations",
+]
 
 
 def replicated_observations(
@@ -58,6 +62,23 @@ def replicated_observations(
         noise = rng.standard_normal(values.shape) @ source.cholesky.T
         replicated[source.name] = values + np.sqrt(scale)[:, None] * noise
     return replicated
+
+
+def replicated_fields(
+    predicted: Mapping[str, xr.DataArray],
+    observed: Mapping[str, xr.Dataset],
+    noise_model: NoiseModel,
+    scales: Mapping[str, np.ndarray],
+    rng: np.random.Generator,
+) -> dict[str, xr.DataArray]:
+    """:func:`replicated_observations` as fields shaped and labeled as
+    *predicted*'s, ``sample`` first, for the figures that read predictions."""
+    replicated = replicated_observations(predicted, observed, noise_model, scales, rng)
+    fields = {}
+    for name, values in replicated.items():
+        field = predicted[name].transpose(SAMPLE, ...)
+        fields[name] = field.copy(data=values.reshape(field.shape))
+    return fields
 
 
 # ── checks ──

@@ -18,7 +18,7 @@ came back:
 The model, ``--model`` (``long_memory/fixed`` by default), sets the noise
 model: every run is scored under its fixed posterior's likelihood, every
 scale at 1 (``model/likelihood.py``). The script then draws the prior
-predictive's figures (``figures/prior_predictive.py``) and diagnoses it
+predictive's figures under every model's noise (``figures/prior_predictive.py``) and diagnoses it
 (``run/diagnose.py``); ``--no-diagnose`` skips the diagnosis.
 
 Input data
@@ -91,7 +91,8 @@ def main(argv: list[str] | None = None) -> int:
         directory / "provenance.json", input_files=_provenance.model_input_files()
     )
     print(f"wrote {directory}")
-    draw_prior_predictive_figures()
+    for name in MODEL_NAMES:
+        draw_prior_predictive_figures(Model.parse(name))
     if not arguments.no_diagnose:
         diagnose_run(model.name, "prior")
     return 0
