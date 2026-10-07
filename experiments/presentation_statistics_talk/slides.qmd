@@ -94,12 +94,13 @@ plots.eddy_covariance()
 ```
 
 $$
-F_c = \overline{w'c'}, \qquad w' = w - \bar w, \quad c' = c - \bar c,
+\text{eddy-covariance flux} \;\approx\; \widehat{\operatorname{Cov}}\big(\text{vertical wind speed},\ \text{CO}_2\ \text{density}\big)
 $$
 
 ::: {.figure-gloss}
-averaged over each 30- or 60-minute interval. NEE is $F_c$ plus the change in
-CO₂ stored below the sensor.
+Each value is the sample covariance of the 10–20 Hz measurements over a 30- or
+60-minute interval. NEE is this flux plus the change in CO₂ stored below the
+sensor.
 :::
 
 ## Model
