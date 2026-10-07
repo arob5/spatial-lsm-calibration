@@ -206,7 +206,7 @@ $$
 :::
 :::
 
-## Challenges and responses
+## Challenges and solutions
 
 ::: {.pair-head}
 [Challenge]{} [Solution]{}
@@ -422,22 +422,17 @@ SIPNET's photosynthesis in the appendix
 
 - Four photosynthesis parameters:
 
-| | name | meaning |
-|---|---|---|
-| $A$ | `aMax` | maximum photosynthetic rate per gram of leaf, in full light and with no stress |
-| $f$ | `aMaxFrac` | daily mean rate as a fraction of $A$ |
-| $r$ | `baseFolRespFrac` | leaf respiration as a fraction of $A$ |
-| $c$ | `cFracLeaf` | carbon fraction of leaf mass |
+| Parameter | Meaning |
+|---|---|
+| $A$ (`aMax`) | maximum photosynthetic rate per gram of leaf, full light, no stress |
+| $f$ (`aMaxFrac`) | daily mean rate as a fraction of $A$ |
+| $r$ (`baseFolRespFrac`) | leaf respiration as a fraction of $A$ |
+| $c$ (`cFracLeaf`) | carbon fraction of leaf mass |
 
 . . .
 
-- They enter the model only through two combinations:
-
-$$
-P = \frac{A\,(f + r)}{c},
-\qquad
-\rho = \frac{r}{f + r}
-$$
+- They enter the model only through $P = \dfrac{A\,(f + r)}{c}$ and
+  $\rho = \dfrac{r}{f + r}$:
 
 . . .
 
