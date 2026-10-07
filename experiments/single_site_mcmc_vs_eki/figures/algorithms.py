@@ -13,19 +13,18 @@ not written yet is left out. Nothing here runs a model.
   densities, the prior's among them, on the diagonal; the prior's contours
   are left out, since at the posterior's scale they lie outside the panels;
 - :func:`plot_predictive_nee` (``algorithm_predictive_nee``): NEE's seasonal
-  cycle, each algorithm's 90% band and median of the weekly means of
-  :math:`\mathcal G(\theta)`, and one run's 90% band of the weekly means
-  of replicated data, :math:`\mathcal G(\theta) + \varepsilon`,
-  :math:`\varepsilon \sim \mathcal N(0, s C)`, against the observed, for
+  cycle, each algorithm's posterior predictive (90% band and median of the
+  weekly means of replicated data) against the observed weekly means, at
   the calibration tower and the held-out one;
 - :func:`plot_predictive_pools` (``algorithm_predictive_pools``): the pool
-  constraints, the posterior predictive's 90% interval against the
-  observations.
+  constraints, each algorithm's posterior predictive 90% interval and median
+  against the observations.
 
-The predictive figures read the samples ``run/predict.py`` ran (equally
-weighted). Their bands of :math:`\\mathcal G(\\theta)` carry the parameters'
-uncertainty alone; the replicated data's band adds the noise model's, the
-error the model itself expects.
+The predictives are of the data, noise included: at each sample a predictive
+ran (``run/predict.py``, equally weighted), replicated data
+:math:`\\mathcal G(\\theta_m) + \\sqrt{s_m} L z_m`
+(``analysis/predictive.py``), with the sample's drawn noise scales where the
+noise is inferred.
 
 :func:`draw_algorithm_figures` draws them all for one model into
 ``config.FIGURE_DIRECTORY / "algorithms" / <error model>_<noise>``.
@@ -33,7 +32,6 @@ error the model itself expects.
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from pathlib import Path
 
 import jax
 import matplotlib.pyplot as plt
@@ -41,11 +39,12 @@ import numpy as np
 import pandas as pd
 import scipy.stats
 
-from sipnet_calibration.conventions import SAMPLE, TIME
+from sipnet_calibration.conventions import TIME
 from sipnet_calibration.plotting.style import role_style, use_project_style
 
 from .. import config
 from ..analysis.compare import weighted_quantiles
+from ..analysis.predictive import replicated_observations
 from ..model import prior as prior_model
 from ..model.likelihood import NoiseModel
 from ..model.outputs import load_predictive, load_run
@@ -58,7 +57,6 @@ from .common import (
     one_legend,
     save_figure,
     week_of_year,
-    weekly_nee_quantiles,
 )
 
 __all__ = [
@@ -73,7 +71,6 @@ __all__ = [
     "plot_predictive_nee",
     "plot_predictive_pools",
     "prior_natural_values",
-    "replicated_nee",
 ]
 
 
@@ -90,9 +87,7 @@ class ComparedAlgorithm:
 #: The algorithms compared, in drawing order: EKI (for inferred noise, with
 #: Gibbs scale updates and the common gain), SMC seeded by it, and MCMC.
 COMPARED_ALGORITHMS = (
-    ComparedAlgorithm(
-        "EKI", {"fixed": "eki", "inferred": "eki_gibbs_common"}, color="#E69F00"
-    ),
+    ComparedAlgorithm("EKI", {"fixed": "eki", "inferred": "eki_gibbs_common"}, color="#E69F00"),
     ComparedAlgorithm(
         "SMC", {"fixed": "eki_smc", "inferred": "eki_gibbs_common_smc"}, color="#0072B2"
     ),
@@ -110,43 +105,58 @@ PAIR_PARAMETER_NAMES = (
     "wood_respiration_rate_at_10c",
 )
 
+#: The pool constraints of the predictive pools figure, in drawing order.
+POOL_SOURCE_NAMES = (
+    "modis_leaf_area_index",
+    "landtrendr_aboveground_biomass",
+    "soilgrids_soil_organic_carbon",
+)
+
+#: The vectors a predictive predicts, by its directory name (``run/predict.py``),
+#: with their panel labels: the calibration tower, and the held-out one.
+PREDICTIVE_VECTORS = {
+    "calibration": "calibration, US-Ha1 2012-2020",
+    "validation": "held out, US-xHA 2021-2024",
+}
+
 #: The mass the pairwise contours enclose, innermost first.
 CONTOUR_MASSES = (0.5, 0.9)
 
 #: The most samples a kernel density estimate reads; a longer run is thinned evenly.
 DENSITY_SAMPLE_LIMIT = 4000
 
-#: The prior draws the figures show, and their seed.
+#: The number of prior draws the figures show.
 PRIOR_SAMPLE_SIZE = 4000
-PRIOR_SEED = 20261007
 
-#: The vectors of the predictive NEE figure: the calibration tower, and the
-#: held-out one (``run/predict.py``'s directory names).
-PREDICTIVE_VECTORS = {
-    "calibration": "calibration, US-Ha1 2012-2020",
-    "validation": "held out, US-xHA 2021-2024",
-}
+#: The seed of the prior draws and of the replicated data's noise.
+FIGURE_SEED = 20261007
+
+#: The quantiles of a predictive band: its lower edge, median and upper edge.
+BAND_QUANTILES = (0.05, 0.5, 0.95)
 
 
 @dataclass(frozen=True)
 class AlgorithmRun:
     """One algorithm's run of a model: its samples' natural values and
-    normalized weights, and its posterior predictive if it has run."""
+    normalized weights, and, once its predictive has run, the predictive's
+    files and its replicated data, ``{vector: {source: (K, n)}}``."""
 
     algorithm: ComparedAlgorithm
     natural_values: pd.DataFrame
     weights: np.ndarray
     predictive: dict | None
-    predictive_directory: Path
+    replicated: dict[str, dict[str, np.ndarray]] | None
 
 
 def load_algorithm_runs(
     model: Model, algorithms: Sequence[ComparedAlgorithm] = COMPARED_ALGORITHMS
 ) -> list[AlgorithmRun]:
-    """The runs of *model* that *algorithms* read, those written so far.
+    """The runs of *model* that *algorithms* read, those written so far,
+    each with its replicated data where its predictive has run.
 
     A sample whose run failed weighs 0.
     """
+    noise_models = None
     runs = []
     for algorithm in algorithms:
         directory = model.directory(algorithm.runs[model.noise])
@@ -157,19 +167,19 @@ def load_algorithm_runs(
         log_weights = np.where(
             samples["valid"].values.astype(bool), samples["log_weight"].values, -np.inf
         )
-        weights = np.exp(log_weights - np.logaddexp.reduce(log_weights))
-        predictive = directory / "predictive"
+        predictive, replicated = None, None
+        if (directory / "predictive" / "ensemble_daily.nc").exists():
+            predictive = load_predictive(directory / "predictive")
+            noise_models = noise_models or _noise_models(model)
+            scales = pd.read_csv(directory / "predictive" / "samples.csv")
+            replicated = _replicated(predictive, noise_models, scales)
         runs.append(
             AlgorithmRun(
                 algorithm=algorithm,
                 natural_values=run["natural_values"].drop(columns="log_weight"),
-                weights=weights,
-                predictive=(
-                    load_predictive(predictive)
-                    if (predictive / "ensemble_daily.nc").exists()
-                    else None
-                ),
-                predictive_directory=predictive,
+                weights=np.exp(log_weights - np.logaddexp.reduce(log_weights)),
+                predictive=predictive,
+                replicated=replicated,
             )
         )
     return runs
@@ -179,31 +189,8 @@ def prior_natural_values() -> pd.DataFrame:
     """:data:`PRIOR_SAMPLE_SIZE` draws of the prior, in natural units, one row
     per draw; no model is run."""
     posterior = prior_model.prior_alone()
-    theta = posterior.sample_prior(jax.random.key(PRIOR_SEED), PRIOR_SAMPLE_SIZE)
+    theta = posterior.sample_prior(jax.random.key(FIGURE_SEED), PRIOR_SAMPLE_SIZE)
     return prior_model.natural_table(posterior, theta)
-
-
-def replicated_nee(model: Model, run: AlgorithmRun) -> dict[str, dict[str, np.ndarray]]:
-    """Replicated NEE data at *run*'s predictive samples, ``{vector: {source:
-    (K, n)}}``: :math:`\\mathcal G(\\theta_m) + \\varepsilon_m`,
-    :math:`\\varepsilon_m \\sim \\mathcal N(0, s_m C)`, with :math:`C` the
-    source's reference covariance under *model*'s error model and
-    :math:`s_m` the sample's drawn scale (1 for fixed noise).
-    """
-    rng = np.random.default_rng(PRIOR_SEED)
-    scales = pd.read_csv(run.predictive_directory / "samples.csv")
-    posteriors = {"calibration": fixed_posterior(model), "validation": heldout_posterior(model)}
-    replicated = {}
-    for vector, posterior in posteriors.items():
-        sources = {source.name: source for source in NoiseModel(posterior, inferred=False).sources}
-        replicated[vector] = {}
-        for name in config.NEE_WINDOWS:
-            predicted = run.predictive["predicted"]["ensemble"][vector][name]
-            values = predicted.transpose(SAMPLE, TIME).to_numpy()
-            scale = scales[name].to_numpy() if name in scales else np.ones(len(values))
-            noise = rng.standard_normal(values.shape) @ sources[name].cholesky.T
-            replicated[vector][name] = values + np.sqrt(scale)[:, None] * noise
-    return replicated
 
 
 def plot_marginal_histograms(
@@ -247,7 +234,8 @@ def plot_pairwise_contours(
 ) -> plt.Figure:
     """For each pair of *parameter_names*, the contours enclosing
     :data:`CONTOUR_MASSES` of each algorithm's weighted kernel density
-    estimate (below the diagonal), and each marginal density (on it)."""
+    estimate (below the diagonal), and each marginal density, the prior's
+    among them (on it)."""
     n = len(parameter_names)
     figure, axes = plt.subplots(n, n, figsize=(2.4 * n, 2.4 * n), squeeze=False)
     ranges = {name: _shared_range(runs, name) for name in parameter_names}
@@ -278,55 +266,27 @@ def plot_pairwise_contours(
     return figure
 
 
-def plot_predictive_nee(
-    runs: Sequence[AlgorithmRun],
-    replicated: Mapping[str, Mapping[str, np.ndarray]] | None = None,
-    replicated_label: str = "",
-) -> plt.Figure:
-    """NEE by week of year: each algorithm's 90% band and median of the
-    weekly means of :math:`\\mathcal G(\\theta)`, against the observed weekly
-    means; the calibration tower above, the held-out tower below. With
-    *replicated* (``replicated_nee``), the 90% band of the replicated data's
-    weekly means is drawn behind, labeled *replicated_label*."""
-    runs = [run for run in runs if run.predictive is not None]
+def plot_predictive_nee(runs: Sequence[AlgorithmRun]) -> plt.Figure:
+    """NEE by week of year: each algorithm's posterior predictive, the 90%
+    band and median over samples of the replicated data's weekly means,
+    against the observed weekly means; the calibration tower above, the
+    held-out tower below."""
+    runs = [run for run in runs if run.replicated is not None]
     figure, axes = plt.subplots(2, 2, figsize=(14, 9), sharex=True, squeeze=False)
     for row, (vector, vector_label) in enumerate(PREDICTIVE_VECTORS.items()):
         for column, name in enumerate(config.NEE_WINDOWS):
             ax = axes[row, column]
-            if replicated is not None:
-                observed = runs[0].predictive["observed"][vector][name]["value"]
-                band = _weekly_quantiles(replicated[vector][name], observed[TIME])
-                ax.fill_between(
-                    band.index,
-                    band[0.05],
-                    band[0.95],
-                    color="#bbbbbb",
-                    alpha=0.5,
-                    linewidth=0,
-                    label=f"{replicated_label}, replicated data, 90%",
-                )
+            observed = runs[0].predictive["observed"][vector][name]["value"]
+            weeks = week_of_year(observed[TIME])
             for run in runs:
-                observed, quantiles = weekly_nee_quantiles(run.predictive, name, vector)
-                color = run.algorithm.color
-                ax.fill_between(
-                    quantiles.index,
-                    quantiles[0.05],
-                    quantiles[0.95],
-                    color=color,
-                    alpha=0.2,
-                    linewidth=0,
-                    label=f"{run.algorithm.label}, 90%",
+                band = _band(
+                    pd.DataFrame(run.replicated[vector][name].T).groupby(weeks).mean().T
                 )
-                ax.plot(
-                    quantiles.index,
-                    quantiles[0.5],
-                    color=color,
-                    linewidth=1.5,
-                    label=f"{run.algorithm.label}, median",
-                )
+                _draw_band(ax, band.index, band, run)
+            observed_weekly = pd.Series(observed.to_numpy()).groupby(weeks).mean()
             ax.plot(
-                observed.index,
-                observed.to_numpy(),
+                observed_weekly.index,
+                observed_weekly.to_numpy(),
                 "o",
                 color="black",
                 markersize=3.5,
@@ -342,52 +302,44 @@ def plot_predictive_nee(
 
 
 def plot_predictive_pools(runs: Sequence[AlgorithmRun]) -> plt.Figure:
-    """The pool constraints: each algorithm's posterior predictive 90%
-    interval and median, side by side, against the observations with their
-    noise standard deviations (at scale 1). MODIS LAI is averaged over each
-    summer's composites, its error bar a composite's mean noise standard
-    deviation."""
-    runs = [run for run in runs if run.predictive is not None]
-    names = (
-        "modis_leaf_area_index",
-        "landtrendr_aboveground_biomass",
-        "soilgrids_soil_organic_carbon",
-    )
+    """The pool constraints: each algorithm's posterior predictive, the 90%
+    interval and median over samples of the replicated data, side by side,
+    against the observations. MODIS LAI is averaged over each summer's
+    composites, observed and replicated alike."""
+    runs = [run for run in runs if run.replicated is not None]
     figure, axes = plt.subplots(
-        1, len(names), figsize=(15, 4.5), width_ratios=(3, 2, 1), squeeze=False
+        1, len(POOL_SOURCE_NAMES), figsize=(15, 4.5), width_ratios=(3, 2, 1), squeeze=False
     )
     # Each year's slots, centered on its tick: one per algorithm, then the observation.
     offsets = np.linspace(-0.3, 0.3, len(runs) + 1)
-    for ax, name in zip(axes[0], names, strict=True):
-        observed = runs[0].predictive["observed"]["calibration"][name]
-        years, observed_values, observed_errors = _by_year(observed)
-        ticks = np.arange(len(years))
+    for ax, name in zip(axes[0], POOL_SOURCE_NAMES, strict=True):
+        observed = runs[0].predictive["observed"]["calibration"][name]["value"]
+        years = _years(observed)
+        ticks = np.arange(len(set(years)))
         for offset, run in zip(offsets, runs):
-            predicted = run.predictive["predicted"]["ensemble"]["calibration"][name]
-            quantiles = _predicted_quantiles_by_year(predicted)
+            band = _band(pd.DataFrame(run.replicated["calibration"][name].T).groupby(years).mean().T)
             ax.errorbar(
                 ticks + offset,
-                quantiles[0.5],
-                yerr=[quantiles[0.5] - quantiles[0.05], quantiles[0.95] - quantiles[0.5]],
+                band[0.5],
+                yerr=[band[0.5] - band[0.05], band[0.95] - band[0.5]],
                 fmt="s",
                 markersize=4,
                 capsize=2,
                 color=run.algorithm.color,
                 label=f"{run.algorithm.label}, median and 90%",
             )
-        ax.errorbar(
+        observed_by_year = pd.Series(np.ravel(observed.to_numpy())).groupby(years).mean()
+        ax.plot(
             ticks + offsets[-1],
-            observed_values,
-            yerr=observed_errors,
-            fmt="o",
-            markersize=4,
-            capsize=2,
+            observed_by_year.to_numpy(),
+            "o",
+            markersize=5,
             color="black",
-            label="observed ± noise sd",
+            label="observed",
         )
-        ax.set_xticks(ticks, years)
+        ax.set_xticks(ticks, [str(year) for year in observed_by_year.index])
         ax.set_title(SOURCE_LABELS[name])
-        ax.set_ylabel(observed["value"].attrs.get("units", ""))
+        ax.set_ylabel(observed.attrs.get("units", ""))
     one_legend(figure, axes)
     return figure
 
@@ -401,20 +353,12 @@ def draw_algorithm_figures(model: Model) -> None:
     directory = config.FIGURE_DIRECTORY / "algorithms" / model.name.replace("/", "_")
     labels = ", ".join(run.algorithm.label for run in runs)
     prior = prior_natural_values()
-    # The replicated data are drawn at the last algorithm's samples, the
-    # reference: MCMC once it has run, else SMC.
-    reference = [run for run in runs if run.predictive is not None][-1]
     use_project_style()
     with plt.rc_context(SLIDE_STYLE):
         for name, figure in (
             ("algorithm_marginals", plot_marginal_histograms(runs, prior)),
             ("algorithm_pairs", plot_pairwise_contours(runs, prior)),
-            (
-                "algorithm_predictive_nee",
-                plot_predictive_nee(
-                    runs, replicated_nee(model, reference), reference.algorithm.label
-                ),
-            ),
+            ("algorithm_predictive_nee", plot_predictive_nee(runs)),
             ("algorithm_predictive_pools", plot_predictive_pools(runs)),
         ):
             figure.suptitle(f"{model.name}: {labels}")
@@ -422,6 +366,55 @@ def draw_algorithm_figures(model: Model) -> None:
 
 
 # ── helpers ──
+
+
+def _noise_models(model: Model) -> dict[str, NoiseModel]:
+    """Each predicted vector's noise model under *model*'s error model, by
+    its directory name; it supplies :math:`C_k`, the scales come from the run."""
+    return {
+        "calibration": NoiseModel(fixed_posterior(model), inferred=False),
+        "validation": NoiseModel(heldout_posterior(model), inferred=False),
+    }
+
+
+def _replicated(
+    predictive: dict, noise_models: Mapping[str, NoiseModel], scales: pd.DataFrame
+) -> dict[str, dict[str, np.ndarray]]:
+    """Replicated data of every source of each predicted vector, at the
+    predictive's samples and their scales (the columns of its ``samples.csv``)."""
+    rng = np.random.default_rng(FIGURE_SEED)
+    return {
+        vector: replicated_observations(
+            predictive["predicted"]["ensemble"][vector],
+            predictive["observed"][vector],
+            noise_model,
+            {name: scales[name].to_numpy() for name in scales if name != "run_sample"},
+            rng,
+        )
+        for vector, noise_model in noise_models.items()
+    }
+
+
+def _band(values_by_sample: pd.DataFrame) -> pd.DataFrame:
+    """The :data:`BAND_QUANTILES` over samples (rows) of each column."""
+    return values_by_sample.quantile(list(BAND_QUANTILES)).T
+
+
+def _draw_band(ax, positions, band: pd.DataFrame, run: AlgorithmRun) -> None:
+    """*run*'s 90% band and median."""
+    color = run.algorithm.color
+    label = run.algorithm.label
+    ax.fill_between(
+        positions, band[0.05], band[0.95], color=color, alpha=0.2, linewidth=0, label=f"{label}, 90%"
+    )
+    ax.plot(positions, band[0.5], color=color, linewidth=1.5, label=f"{label}, median")
+
+
+def _years(observed) -> np.ndarray:
+    """Each observation's calendar year, or one label for a static source."""
+    if TIME not in observed.dims:
+        return np.array(["static"])
+    return pd.DatetimeIndex(observed[TIME].to_numpy()).year.to_numpy()
 
 
 def _shared_range(runs: Sequence[AlgorithmRun], name: str) -> tuple[float, float]:
@@ -455,13 +448,6 @@ def _draw_prior_density(ax, values, value_range) -> None:
     ax.plot(grid, density, **role_style("prior", "line"), label="prior")
 
 
-def _weekly_quantiles(values: np.ndarray, times) -> pd.DataFrame:
-    """The 5%, 50% and 95% quantiles over samples of each week's mean of
-    *values* ``(K, n)``, the windows placed by *times*."""
-    weekly = pd.DataFrame(values.T).groupby(week_of_year(times)).mean()
-    return weekly.quantile([0.05, 0.5, 0.95], axis=1).T
-
-
 def _thinned(run: AlgorithmRun, names: list[str]) -> tuple[np.ndarray, np.ndarray]:
     """*run*'s values of *names* ``(n, len(names))`` and weights, at most
     :data:`DENSITY_SAMPLE_LIMIT` samples of positive weight, evenly spaced."""
@@ -491,9 +477,7 @@ def _draw_mass_contours(ax, values, weights, x_range, y_range, run: AlgorithmRun
     ordered = np.sort(density.ravel())[::-1]
     cumulative = np.cumsum(ordered) / ordered.sum()
     levels = sorted(ordered[np.searchsorted(cumulative, mass)] for mass in CONTOUR_MASSES)
-    ax.contour(
-        x, y, density, levels=levels, colors=run.algorithm.color, linewidths=(1.0, 1.6)
-    )
+    ax.contour(x, y, density, levels=levels, colors=run.algorithm.color, linewidths=(1.0, 1.6))
     # contour draws no legend entry, so a line carries it.
     ax.plot([], [], color=run.algorithm.color, label=run.algorithm.label)
 
@@ -509,31 +493,3 @@ def _label_corner_axes(ax, row, column, n, column_name, row_name) -> None:
     elif column != row:
         ax.set_yticklabels([])
     ax.tick_params(labelsize=8)
-
-
-def _by_year(observed) -> tuple[list[str], np.ndarray, np.ndarray]:
-    """An observed source's values and noise standard deviations by year
-    (each year's means), or its one value for a static source."""
-    if TIME not in observed.dims:
-        return (
-            ["static"],
-            np.atleast_1d(float(observed["value"])),
-            np.atleast_1d(float(observed["noise_standard_deviation"])),
-        )
-    frame = observed.to_dataframe()[["value", "noise_standard_deviation"]]
-    grouped = frame.groupby(frame.index.get_level_values(TIME).year)
-    return (
-        [str(year) for year in grouped.groups],
-        grouped["value"].mean().to_numpy(),
-        grouped["noise_standard_deviation"].mean().to_numpy(),
-    )
-
-
-def _predicted_quantiles_by_year(predicted) -> dict[float, np.ndarray]:
-    """The 5%, 50% and 95% quantiles over samples of each year's mean prediction."""
-    if TIME not in predicted.dims:
-        values = predicted.to_numpy().reshape(-1, 1)
-    else:
-        yearly = predicted.groupby(f"{TIME}.year").mean(TIME)
-        values = yearly.transpose(SAMPLE, "year").to_numpy()
-    return {q: np.nanquantile(values, q, axis=0) for q in (0.05, 0.5, 0.95)}
