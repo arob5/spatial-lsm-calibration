@@ -132,11 +132,15 @@ def save_samples(
         attrs={"model": model_name, "algorithm": algorithm, **(attributes or {})},
     )
     directory.mkdir(parents=True, exist_ok=True)
-    dataset.to_netcdf(directory / "samples.nc")
+    # Written beside and then renamed, so a reader never sees half a file
+    # (a running MCMC chain rewrites them).
+    dataset.to_netcdf(directory / "samples.partial.nc")
+    (directory / "samples.partial.nc").replace(directory / "samples.nc")
     natural = prior.natural_table(posterior, theta)
     natural.index = [f"sample_{i}" for i in range(n)]
     natural["log_weight"] = log_weights
-    natural.to_csv(directory / "natural_values.csv")
+    natural.to_csv(directory / "natural_values.partial.csv")
+    (directory / "natural_values.partial.csv").replace(directory / "natural_values.csv")
 
 
 def load_samples(directory: Path) -> xr.Dataset:

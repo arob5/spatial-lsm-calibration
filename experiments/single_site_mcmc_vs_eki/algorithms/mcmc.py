@@ -24,20 +24,28 @@ steps are discarded, so the kept draws are a Metropolis chain with a fixed
 kernel.
 
 The run checkpoints every 25 steps (``checkpoint.npz``) and ``resume=True``
-continues from the last checkpoint. It writes every draw of theta
+continues from the last checkpoint, for longer than first asked if
+*n_steps* has grown (the kernel stays frozen). Every 200 steps past the
+discarded ones, and at the end, it writes every draw of theta
 (``chains.npz``: ``theta`` ``(T, C, D)``, ``log_density``, ``accepted``, and
 each scaled source's quadratic form at the chain's state, from which the
-scales' conditional is drawn) and, in ``samples.nc``, the kept draws.
+scales' conditional is drawn), in ``samples.nc``, the kept draws, and in
+``convergence.csv``, each parameter's split :math:`\\hat R` and bulk and tail
+effective sample sizes over the kept draws (ArviZ), so a run's results can
+be read while it continues.
 """
 
 import json
 from pathlib import Path
 
+import arviz
 import numpy as np
+import pandas as pd
 
 from sipnet_calibration.inference import eki_problem
 
 from .. import config
+from ..model import prior
 from ..models import Model
 from .records import Cost, append_history, load_samples, save_samples
 
@@ -45,6 +53,10 @@ __all__ = ["run_mcmc"]
 
 #: Steps between checkpoints.
 CHECKPOINT_EVERY = 25
+
+#: Steps between the snapshots of the kept draws (``samples.nc``,
+#: ``convergence.csv``) a running chain writes.
+SNAPSHOT_EVERY = 200
 
 
 def run_mcmc(
@@ -78,7 +90,8 @@ def run_mcmc(
         rng = np.random.default_rng()
         rng.bit_generator.state = json.loads(str(state.pop("rng_state")))
         cost.phases.extend(json.loads(str(state.pop("cost_phases"))))
-        print(f"resuming at step {state['step']}", flush=True)
+        _extend(state, n_steps)
+        print(f"resuming at step {state['step']} of {n_steps}", flush=True)
     else:
         rng = np.random.default_rng(config.MCMC_SEED)
         start, covariance = _starting_points(start_directory, n_chains, rng)
@@ -109,7 +122,10 @@ def run_mcmc(
             {"step": state["step"], "acceptance": acceptance, "mean_log_density": float(np.mean(state["log_p"]))},
         )
         print(f"step {state['step']}: acceptance {acceptance:.3f}", flush=True)
-    _write(model, posterior, noise_model, directory, state, start_directory)
+        if state["step"] > _discarded_steps(n_steps) and state["step"] % SNAPSHOT_EVERY == 0:
+            _write(model, posterior, noise_model, directory, state, start_directory, n_steps)
+            cost.write(directory)
+    _write(model, posterior, noise_model, directory, state, start_directory, n_steps)
     cost.write(directory)
 
 
@@ -187,17 +203,22 @@ def _load_checkpoint(path) -> dict:
     return state
 
 
-def _write(model, posterior, noise_model, directory, state, start_directory) -> None:
-    """``chains.npz`` (every draw) and ``samples.nc`` (the kept draws, with
-    each scale drawn from its conditional at the draw)."""
+def _write(model, posterior, noise_model, directory, state, start_directory, n_steps) -> None:
+    """``chains.npz`` (every draw so far), ``samples.nc`` (the kept draws,
+    with each scale drawn from its conditional at the draw) and
+    ``convergence.csv``."""
+    done = slice(0, state["step"])
+    chains = directory / "chains.partial.npz"
     np.savez(
-        directory / "chains.npz",
-        theta=state["draws"],
-        log_density=state["log_densities"],
-        accepted=state["accepted"],
-        **{f"quadratic_form_{k}": v for k, v in state["draw_forms"].items()},
+        chains,
+        theta=state["draws"][done],
+        log_density=state["log_densities"][done],
+        accepted=state["accepted"][done],
+        **{f"quadratic_form_{k}": v[done] for k, v in state["draw_forms"].items()},
     )
-    kept = slice(_discarded_steps(state["draws"].shape[0]), None)
+    chains.replace(directory / "chains.npz")
+    discarded = _discarded_steps(n_steps)
+    kept = slice(discarded, state["step"])
     theta = state["draws"][kept].reshape(-1, state["draws"].shape[2])
     forms = {k: v[kept].reshape(-1) for k, v in state["draw_forms"].items()}
     rng = np.random.default_rng(config.MCMC_SEED + 1)
@@ -219,10 +240,44 @@ def _write(model, posterior, noise_model, directory, state, start_directory) -> 
         attributes={
             "start_run": str(start_directory),
             "chains": state["draws"].shape[1],
-            "steps": state["draws"].shape[0],
-            "discarded_steps": _discarded_steps(state["draws"].shape[0]),
+            "steps": state["step"],
+            "discarded_steps": discarded,
         },
     )
+    _convergence_table(posterior, state["draws"][kept]).to_csv(directory / "convergence.csv")
+
+
+def _convergence_table(posterior, draws: np.ndarray) -> pd.DataFrame:
+    """Each parameter's split R-hat and bulk and tail ESS over *draws*
+    ``(steps, chains, D)``, in natural units."""
+    steps, chains, _ = draws.shape
+    natural = prior.natural_table(posterior, draws.reshape(steps * chains, -1))
+    rows = {}
+    for name in natural.columns:
+        values = natural[name].to_numpy().reshape(steps, chains).T
+        rows[name] = {
+            "r_hat": float(arviz.rhat(values)),
+            "bulk_ess": float(arviz.ess(values, method="bulk")),
+            "tail_ess": float(arviz.ess(values, method="tail")),
+        }
+    return pd.DataFrame(rows).T.rename_axis("parameter")
+
+
+def _extend(state, n_steps: int) -> None:
+    """Grow *state*'s per-step arrays to *n_steps* rows, for a resumed run asked to go further."""
+    extra = n_steps - state["draws"].shape[0]
+    if extra <= 0:
+        return
+    state["draws"] = np.concatenate([state["draws"], np.empty((extra, *state["draws"].shape[1:]))])
+    state["log_densities"] = np.concatenate(
+        [state["log_densities"], np.empty((extra, state["log_densities"].shape[1]))]
+    )
+    state["accepted"] = np.concatenate(
+        [state["accepted"], np.zeros((extra, state["accepted"].shape[1]), bool)]
+    )
+    state["draw_forms"] = {
+        k: np.concatenate([v, np.empty((extra, v.shape[1]))]) for k, v in state["draw_forms"].items()
+    }
 
 
 def _discarded_steps(n_steps: int) -> int:

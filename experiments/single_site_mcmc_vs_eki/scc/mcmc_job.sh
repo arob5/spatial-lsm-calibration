@@ -7,8 +7,9 @@
 #$ -j y
 # MCMC for one model, started from an importance-sampling run (FROM); it
 # resumes from its checkpoint if one exists, so resubmitting continues it.
-# MODEL, FROM and REPO come from qsub -v.
+# MODEL, FROM and REPO come from qsub -v, and optionally STEPS, the total
+# steps per chain, to continue a finished run further.
 source "$REPO/experiments/single_site_mcmc_vs_eki/scc/env.sh"
 echo "model $MODEL on $(hostname) with $SIPNET_WORKERS workers"
-step "mcmc" calibrate --model "$MODEL" --algorithm mcmc --from "$FROM" --resume
+step "mcmc" calibrate --model "$MODEL" --algorithm mcmc --from "$FROM" --resume ${STEPS:+--steps "$STEPS"}
 step "predict mcmc" predict --model "$MODEL" --run mcmc
