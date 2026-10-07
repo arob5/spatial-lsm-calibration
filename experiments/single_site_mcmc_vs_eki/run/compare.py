@@ -17,7 +17,9 @@ Output data
 Under ``comparison/`` beside ``config.RUNS_DIRECTORY`` (``output/comparison``
 by default): ``cost.csv``, ``parameters.csv``, ``against_reference.csv``,
 ``noise_scales.csv``, ``reweighting.csv`` and ``heldout_scores.csv``, as
-``analysis/compare.py``'s tables of those names describe them.
+``analysis/compare.py``'s tables of those names describe them; and, per
+model, ``figures/algorithms.py``'s figures under
+``config.FIGURE_DIRECTORY / "algorithms"`` (``--no-figures`` skips them).
 
 Usage
 -----
@@ -33,6 +35,8 @@ import pandas as pd
 
 from .. import config
 from ..analysis.compare import comparison_tables
+from ..figures.algorithms import draw_algorithm_figures
+from ..models import MODEL_NAMES, Model
 
 __all__ = ["COMPARISON_DIRECTORY", "main"]
 
@@ -42,7 +46,9 @@ COMPARISON_DIRECTORY = config.RUNS_DIRECTORY.parent / "comparison"
 
 def main(argv: list[str] | None = None) -> int:
     """Build every comparison table, write it and print it."""
-    argparse.ArgumentParser(description=__doc__.split("\n")[0]).parse_args(argv)
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser.add_argument("--no-figures", action="store_true", help="write the tables only")
+    arguments = parser.parse_args(argv)
     tables = comparison_tables(config.RUNS_DIRECTORY)
     COMPARISON_DIRECTORY.mkdir(parents=True, exist_ok=True)
     with pd.option_context(
@@ -52,6 +58,9 @@ def main(argv: list[str] | None = None) -> int:
             table.to_csv(COMPARISON_DIRECTORY / f"{name}.csv")
             print(f"\n{name}\n{table.to_string()}")
     print(f"\nwrote {COMPARISON_DIRECTORY}")
+    if not arguments.no_figures:
+        for name in MODEL_NAMES:
+            draw_algorithm_figures(Model.parse(name))
     return 0
 
 

@@ -50,12 +50,19 @@ from sipnet_calibration.plotting.style import role_style, use_project_style
 from .. import config
 from ..model import inputs
 from ..model.outputs import load_predictive
-from .common import NEE_TITLES, SOURCE_LABELS, one_legend, save_figure
+from .common import (
+    NEE_TITLES,
+    PARAMETER_TITLES,
+    SLIDE_STYLE,
+    SOURCE_LABELS,
+    one_legend,
+    save_figure,
+    week_of_year,
+    weekly_nee_quantiles,
+)
 
 __all__ = [
-    "PARAMETER_TITLES",
     "PREDICTIVES",
-    "SLIDE_STYLE",
     "draw_prior_predictive_figures",
     "plot_coverage",
     "plot_daily_trajectories",
@@ -64,7 +71,6 @@ __all__ = [
     "plot_nee_windows",
     "plot_pool_observations",
     "plot_prior_marginals",
-    "weekly_nee_quantiles",
 ]
 
 #: How each predictive is drawn, by its kind: its ensemble's role, its
@@ -93,36 +99,6 @@ PREDICTIVES = frozendict(
 SINGLE_RUN_LABEL = "one run (prior center)"
 OBSERVED_LABEL = "observed (US-Ha1, constraints)"
 HELD_OUT_LABEL = "held out (US-xHA)"
-
-#: Font sizes for slides.
-SLIDE_STYLE = {
-    "font.size": 13,
-    "axes.titlesize": 13,
-    "axes.labelsize": 12,
-    "xtick.labelsize": 11,
-    "ytick.labelsize": 11,
-    "legend.fontsize": 12,
-}
-
-#: Each calibrated parameter's panel title, with its units.
-PARAMETER_TITLES = {
-    "photosynthetic_capacity": "Photosynthetic capacity P\n(nmol g⁻¹ s⁻¹)",
-    "respiration_share": "Foliar respiration share ρ",
-    "optimum_photosynthesis_temperature": "Optimum photosynthesis\ntemperature (°C)",
-    "half_saturation_light": "Half-saturation light\n(mol m⁻² d⁻¹)",
-    "soil_water_holding_capacity": "Soil water holding\ncapacity (cm)",
-    "leaf_on_growth": "Leaf growth at leaf-on\n(g C m⁻²)",
-    "leaf_on_growing_degree_days": "Leaf-on growing\ndegree-days (°C d)",
-    "allocation.leaf": "Allocation: leaf",
-    "allocation.wood": "Allocation: wood",
-    "allocation.fine_root": "Allocation: fine root",
-    "allocation.coarse_root": "Allocation: coarse root",
-    "wood_respiration_rate_at_10c": "Wood respiration rate\nat 10 °C (yr⁻¹)",
-    "soil_respiration_flux_at_10c": "Soil respiration flux\nat 10 °C (g C m⁻² yr⁻¹)",
-    "soil_respiration_q10": "Soil respiration Q₁₀",
-    "initial_wood_carbon": "Initial wood carbon\n(kg C m⁻²)",
-    "initial_soil_organic_carbon": "Initial soil carbon\n(kg C m⁻²)",
-}
 
 #: g C m-2 in one umol CO2 m-2 s-1 sustained for one second.
 _GRAMS_CARBON_PER_UMOL_SECOND = 12.011e-6
@@ -274,26 +250,6 @@ def plot_nee_seasonal_cycle(outputs: dict, *, kind: str = "prior") -> plt.Figure
         "the observed windows"
     )
     return figure
-
-
-def weekly_nee_quantiles(outputs: dict, name: str) -> tuple[pd.Series, pd.DataFrame]:
-    """One NEE source by week of year: the observed means, and the predictive's quantiles.
-
-    The observations are averaged by the week of each window's end, and each
-    member's predictions over the same windows; the quantiles, columns 0.05,
-    0.25, 0.5, 0.75 and 0.95, are over the members' weekly means.
-    """
-    observed = outputs["observed"]["calibration"][name]["value"]
-    predicted = outputs["predicted"]["ensemble"]["calibration"][name]
-    weeks = _week_of_year(observed[TIME])
-    observed_weekly = pd.Series(observed.to_numpy()).groupby(weeks).mean()
-    predicted_weekly = (
-        pd.DataFrame(predicted.transpose(SAMPLE, TIME).to_numpy().T)
-        .groupby(weeks)
-        .mean()
-    )
-    quantiles = predicted_weekly.quantile([0.05, 0.25, 0.5, 0.75, 0.95], axis=1).T
-    return observed_weekly, quantiles
 
 
 def plot_nee_annual(outputs: dict, *, kind: str = "prior") -> plt.Figure:
@@ -545,12 +501,6 @@ def _draw_static(ax, outputs: dict, name: str, kind: str) -> None:
     ax.set_xlim(-0.5, 1.0)
     ax.set_xticks([0.0, 0.5], ["model", "observed"])
     ax.set_ylabel(f"soil carbon ({observed['value'].attrs.get('units')} C)")
-
-
-def _week_of_year(times) -> np.ndarray:
-    """The ISO week of each window's end, at most 52."""
-    weeks = pd.DatetimeIndex(np.asarray(times)).isocalendar().week.to_numpy()
-    return np.minimum(weeks, 52)
 
 
 def _observed_annual_nee(series_name: str) -> pd.Series:

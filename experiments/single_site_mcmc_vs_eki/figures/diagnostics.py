@@ -31,8 +31,7 @@ from sipnet_calibration.plotting.style import role_style, use_project_style
 
 from .. import config
 from ..model.outputs import load_diagnostics, run_directory
-from .common import NEE_TITLES, SOURCE_LABELS, save_figure
-from .prior_predictive import SLIDE_STYLE
+from .common import NEE_TITLES, SLIDE_STYLE, SOURCE_LABELS, save_figure
 
 __all__ = [
     "CHECK_ROW_LABELS",
