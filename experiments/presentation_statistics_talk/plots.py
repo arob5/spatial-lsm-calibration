@@ -510,7 +510,7 @@ def _noise_scale_densities(runs: dict[str, tuple[Path, str]]) -> Figure:
     law = scipy.stats.invgamma(
         experiment_config.NOISE_SCALE_SHAPE, scale=noise.noise_scale_prior_scale()
     )
-    figure, axes = plt.subplots(1, 3, figsize=(15, 4.8))
+    figure, axes = plt.subplots(1, 3, figsize=(15, 5.4))
     for ax, (name, title) in zip(axes, NOISE_SCALE_TITLES.items(), strict=True):
         draws = {}
         for label, (directory, color) in runs.items():
@@ -530,7 +530,8 @@ def _noise_scale_densities(runs: dict[str, tuple[Path, str]]) -> Figure:
         ax.set_xlabel(r"$s_k^2$")
         ax.set_yticks([])
         ax.spines["left"].set_visible(False)
-    axes[0].legend(frameon=False, fontsize="small")
+    handles, labels = axes[0].get_legend_handles_labels()
+    figure.legend(handles, labels, loc="outside lower center", ncol=len(labels), frameon=False)
     return figure
 
 

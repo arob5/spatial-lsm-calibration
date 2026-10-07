@@ -147,7 +147,7 @@ def _posterior_predictive_nee(run) -> plt.Figure:
 
 def _error_models_nee(runs: dict) -> plt.Figure:
     """Each error model's posterior predictive weekly means against the observed."""
-    figure, axes = plt.subplots(1, 2, figsize=(15, 5.5))
+    figure, axes = plt.subplots(1, 2, figsize=(15, 6.2))
     for ax, name in zip(axes, NEE_PANELS, strict=True):
         observed = next(iter(runs.values())).predictive["observed"]["calibration"][name]["value"]
         for error_model, run in runs.items():
@@ -158,7 +158,7 @@ def _error_models_nee(runs: dict) -> plt.Figure:
                 ERROR_MODEL_LABELS[error_model],
             )
         _finish_panel(ax, name, observed)
-    _legend(figure, axes)
+    _legend(figure, axes, n_columns=4)
     return figure
 
 
@@ -204,14 +204,14 @@ def _finish_panel(ax, name: str, observed) -> pd.Series:
     return weekly
 
 
-def _legend(figure, axes) -> None:
-    """One legend below the panels, deduplicated."""
+def _legend(figure, axes, n_columns: int | None = None) -> None:
+    """One legend below the panels, deduplicated, in *n_columns* (one row by default)."""
     entries = {}
     for ax in np.ravel(axes):
         for handle, label in zip(*ax.get_legend_handles_labels(), strict=True):
             entries.setdefault(label, handle)
     figure.legend(entries.values(), entries.keys(), loc="outside lower center",
-                  ncol=len(entries), frameon=False)
+                  ncol=n_columns or len(entries), frameon=False)
 
 
 def _save(figure: plt.Figure, name: str) -> None:
