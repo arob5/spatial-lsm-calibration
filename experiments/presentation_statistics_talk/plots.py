@@ -54,6 +54,8 @@ __all__ = [
     "algorithm_pairs",
     "box_model",
     "cost_and_accuracy",
+    "eki_gains",
+    "eki_gains_table",
     "eddy_covariance",
     "forward_map_schematic",
     "importance_weights",
@@ -154,6 +156,12 @@ NOISE_SCALE_ALGORITHMS = {
     "EKI, per-particle gain": ("eki_gibbs_per_particle", "#D55E00"),
     "SMC": ("eki_gibbs_common_smc", "#0072B2"),
     "MCMC": ("mcmc", "#009E73"),
+}
+
+#: The two gains of EKI with noise scales: their run and color.
+EKI_GAINS = {
+    "common gain": ("eki_gibbs_common", "#E69F00"),
+    "per-particle gain": ("eki_gibbs_per_particle", "#D55E00"),
 }
 
 #: The tables ``run/compare.py`` writes.
@@ -440,6 +448,51 @@ def cost_and_accuracy() -> Figure:
     return figure
 
 
+def eki_gains(model_name: str = ALGORITHM_COMPARISON_MODEL) -> Figure:
+    """Per parameter, each gain's posterior standard deviation over MCMC's,
+    and its mean's distance from MCMC's in MCMC standard deviations."""
+    against = _comparison("against_reference")
+    against = against[(against.model == model_name) & (against.parameter != "theta")]
+    names = [name for name in PARAMETER_TITLES if name in set(against.parameter)]
+    positions = np.arange(len(names))[::-1]
+    figure, axes = plt.subplots(1, 2, figsize=(14, 5.6), sharey=True)
+    columns = {"sd_ratio": "sd, over MCMC's", "mean_difference": "mean's distance from MCMC's (MCMC sds)"}
+    for ax, (column, label) in zip(axes, columns.items(), strict=True):
+        for offset, (gain, (run, color)) in zip((0.15, -0.15), EKI_GAINS.items()):
+            values = against[against.run == run].set_index("parameter").loc[names, column]
+            ax.scatter(values, positions + offset, color=color, s=45, label=gain, zorder=3)
+        ax.axvline(1.0, color="#999999", linewidth=0.8, zorder=0)
+        ax.set_xscale("log")
+        ax.set_xlabel(label)
+        ax.grid(axis="y", color="#eeeeee", zorder=0)
+    axes[0].set_xticks([0.5, 1, 2, 4], ["0.5", "1", "2", "4"], minor=False)
+    axes[0].set_xticks([], minor=True)
+    axes[1].set_xticks([0.03, 0.1, 0.3, 1, 3, 10], ["0.03", "0.1", "0.3", "1", "3", "10"], minor=False)
+    axes[1].set_xticks([], minor=True)
+    axes[0].set_yticks(positions, [_one_line_title(name) for name in names], fontsize="medium")
+    handles, labels = axes[0].get_legend_handles_labels()
+    figure.legend(handles, labels, loc="outside lower center", ncol=2, frameon=False,
+                  fontsize="medium")
+    return figure
+
+
+def eki_gains_table(model_name: str = ALGORITHM_COMPARISON_MODEL) -> str:
+    """Each gain's SIPNET runs, Gaussian KL divergence from MCMC, and the
+    effective sample size of the importance-sampling run it seeds, as a
+    Markdown table."""
+    cost = _comparison("cost").set_index(["model", "run"])["sipnet_runs"]
+    against = _comparison("against_reference")
+    kl = against[against.parameter == "theta"].set_index(["model", "run"])["gaussian_kl"]
+    ess = _comparison("reweighting").set_index(["model", "run"])["effective_sample_size"]
+    rows = {"SIPNET runs": [], "KL from MCMC": [], "IS effective sample size (of 1,000)": []}
+    for run, _ in EKI_GAINS.values():
+        rows["SIPNET runs"].append(f"{cost[model_name, run]:,}")
+        rows["KL from MCMC"].append(f"{kl[model_name, run]:.0f}")
+        rows["IS effective sample size (of 1,000)"].append(f"{ess[model_name, f'{run}_is']:.1f}")
+    frame = pd.DataFrame(rows, index=list(EKI_GAINS)).reset_index(names="")
+    return _markdown_table(frame)
+
+
 def importance_weights(model_name: str = ALGORITHM_COMPARISON_MODEL) -> Figure:
     """The normalized importance weights of the IS run seeded by EKI, largest
     first, and their effective sample size."""
@@ -554,6 +607,11 @@ def _convergence(directory: Path) -> tuple[pd.DataFrame, str]:
 def _comparison(name: str) -> pd.DataFrame:
     """The comparison table ``run/compare.py`` wrote as *name*."""
     return pd.read_csv(COMPARISON_DIRECTORY / f"{name}.csv")
+
+
+def _one_line_title(name: str) -> str:
+    """A parameter's panel title on one line, without its units."""
+    return PARAMETER_TITLES[name].replace("\n", " ").split(" (")[0]
 
 
 def _markdown_table(frame: pd.DataFrame) -> str:

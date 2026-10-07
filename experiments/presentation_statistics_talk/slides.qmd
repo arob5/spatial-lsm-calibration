@@ -628,26 +628,6 @@ Details in the appendix
   Metropolis–Hastings invariant for $\pi_\beta$
 - Importance sampling = one stage, no moves
 
-## EKI-initialized MCMC
-
-::: {.corner-note}
-Details in the appendix
-:::
-
-- Random-walk Metropolis on $\pi(\theta)$, $C$ chains in lockstep: one batch
-  of $C$ runs per step
-
-. . .
-
-- **Start:** draws resampled from an importance-sampling run
-- **Proposal covariance:** from the EKI ensemble, adapted during burn-in
-- **Then frozen:** kept draws are a fixed-kernel Metropolis chain
-
-. . .
-
-- Inferred noise: chain on the $\theta$-marginal; each draw carries an $s$
-  from its conditional
-
 # Results: model interpretation
 
 ## Posterior predictive: NEE
@@ -724,6 +704,21 @@ Long memory, inferred noise; 1,000 draws from a Student-t fitted to EKI
 
 ```{python}
 plots.importance_weights();
+```
+
+## EKI: common and per-particle gain {.nostretch}
+
+::: {.corner-note}
+Long memory, inferred noise
+:::
+
+```{python}
+plots.eki_gains();
+```
+
+```{python}
+#| output: asis
+print(plots.eki_gains_table())
 ```
 
 ## Noise scales: EKI, SMC and MCMC
