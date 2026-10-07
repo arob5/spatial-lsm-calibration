@@ -312,29 +312,6 @@ $$
 - Scales $s_k$ on NEE night, NEE day, LAI; $s_k^2 = 1$ for biomass and soil
   carbon (too few data)
 
-## NEE: the error is discrepancy {.big-table}
-
-::: {.corner-note}
-µmol m⁻² s⁻¹; measurement error in the appendix
-:::
-
-| | night | day |
-|---|---|---|
-| tower's own measurement error (median) | 0.7 | 1.0 |
-| residual size, first calibration | 1.6 | 3.2 |
-
-. . .
-
-Discrepancy: a Gaussian process in time,
-
-$$
-\operatorname{Cov}(\delta_W, \delta_{W'}) = v^\delta\, \rho(t_W - t_{W'}),
-\qquad \rho(0) = 1
-$$
-
-- $v^\delta$: the size at one window, **fixed**
-- $\rho$: the error's **memory**, which the three error models differ in
-
 ## Three NEE error models
 
 ::: {.fragment}
@@ -379,11 +356,11 @@ $$
 :::
 
 ::: {.fragment}
-- Weights sum to 1: same per-window variance $v^\delta_k$, **different memory**
-- Adding a term moves variance from short to long memory; it adds none
+- Weights sum to 1: same per-window variance $v^\delta_k$, **different memory/lengthscale**
+- Adding a term moves variance from short to long memory
 :::
 
-## The error models in numbers {.nowrap-table}
+## Error Models: Specific Values {.nowrap-table}
 
 ::: {.corner-note}
 Timescale: where a term's correlation falls to $e^{-1} \approx 0.37$;
@@ -406,22 +383,8 @@ residuals
 . . .
 
 - **Short memory:** windows a few days apart are nearly independent
-- **Long memory:** a misfit lasting a month stays strongly correlated, so is
-  cheap
+- **Long memory:** a misfit lasting a month stays strongly correlated
 - **Recurring bias:** the same date a year later is correlated again
-
-## LAI, biomass and soil carbon
-
-::: {.corner-note}
-Formulas in the appendix
-:::
-
-- **LAI:** product's spread (floored) + discrepancy correlated within a
-  summer (about a month)
-- **Biomass:** satellite error and carbon-fraction error, each shared across
-  years, + independent discrepancy
-- **Soil carbon:** discrepancy 25% of the stock (a 0–200 cm stock vs one
-  model pool)
 
 # Harvard Forest: the prior
 
@@ -844,6 +807,13 @@ for every $L$
 $\sigma_i$, $\sigma_j$, $\sigma$: each product's reported standard deviations;
 $t_i$ in days
 :::
+
+- **LAI:** product's spread (floored) + discrepancy correlated within a
+  summer (about a month)
+- **Biomass:** satellite error and carbon-fraction error, each shared across
+  years, + independent discrepancy
+- **Soil carbon:** discrepancy 25% of the stock (a 0–200 cm stock vs one
+  model pool)
 
 $$
 \begin{aligned}
