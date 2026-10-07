@@ -76,6 +76,11 @@ the caches, temporary files and the storage-backed data
 the job logs go to `/projectnb/dietzelab/arober/hf_runs/logs`. Each job runs
 on one node, its SIPNET runs on `$NSLOTS` local workers.
 
+The environment's bytecode must be compiled once (`uv sync --frozen
+--compile-bytecode`, or `python -m compileall` over `.venv`): every batch of
+runs starts its workers afresh, and on the SCC's file system importing the
+packages uncompiled takes about 50 s per worker, against 3-9 s compiled.
+
 ```bash
 bash experiments/single_site_mcmc_vs_eki/scc/submit_all.sh
 ```

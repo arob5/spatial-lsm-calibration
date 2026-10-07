@@ -8,7 +8,6 @@ export TMPDIR=$SCC_ROOT/tmp
 export XDG_CACHE_HOME=$SCC_ROOT/tmp/xdg_cache
 export MPLCONFIGDIR=$SCC_ROOT/tmp/matplotlib
 export JAX_COMPILATION_CACHE_DIR=$SCC_ROOT/jax_cache
-export PYTHONDONTWRITEBYTECODE=1
 # One thread per process: the SIPNET workers are the parallelism.
 export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
 export SIPNET_WORKERS=${NSLOTS:-4}
