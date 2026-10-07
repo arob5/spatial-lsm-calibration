@@ -1,0 +1,52 @@
+---
+title: "Bayesian Calibration of a Land Surface Model"
+subtitle: "SIPNET at Harvard Forest"
+author: "Andrew Roberts"
+date: today
+format:
+  revealjs:
+    width: 1600
+    height: 900
+    slide-number: true
+    code-line-numbers: false
+    code-overflow: wrap
+    highlight-style: github
+    fig-align: center
+    html-math-method: mathjax
+    css: slides.css
+    mermaid-format: svg
+jupyter: python3
+execute:
+  echo: false
+  warning: false
+---
+
+```{python}
+#| include: false
+import sys
+from pathlib import Path
+
+import matplotlib.pyplot as plt
+
+# The experiment is a package under the repository root, which a document
+# rendered from this directory does not have on its path.
+REPOSITORY = Path.cwd().resolve().parents[1]
+if str(REPOSITORY) not in sys.path:
+    sys.path.insert(0, str(REPOSITORY))
+
+from sipnet_calibration.plotting.style import use_project_style
+
+# The project style, scaled up for slides.
+use_project_style()
+plt.rcParams.update({
+    "figure.dpi": 200,
+    "figure.figsize": (14, 7),
+    "font.size": 15,
+    "axes.titlesize": "large",
+    "axes.labelsize": "medium",
+    "xtick.labelsize": "small",
+    "ytick.labelsize": "small",
+    "legend.fontsize": "small",
+    "legend.title_fontsize": "medium",
+})
+```
