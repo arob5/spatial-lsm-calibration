@@ -553,223 +553,155 @@ scales from their prior
 
 # Inference Algorithms
 
-## One Gaussian conditioning step
-
-Under $\theta \sim \pi_0$ and $y = \mathcal G(\theta) + \varepsilon$, approximate
-the joint law of $(\theta, y)$ by a Gaussian with its first two moments:
-
-$$
-\begin{pmatrix} \theta \\ y \end{pmatrix}
-\;\approx\;
-\mathcal N\!\left(
-\begin{pmatrix} m_\theta \\ m_g \end{pmatrix},
-\begin{pmatrix} C_{\theta\theta} & C_{\theta g} \\ C_{g\theta} & C_{gg} + \Sigma \end{pmatrix}
-\right),
-\qquad
-\begin{aligned}
-m_\theta &= \mathbb E[\theta], & C_{\theta\theta} &= \operatorname{Cov}(\theta), \\
-m_g &= \mathbb E[\mathcal G(\theta)], & C_{gg} &= \operatorname{Cov}\big(\mathcal G(\theta)\big), \\
-& & C_{\theta g} &= \operatorname{Cov}\big(\theta, \mathcal G(\theta)\big)
-\end{aligned}
-$$
-
-Then condition on the observed $y$:
-
-$$
-\theta \mid y \;\approx\; \mathcal N\big(m_\theta + K(y - m_g),\ C_{\theta\theta} - K C_{g\theta}\big),
-\qquad
-K = C_{\theta g}\,(C_{gg} + \Sigma)^{-1}
-$$
-
-Exact when $\mathcal G$ is linear and $\pi_0$ Gaussian.
-
-## The ensemble form
-
-Draw $\theta_j \sim \pi_0$ and run $g_j = \mathcal G(\theta_j)$, $j = 1, \dots, J$;
-estimate the moments by the ensemble's, $\hat C_{\theta g}$ and $\hat C_{gg}$.
-Then move each particle:
-
-$$
-\theta_j' = \theta_j + \hat K\big(y - g_j - \varepsilon_j\big),
-\qquad
-\varepsilon_j \sim \mathcal N(0, \Sigma),
-\qquad
-\hat K = \hat C_{\theta g}\,(\hat C_{gg} + \Sigma)^{-1}
-$$
-
-- If $(\theta, y)$ is jointly Gaussian with the exact moments, $\theta_j'$ is
-  an exact draw of $\theta \mid y$ (Matheron's rule)
-- One batch of $J$ model runs, all in parallel, and no gradients
-
-## EKI: iterating by tempering
-
-$$
-\pi_\varphi(\theta) \;\propto\; \pi_0(\theta)\, \mathcal N\big(y;\ \mathcal G(\theta),\ \Sigma\big)^{\varphi},
-\qquad \varphi: 0 \to 1,
-\qquad
-\mathcal N(y; \mathcal G, \Sigma)^{\Delta\varphi} \propto \mathcal N(y; \mathcal G, \Sigma/\Delta\varphi)
-$$
-
-Each increment is one conditioning step, with the noise inflated and the
-moments re-estimated at the current ensemble:
-
-$$
-\theta_j \leftarrow \theta_j + \hat C_{\theta g}\big(\hat C_{gg} + \Sigma/\Delta\varphi\big)^{-1}\big(y - g_j - \eta_j\big),
-\qquad
-\eta_j \sim \mathcal N(0, \Sigma/\Delta\varphi)
-$$
-
-$$
-\Delta\varphi = \sup\Big\{\delta \le 1 - \varphi :\ \mathrm{ESS}\big(e^{-\delta \Phi_j}\big) \ge J/2\Big\},
-\qquad
-\Phi_j = \tfrac12\, \|y - g_j\|^2_{\Sigma^{-1}}
-$$
-
-- One batch of $J$ runs per stage; repeated until $\varphi = 1$
-- Exact for a linear $\mathcal G$ and Gaussian prior as $J \to \infty$;
-  otherwise an approximation, not a consistent sampler
-
-## Unknown noise scales
-
-$$
-\pi_\varphi(\theta, s) \;\propto\; \pi_0(\theta) \prod_k \mathrm{IG}(s_k;\, a, b)\;
-\mathcal N\big(y_k;\ \mathcal G_k(\theta),\ s_k C_k\big)^{\varphi}
-$$
-
-With $q_k(\theta) = \|y_k - \mathcal G_k(\theta)\|^2_{C_k^{-1}}$ and $n_k = \dim y_k$,
-the conjugacy gives two closed forms:
-
-$$
-s_k \mid \theta, y \;\sim\; \mathrm{IG}\Big(a + \frac{\varphi n_k}{2},\ b + \frac{\varphi\, q_k(\theta)}{2}\Big),
-\qquad
-p(y_k \mid \theta) \;\propto\; |C_k|^{-1/2} \Big(b + \frac{q_k(\theta)}{2}\Big)^{-(a + n_k/2)}
-$$
-
-- The conditional of $s$: an exact Gibbs step, with no model run
-- The marginal in $\theta$: a Student-t, $t_{2a}\big(\mathcal G_k(\theta),\ \tfrac{b}{a} C_k\big)$
-
-## EKI with Gibbs noise updates
+## Ensemble Kalman inversion: one update
 
 ::: {.corner-note}
-After Botha et al. (2023), *Inverse Problems* 39, 125014, with the noise
-step an exact draw
+$J$: ensemble size (100 here)
 :::
 
-One stage $\varphi \to \varphi' = \varphi + \Delta\varphi$, at particles
-$(\theta_j, s_j)$ with predictions $g_j$:
+- Ensemble $\theta^{(1)}, \dots, \theta^{(J)}$; run $g^{(j)} = \mathcal G(\theta^{(j)})$:
+  one parallel batch
 
-1. **Increment.** The largest $\Delta\varphi$ keeping $\mathrm{ESS}(w) \ge J/2$,
-   with weights the ratio of the $s$-marginal tempered targets:
-   $$
-   \log w_j = \sum_k \Big[A_k(\varphi) \log B_{jk}(\varphi) - A_k(\varphi') \log B_{jk}(\varphi')\Big],
-   $$
-   $$
-   A_k(\varphi) = a + \tfrac{\varphi n_k}{2},
-   \qquad
-   B_{jk}(\varphi) = b + \tfrac{\varphi\, q_k(\theta_j)}{2}
-   $$
-2. **$\theta$ step.** The Kalman update over $\Delta\varphi$ with noise
-   covariance $\Sigma(s) = \operatorname{blockdiag}(s_k C_k)$, in one of two
-   versions
-3. **Evaluate** $g_j = \mathcal G(\theta_j)$: the stage's one batch of runs
-4. **$s$ step.** $s_{jk} \sim \mathrm{IG}\big(a + \varphi' n_k/2,\ b + \varphi' q_k(\theta_j)/2\big)$
+. . .
 
-## Two $\theta$ steps
+- Fit a joint Gaussian to $(\theta, g)$ by the ensemble's moments; condition
+  on $y$:
 
-With $T, U$ the centered ensembles of $\theta$ and $g$ over $\sqrt{J - 1}$
-(rows are particles), so that $\hat C_{\theta g} = T^\top U$ and
-$\hat C_{gg} = U^\top U$:
-
+::: {.algorithm-box}
 $$
-\begin{aligned}
-\textbf{common:}\quad
-\theta_j' &= \theta_j + T^\top U\big(U^\top U + \Sigma(\bar s)/\Delta\varphi\big)^{-1}\big(y - g_j - \eta_j\big), \\
-&\qquad \eta_j \sim \mathcal N\big(0, \Sigma(\bar s)/\Delta\varphi\big),
-\qquad \bar s_k = \Big(\tfrac1J \textstyle\sum_j s_{jk}^{-1}\Big)^{-1} \\[6pt]
-\textbf{per-particle:}\quad
-\theta_j' &= \theta_j + \tilde T^\top \tilde U\big(\tilde U^\top \tilde U + \Sigma(s_j)/\Delta\varphi\big)^{-1}\big(y - g_j - \eta_j\big), \\
-&\qquad \eta_j \sim \mathcal N\big(0, \Sigma(s_j)/\Delta\varphi\big)
-\end{aligned}
-$$
-
-- $\tilde T, \tilde U$: $T$ and $U$ less their least-squares fit on the
-  centered $\log s_j$, an estimate of $\mathbb E[\operatorname{Cov}(\theta, g \mid s)]$
-- Neither is exact, even for a linear $\mathcal G$: the ensemble's covariance
-  is the $\theta$-marginal's, which exceeds $\mathbb E[\operatorname{Cov}(\theta \mid s)]$
-  by $\operatorname{Cov}(\mathbb E[\theta \mid s])$
-
-## Correcting EKI: importance sampling
-
-The target is the posterior of $\theta$, $\pi(\theta) \propto \pi_0(\theta)\, L(\theta)$,
-with $L$ Gaussian (fixed noise) or the Student-t marginal (inferred noise).
-Fit a base density to EKI's final ensemble:
-
-$$
-q = (1 - \alpha)\; t_\nu\big(\hat m,\ \kappa\, \hat C\big) + \alpha\, \pi_0,
-\qquad \nu = 5,\ \ \kappa = 1.5,\ \ \alpha = 0.1
-$$
-
-$$
-\theta_m \sim q,
+\mathrm{EKI\text{-}UPDATE}\big(\theta^{(j)} \mid s, \Delta\beta\big)
+= \theta^{(j)} + \hat C_{\theta g}\Big(\hat C_{gg} + \tfrac{R(s)}{\Delta\beta}\Big)^{-1}\big(y - g^{(j)} - \eta^{(j)}\big),
 \qquad
-\tilde w_m = \frac{\pi_0(\theta_m)\, L(\theta_m)}{q(\theta_m)},
-\qquad
-W_m = \frac{\tilde w_m}{\sum_{m'} \tilde w_{m'}},
+\eta^{(j)} \sim \mathcal N\Big(0, \tfrac{R(s)}{\Delta\beta}\Big)
 $$
+:::
 
-$$
-\mathrm{ESS} = \frac{1}{\sum_m W_m^2},
-\qquad
-\hat Z = \frac1M \sum_m \tilde w_m
-$$
+. . .
 
-- The prior component bounds the weights: $\tilde w \le L / \alpha$
-- One batch of $M$ runs; consistent as $M \to \infty$ whatever EKI's bias
+- $\Delta\beta = 1$: Gaussian conditioning, $K = \hat C_{\theta g}(\hat C_{gg} + R)^{-1}$
+- Exact for linear $\mathcal G$, Gaussian prior, $J \to \infty$
+- No gradients; no likelihood evaluations
 
-## Correcting EKI: tempered SMC
+## EKI: tempering
 
 $$
-\pi_\beta(\theta) \;\propto\; q(\theta)^{1 - \beta}\, \big(\pi_0(\theta)\, L(\theta)\big)^{\beta},
-\qquad \beta: 0 \to 1,
-\qquad
-\ell = \log \pi_0 + \log L - \log q
+\pi_\beta(\theta) \;\propto\; \pi_0(\theta)\; \mathcal N\big(y \mid \mathcal G(\theta),\ R\big)^{\beta},
+\qquad \beta: 0 \to 1
 $$
 
-From $\theta_i \sim q$, $W_i = 1/n$, each stage $t$:
+. . .
 
-1. **Increment:** the largest $\delta_t$ with
-   $\mathrm{CESS}(\delta) = \dfrac{\big(\sum_i W_i e^{\delta \ell_i}\big)^2}{\sum_i W_i e^{2\delta \ell_i}} \ge \tfrac12$
-2. **Reweight:** $W_i \propto W_i\, e^{\delta_t \ell_i}$, and
-   $\log \hat Z \mathrel{+}= \log \sum_i W_i e^{\delta_t \ell_i}$
-3. **Resample** systematically
-4. **Move** by Metropolis–Hastings steps invariant for $\pi_{\beta_t}$,
-   proposing an independent $t_5(\hat m_t, \hat C_t)$ draw or a random walk
-   $\theta + \lambda_t \hat L_t z$, until 99% of the samples have moved
+- An increment $\Delta\beta$ = conditioning with noise inflated to $R/\Delta\beta$:
+  $\ \mathcal N(y \mid \mathcal G, R)^{\Delta\beta} \propto \mathcal N(y \mid \mathcal G, R/\Delta\beta)$
 
-Importance sampling is the one-stage case, $\delta_1 = 1$ with no resampling
-or moves.
+. . .
+
+::: {.algorithm-box}
+$\theta^{(j)} \sim \pi_0$, $\ \beta = 0$; **while** $\beta < 1$:
+
+1. $\Delta\beta$: adaptive, keeping the ESS of weights $e^{-\Delta\beta\, \Phi_j}$ at $J/2$, $\ \Phi_j = \tfrac12\|y - g^{(j)}\|^2_{R^{-1}}$
+2. $\theta^{(j)} \leftarrow \mathrm{EKI\text{-}UPDATE}\big(\theta^{(j)} \mid s = 1, \Delta\beta\big)$ $\quad$ (one batch of $J$ runs)
+3. $\beta \leftarrow \beta + \Delta\beta$
+:::
+
+. . .
+
+- Few stages, each one parallel batch
+- An approximation for nonlinear $\mathcal G$, not a consistent sampler
+
+## EKI with unknown noise scales
+
+::: {.corner-note}
+After Botha et al. (2023), *Inverse Problems* 39, 125014
+:::
+
+$$
+\pi_\beta(\theta, s) \;\propto\; \pi_0(\theta)\, p(s)\; \mathcal N\big(y \mid \mathcal G(\theta),\ R(s)\big)^{\beta}
+$$
+
+. . .
+
+Alternate a Kalman step in $\theta$ and a Gibbs step in $s$:
+
+::: {.algorithm-box}
+$(\theta^{(j)}, s^{(j)}) \sim \pi_0 \times p$, $\ \beta = 0$; **while** $\beta < 1$:
+
+1. $\Delta\beta$: adaptive, as before
+2. $\theta^{(j)} \leftarrow \mathrm{EKI\text{-}UPDATE}\big(\theta^{(j)} \mid s^{(j)}, \Delta\beta\big)$ $\quad$ (one batch of $J$ runs)
+3. $s^{(j)} \sim \pi_{\beta + \Delta\beta}\big(s \mid \theta^{(j)}, y\big)$ $\quad$ (conjugate: exact, no runs)
+4. $\beta \leftarrow \beta + \Delta\beta$
+:::
+
+. . .
+
+- Which $s$ in the gain: one common, or each particle's own (appendix)
+- Still approximate: corrected next
+
+## Correcting EKI
+
+::: {.corner-note}
+$q$: Student-t ($\nu = 5$, covariance $\times 1.5$) fitted to EKI's
+ensemble, mixed 9:1 with the prior
+:::
+
+**Target:** $\pi(\theta) \propto \pi_0(\theta)\, L(\theta)$
+
+- Fixed noise: $L(\theta) = \mathcal N\big(y \mid \mathcal G(\theta), R\big)$
+- Inferred noise: $s$ integrated out, $L(\theta) = \prod_k t_{2a}\big(y_k \mid \mathcal G_k(\theta),\ \tfrac ba C_k\big)$;
+  $s$ drawn afterwards from its conditional
+
+. . .
+
+**Base density:** $q \approx$ EKI's ensemble, heavy-tailed, mixed with the prior
+
+. . .
+
+| | draws from | corrected by | rounds of runs |
+|---|---|---|---|
+| Importance sampling | $q$ | weights $\pi_0 L / q$ | 1 |
+| Tempered SMC | $q^{1-\beta}(\pi_0 L)^{\beta}$, $\ \beta: 0 \to 1$ | reweight, resample, MH moves | stages $\times$ moves |
+| MCMC | random-walk Metropolis | accept / reject | one per step |
+
+## Importance sampling and tempered SMC
+
+::: {.corner-note}
+Details in the appendix
+:::
+
+**Importance sampling**
+
+- $\theta_m \sim q$, $\ \tilde w_m = \pi_0(\theta_m) L(\theta_m) / q(\theta_m)$
+- One batch; consistent whatever EKI's bias
+- Prior component bounds the weights: $\tilde w \le 10\, L$
+
+. . .
+
+**Tempered SMC**: when the weights degenerate
+
+- Bridge $\pi_\beta \propto q^{1-\beta}(\pi_0 L)^{\beta}$ from $q$ to the target
+- Each stage: reweight (adaptive $\Delta\beta$), resample, move by
+  Metropolis–Hastings invariant for $\pi_\beta$
+- Importance sampling = one stage, no moves
 
 ## EKI-initialized MCMC
 
-$C$ chains in lockstep, so that each step is one batch of $C$ runs:
+::: {.corner-note}
+Details in the appendix
+:::
 
-$$
-\theta_c' = \theta_c + \lambda\, \frac{2.38}{\sqrt D}\, L z_c,
-\quad z_c \sim \mathcal N(0, I_D),
-\qquad
-\text{accepted with probability } \min\Big(1,\ \frac{\pi(\theta_c')}{\pi(\theta_c)}\Big)
-$$
+- Random-walk Metropolis on $\pi(\theta)$, $C$ chains in lockstep: one batch
+  of $C$ runs per step
 
-- **Start:** $C$ draws resampled by weight from an importance-sampling run;
-  $LL^\top$ the covariance of the EKI ensemble behind it; $\lambda = 1$
-- **Adapt**, during the first 500 steps: every 25 steps
-  $\log \lambda \mathrel{+}= 2(\bar a - 0.234)$, $\bar a$ their acceptance
-  rate; from step 100, every 50 steps, $LL^\top$ re-estimated from the second
-  half of all chains' history
-- **Then freeze** the kernel and discard the first 1000 of 2000 steps: the
-  kept draws are a Metropolis chain with a fixed kernel
-- Under inferred noise the chain runs on the $\theta$-marginal, and each kept
-  draw carries a draw of $s$ from its conditional
+. . .
+
+- **Start:** draws resampled from an importance-sampling run
+- **Proposal covariance:** from the EKI ensemble, adapted during burn-in
+- **Then frozen:** kept draws are a fixed-kernel Metropolis chain
+
+. . .
+
+- Inferred noise: chain on the $\theta$-marginal; each draw carries an $s$
+  from its conditional
 
 # Results
 
@@ -815,3 +747,174 @@ plots.algorithm_marginals();
 ## Predictions: EKI, SMC and MCMC
 
 ![](../single_site_mcmc_vs_eki/output/figures/algorithms/long_memory_inferred/algorithm_predictive_nee.png){width=88%}
+
+# Appendix
+
+## NEE: measurement error
+
+::: {.corner-note}
+AmeriFlux's hourly `RANDUNC` ($r_h$) and `JOINTUNC` ($j_h$). A window
+reporting neither takes its source's median
+:::
+
+A window $W$ averages 12 hourly values; the tower reports two uncertainties
+per hour:
+
+- **Random** $r_h$: independent from hour to hour $\Rightarrow$ averages down
+- **Filtering** $u_h = \sqrt{\max(j_h^2 - r_h^2,\ 0)}$: the spread over
+  friction-velocity ($u_*$) filtering thresholds; shared by the whole
+  window $\Rightarrow$ does not average down
+
+. . .
+
+$$
+\operatorname{Var}(e_W)
+= \underbrace{\frac{1}{12}\, \operatorname{mean}_{h \in W} r_h^2}_{\text{random: averages down}}
+\;+\; \underbrace{\big(\operatorname{mean}_{h \in W} u_h\big)^2}_{\text{filtering: shared}}
+$$
+
+- Independent across windows: $\Sigma^{\text{obs}}$ diagonal
+
+## NEE: the error models' kernels {.big-table}
+
+::: {.corner-note}
+$t_W$: the window's end, in days. Weights and timescales: maximum-likelihood
+fits to an earlier calibration's residuals, used for their shape only
+:::
+
+$$
+\big(\Sigma^{\delta}_k\big)_{WW'} = v^\delta_k\, \rho^L_k(t_W - t_{W'}),
+\quad
+\rho^L_k = \sum_m w_m\, \kappa_m,
+\quad
+\kappa_\tau(\Delta) = e^{-|\Delta|/\tau},
+\quad
+\kappa^{\text{per}}_\lambda(\Delta) = \exp\!\Big(-\frac{2\sin^2(\pi\Delta/P)}{\lambda^2}\Big),
+\ P = 365.25
+$$
+
+| Error model $L$ | $\rho^L$, night | $\rho^L$, day |
+|---|---|---|
+| short memory | $\kappa_{0.74}$ | $\kappa_{1.72}$ |
+| long memory | $0.20\,\kappa_{0.74} + 0.80\,\kappa_{57.2}$ | $0.42\,\kappa_{1.72} + 0.58\,\kappa_{36.5}$ |
+| recurring bias | $0.29\,\kappa_{1.17} + 0.39\,\kappa_{64.2} + 0.32\,\kappa^{\text{per}}_{0.437}$ | $0.48\,\kappa_{1.78} + 0.33\,\kappa_{46.6} + 0.20\,\kappa^{\text{per}}_{0.208}$ |
+
+$v^\delta_k$: $1.43^2$ (night), $2.99^2$ (day), in (µmol m⁻² s⁻¹)², the same
+for every $L$
+
+## Why memory matters: the general statement
+
+- Along any direction $v$ in which a parameter moves the predictions, an
+  error of variance $\sigma^2$ along $v$ caps $v^\top C^{-1} v$ at
+  $\|v\|^2 / \sigma^2$ (Sherman–Morrison)
+- Effective number of windows along $v$:
+
+$$
+n_{\text{eff}}(v) = \bar\sigma^2\, \frac{v^\top C^{-1} v}{\|v\|^2 / n},
+\qquad \bar\sigma^2 = \operatorname{mean}_W C_{WW}
+$$
+
+- By frequency (Whittle): $r^\top C^{-1} r \approx \sum_j |\hat r(\omega_j)|^2 / S(\omega_j)$,
+  so a misfit is cheap where the error's spectrum $S$ is large; long memory
+  raises $S$ at low frequencies
+
+## LAI, biomass and soil carbon: covariances
+
+::: {.corner-note}
+$\sigma_i$, $\sigma_j$, $\sigma$: each product's reported standard deviations;
+$t_i$ in days
+:::
+
+$$
+\begin{aligned}
+\text{LAI:}\quad & (C)_{ii'} = \max(\sigma_i,\ 0.66)^2\, \mathbf 1[i = i']
+  + 0.5^2\, e^{-|t_i - t_{i'}|/30}\, \mathbf 1[\text{same summer}] \\[4pt]
+\text{biomass:}\quad & C = \sigma\sigma^\top + \kappa^2\, y y^\top + 5^2 I,
+  \qquad \kappa = 0.02 / 0.48 \\[4pt]
+\text{soil C:}\quad & C = \sigma^2 + (0.25\, y)^2
+\end{aligned}
+$$
+
+## EKI with noise scales: the details
+
+::: {.corner-note}
+$q_k(\theta) = \|y_k - \mathcal G_k(\theta)\|^2_{C_k^{-1}}$, $\ n_k = \dim y_k$
+:::
+
+- **$s$ step**, by conjugacy:
+  $\ \pi_\beta(s_k \mid \theta, y) = \mathrm{IG}\big(s_k \mid a + \tfrac{\beta n_k}{2},\ b + \tfrac{\beta\, q_k(\theta)}{2}\big)$
+- **Increment:** the ESS of the ratio of the $s$-marginal tempered targets,
+
+$$
+\log w_j = \sum_k \Big[A_k(\beta) \log B_{jk}(\beta) - A_k(\beta') \log B_{jk}(\beta')\Big],
+\quad
+A_k(\beta) = a + \tfrac{\beta n_k}{2},
+\quad
+B_{jk}(\beta) = b + \tfrac{\beta\, q_k(\theta^{(j)})}{2}
+$$
+
+- **Marginal** in $\theta$:
+  $p(y_k \mid \theta) = t_{2a}\big(y_k \mid \mathcal G_k(\theta),\ \tfrac{b}{a} C_k\big)$
+
+## EKI with noise scales: two $\theta$ steps
+
+::: {.corner-note}
+$T, U$: the centered ensembles of $\theta$ and $g$ over $\sqrt{J - 1}$, so
+$\hat C_{\theta g} = T^\top U$, $\hat C_{gg} = U^\top U$
+:::
+
+- **Common gain:** one scale for every particle, the mean precision
+  $\bar s_k = \big(\tfrac1J \sum_j 1/s^{(j)}_k\big)^{-1}$:
+  $\ \mathrm{EKI\text{-}UPDATE}(\theta^{(j)} \mid \bar s, \Delta\beta)$;
+  tends to under-disperse
+- **Per-particle gain:** each particle's own $s^{(j)}$, with $T, U$ less
+  their least-squares fit on $\log s^{(j)}$ (an estimate of
+  $\mathbb E[\operatorname{Cov}(\theta, g \mid s)]$); tends to
+  over-disperse
+
+. . .
+
+- Neither is exact even for linear $\mathcal G$: the ensemble's covariance is
+  the marginal's, which exceeds $\mathbb E[\operatorname{Cov}(\theta \mid s)]$
+  by $\operatorname{Cov}(\mathbb E[\theta \mid s])$
+- The two coincide as $\operatorname{Var}(s \mid y)$ shrinks
+
+## Importance sampling and SMC: the details
+
+$$
+q = 0.9\; t_5\big(\hat m,\ 1.5\, \hat C\big) + 0.1\, \pi_0,
+\qquad
+W_m = \frac{\tilde w_m}{\sum_{m'} \tilde w_{m'}},
+\qquad
+\mathrm{ESS} = \frac{1}{\sum_m W_m^2},
+\qquad
+\hat Z = \frac1M \sum_m \tilde w_m
+$$
+
+Tempered SMC, $\ell = \log \pi_0 + \log L - \log q$; each stage:
+
+1. **Increment:** the largest $\delta$ with
+   $\mathrm{CESS}(\delta) = \dfrac{\big(\sum_i W_i e^{\delta \ell_i}\big)^2}{\sum_i W_i e^{2\delta \ell_i}} \ge \tfrac12$
+2. **Reweight:** $W_i \propto W_i\, e^{\delta \ell_i}$;
+   $\ \log \hat Z \mathrel{+}= \log \sum_i W_i e^{\delta \ell_i}$
+3. **Resample** systematically
+4. **Move** by Metropolis–Hastings: an independent $t_5(\hat m, \hat C)$ or a
+   random walk $\theta + \lambda \hat L z$, until 99% of the samples have
+   moved
+
+## MCMC: the details
+
+$$
+\theta_c' = \theta_c + \lambda\, \frac{2.38}{\sqrt D}\, L z_c,
+\quad z_c \sim \mathcal N(0, I_D),
+\qquad
+\text{accepted with probability } \min\Big(1,\ \frac{\pi(\theta_c')}{\pi(\theta_c)}\Big)
+$$
+
+- **Start:** $C$ draws resampled by weight from an importance-sampling run;
+  $LL^\top$ the covariance of the EKI ensemble behind it; $\lambda = 1$
+- **Adapt**, during the first 500 steps: every 25 steps
+  $\log \lambda \mathrel{+}= 2(\bar a - 0.234)$, $\bar a$ their acceptance
+  rate; from step 100, every 50 steps, $LL^\top$ re-estimated from the second
+  half of all chains' history
+- **Then freeze** the kernel and discard the first 1000 of 2000 steps
