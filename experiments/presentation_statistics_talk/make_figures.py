@@ -13,6 +13,8 @@ slow for every render of the deck. This script draws them into
   the summer uptake it misses marked;
 - ``error_models_nee.png``: the three error models' posterior predictives
   (inferred noise, MCMC);
+- ``algorithms_nee.png``: EKI's, SMC's and MCMC's posterior predictives
+  (long memory, inferred noise);
 - ``daily_nee_summer.png``: one summer's daytime NEE windows, observed
   against the posterior median prediction under short and long memory.
 
@@ -67,11 +69,20 @@ OUTPUT_DIRECTORY = Path(__file__).resolve().parent / "figures" / "generated"
 #: The model of the single-model figures.
 MODEL = Model("long_memory", "inferred")
 
-#: The NEE sources, with their panel titles.
-NEE_PANELS = {"nee_night_centered": "Night (00-12 UTC)", "nee_day_centered": "Day (12-24 UTC)"}
+#: The NEE sources, with their panel titles: the windows are 00-12 and 12-24
+#: UTC, which is Harvard Forest's standard time (EST) plus 5 hours.
+NEE_PANELS = {
+    "nee_night_centered": "Night (7 pm to 7 am EST)",
+    "nee_day_centered": "Day (7 am to 7 pm EST)",
+}
 
-#: The colors of the prior and the posterior bands.
+#: The x-axis label of the weekly figures, which pool the calibration years.
+WEEK_LABEL = "week of year (mean over {}-{})".format(*config.CALIBRATION_NEE_PERIOD)
+
+#: The colors of the prior and the posterior bands, and of the prior band
+#: behind a posterior.
 PRIOR_COLOR = "#7f7f7f"
+PRIOR_BACKGROUND_COLOR = "#e3e3e3"
 POSTERIOR_COLOR = "#0072B2"
 
 #: The summer of the daily figure, and the error models it compares.
@@ -97,11 +108,13 @@ def main() -> None:
     OUTPUT_DIRECTORY.mkdir(parents=True, exist_ok=True)
     prior = prior_predictive_of_the_data(load_predictive(config.PRIOR_PREDICTIVE_DIRECTORY), MODEL)
     _save(_prior_predictive_nee(prior), "prior_predictive_nee")
-    mcmc = next(a for a in COMPARED_ALGORITHMS if a.label == "MCMC")
-    posterior = load_algorithm_runs(MODEL, (mcmc,))[0]
-    _save(_posterior_predictive_nee(posterior), "posterior_predictive_nee")
+    prior_bands = _prior_bands(prior)
+    algorithm_runs = load_algorithm_runs(MODEL, COMPARED_ALGORITHMS)
+    mcmc = next(run for run in algorithm_runs if run.algorithm.label == "MCMC")
+    _save(_posterior_predictive_nee(mcmc, prior_bands), "posterior_predictive_nee")
+    _save(_algorithms_nee(algorithm_runs, prior_bands), "algorithms_nee")
     error_model_runs = load_error_model_runs(MODEL.noise)
-    _save(_error_models_nee(error_model_runs), "error_models_nee")
+    _save(_error_models_nee(error_model_runs, prior_bands), "error_models_nee")
     _save(_daily_nee_summer(error_model_runs), "daily_nee_summer")
 
 
@@ -120,12 +133,13 @@ def _prior_predictive_nee(prior: dict) -> plt.Figure:
     return figure
 
 
-def _posterior_predictive_nee(run) -> plt.Figure:
-    """The posterior predictive's weekly means against the observed, the
-    summer daytime gap marked."""
+def _posterior_predictive_nee(run, prior_bands: dict) -> plt.Figure:
+    """The posterior predictive's weekly means against the observed, over the
+    prior's band, the summer daytime gap marked."""
     figure, axes = plt.subplots(1, 2, figsize=(15, 5.5))
     for ax, name in zip(axes, NEE_PANELS, strict=True):
         observed = run.predictive["observed"]["calibration"][name]["value"]
+        _draw_prior_background(ax, prior_bands[name])
         positions, band = _weekly(run.replicated["calibration"][name], observed[TIME])
         draw_band(ax, positions, band, POSTERIOR_COLOR, "posterior predictive")
         weekly_observed = _finish_panel(ax, name, observed)
@@ -138,18 +152,40 @@ def _posterior_predictive_nee(run) -> plt.Figure:
                 arrowprops={"arrowstyle": "<->", "color": "#D55E00", "linewidth": 2},
             )
             # Below the lowest observed week, where no point is.
-            ax.set_ylim(bottom=weekly_observed[week] - 2.5)
+            ax.set_ylim(bottom=min(ax.get_ylim()[0], weekly_observed[week] - 2.5))
             ax.text(week + 1, weekly_observed[week] - 1.4, "summer uptake missed",
                     color="#D55E00", va="center", fontsize="large")
     _legend(figure, axes)
     return figure
 
 
-def _error_models_nee(runs: dict) -> plt.Figure:
-    """Each error model's posterior predictive weekly means against the observed."""
+def _algorithms_nee(runs, prior_bands: dict) -> plt.Figure:
+    """Each algorithm's posterior predictive weekly means against the
+    observed, over the prior's band."""
+    figure, axes = plt.subplots(1, 2, figsize=(15, 6.2))
+    for ax, name in zip(axes, NEE_PANELS, strict=True):
+        observed = runs[0].predictive["observed"]["calibration"][name]["value"]
+        _draw_prior_background(ax, prior_bands[name])
+        for run in runs:
+            draw_band(
+                ax,
+                *_weekly(run.replicated["calibration"][name], observed[TIME]),
+                run.algorithm.color,
+                run.algorithm.label,
+            )
+        _finish_panel(ax, name, observed)
+    _legend(figure, axes, n_columns=4)
+    return figure
+
+
+def _error_models_nee(runs: dict, prior_bands: dict) -> plt.Figure:
+    """Each error model's posterior predictive weekly means against the
+    observed, over the prior's band (:data:`MODEL`'s, which the error models
+    barely change)."""
     figure, axes = plt.subplots(1, 2, figsize=(15, 6.2))
     for ax, name in zip(axes, NEE_PANELS, strict=True):
         observed = next(iter(runs.values())).predictive["observed"]["calibration"][name]["value"]
+        _draw_prior_background(ax, prior_bands[name])
         for error_model, run in runs.items():
             draw_band(
                 ax,
@@ -187,6 +223,23 @@ def _daily_nee_summer(runs: dict) -> plt.Figure:
 # ── helpers ──
 
 
+def _prior_bands(prior: dict) -> dict[str, pd.DataFrame]:
+    """The prior predictive's weekly band of each NEE source."""
+    return {
+        name: weekly_band(
+            prior["predicted"]["ensemble"]["calibration"][name].transpose(SAMPLE, TIME).to_numpy(),
+            prior["observed"]["calibration"][name]["value"][TIME],
+        )
+        for name in NEE_PANELS
+    }
+
+
+def _draw_prior_background(ax, band: pd.DataFrame) -> None:
+    """The prior predictive's 90% band, light and behind everything else."""
+    ax.fill_between(band.index, band[0.05], band[0.95], color=PRIOR_BACKGROUND_COLOR,
+                    linewidth=0, zorder=-1, label="prior predictive, 90%")
+
+
 def _weekly(values: np.ndarray, times) -> tuple[pd.Index, pd.DataFrame]:
     """The weekly band of *values* ``(K, n)``, and its weeks."""
     band = weekly_band(values, times)
@@ -199,7 +252,7 @@ def _finish_panel(ax, name: str, observed) -> pd.Series:
     ax.plot(weekly.index, weekly.to_numpy(), "o", color="black", markersize=4, label="observed")
     ax.axhline(0.0, color="#999999", linewidth=0.6, zorder=0)
     ax.set_title(NEE_PANELS[name])
-    ax.set_xlabel("week of year")
+    ax.set_xlabel(WEEK_LABEL)
     ax.set_ylabel("NEE (µmol CO₂ m⁻² s⁻¹)")
     return weekly
 

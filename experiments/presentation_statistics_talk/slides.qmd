@@ -258,8 +258,8 @@ $\theta \in \mathbb R^{15}$ parameters, $\quad y \in \mathbb R^{2715}$ observati
 
 | Data type $k$ | What | $n_k$ |
 |---|---|---|
-| NEE, night | mean flux, night-centered 12-hour windows | 800 |
-| NEE, day | mean flux, day-centered 12-hour windows | 1,819 |
+| NEE, night | mean flux, 7 pm to 7 am EST | 800 |
+| NEE, day | mean flux, 7 am to 7 pm EST | 1,819 |
 | LAI | summer satellite composites | 89 |
 | Biomass | annual, satellite | 6 |
 | Soil carbon | one static value | 1 |
@@ -661,7 +661,7 @@ Long memory, inferred noise; MCMC
 ## Posterior predictive: three error models
 
 ::: {.corner-note}
-Inferred noise; MCMC
+Inferred noise; MCMC. Gray: the prior predictive (long memory)
 :::
 
 ![](figures/generated/error_models_nee.png){width=100%}
@@ -714,7 +714,7 @@ plots.algorithm_pairs();
 Long memory, inferred noise
 :::
 
-![](../single_site_mcmc_vs_eki/output/figures/algorithms/long_memory_inferred/algorithm_predictive_nee.png){width=88%}
+![](figures/generated/algorithms_nee.png){width=100%}
 
 ## Importance sampling weights
 

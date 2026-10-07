@@ -73,10 +73,11 @@ PARAMETER_TITLES = {
     "initial_soil_organic_carbon": "Initial soil carbon\n(kg C m⁻²)",
 }
 
-#: Panel titles of the NEE sources.
+#: Panel titles of the NEE sources: the windows are 00-12 and 12-24 UTC,
+#: Harvard Forest's standard time (EST) plus 5 hours.
 NEE_TITLES = {
-    "nee_night_centered": "NEE, 00-12 UTC (night-centered)",
-    "nee_day_centered": "NEE, 12-24 UTC (day-centered)",
+    "nee_night_centered": "NEE, night (7 pm to 7 am EST)",
+    "nee_day_centered": "NEE, day (7 am to 7 pm EST)",
 }
 
 
