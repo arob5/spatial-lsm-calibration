@@ -102,13 +102,14 @@ def diagnose_run(model_name: str, run: str) -> None:
 
 
 def posterior_median_scales(predictive: Path) -> dict[str, float]:
-    """The median of each ``<source>_noise_scale`` of a predictive's
-    ``samples.csv``, by source; empty for a run with fixed noise."""
+    """The median of each source's scale in a predictive's ``samples.csv``
+    (a column per scaled source, ``run/predict.py``), by source; empty for a
+    run with fixed noise."""
     samples = pd.read_csv(predictive / "samples.csv")
     return {
-        name: float(samples[f"{name}_noise_scale"].median())
+        name: float(samples[name].median())
         for name in config.NOISE_SCALED_SOURCES
-        if f"{name}_noise_scale" in samples
+        if name in samples
     }
 
 
