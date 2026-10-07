@@ -341,7 +341,7 @@ $$
 ::: {.model-box .data-box}
 [Short memory]{.box-title}
 
-[Errors forget within **1–2 days**: weather-scale]{}
+[Errors persist **a day or two**: weather-scale]{}
 :::
 :::
 
@@ -349,7 +349,7 @@ $$
 ::: {.model-box .prior-box}
 [Long memory]{.box-title}
 
-[\+ anomalies lasting a **season** (about 5–8 weeks)]{}
+[\+ anomalies persisting **a season**: a wet spring, an early leaf-out]{}
 :::
 :::
 
@@ -357,14 +357,56 @@ $$
 ::: {.model-box .hyper-box}
 [Recurring bias]{.box-title}
 
-[\+ a bias repeating at the **same time every year**]{}
+[\+ a bias tied to the **calendar date**: wrong in mid-June $\Rightarrow$
+wrong in mid-June every year]{}
 :::
 :::
 
 ::: {.fragment}
-- Nested; timescales fitted to an earlier calibration's residuals
-- Same per-window size $v^\delta$; **different memory**
+$$
+s_k^2\, \Sigma_k = s_k^2 \Big(\Sigma^{\text{obs}}_k + v^\delta_k\, P_k\Big),
+\qquad
+(P_k)_{WW'} = \rho_k(t_W - t_{W'})
+$$
+
+$$
+\rho_k(\Delta) =
+\underbrace{w_1\, e^{-|\Delta|/\tau_1}}_{\text{short}}
++ \underbrace{w_2\, e^{-|\Delta|/\tau_2}}_{\text{long}}
++ \underbrace{w_3\, \exp\!\Big(-\frac{2 \sin^2(\pi \Delta / 1\,\text{yr})}{\lambda^2}\Big)}_{\text{recurring}},
+\qquad w_1 + w_2 + w_3 = 1
+$$
 :::
+
+::: {.fragment}
+- Weights sum to 1: same per-window variance $v^\delta_k$, **different memory**
+- Adding a term moves variance from short to long memory; it adds none
+:::
+
+## The error models in numbers {.big-table}
+
+::: {.corner-note}
+Correlation of the discrepancy at two windows a lag apart. A timescale is
+where its term's correlation falls to $e^{-1} \approx 0.37$; percentages are
+the weights. Fitted by maximum likelihood to an earlier calibration's
+residuals
+:::
+
+| Model | NEE | timescales | 1 day | 1 week | 1 month | 3 months | 1 year |
+|---|---|---|---|---|---|---|---|
+| short memory | night | 18 hours | 0.26 | 0 | 0 | 0 | 0 |
+| | day | 2 days | 0.56 | 0.02 | 0 | 0 | 0 |
+| long memory | night | 18 hours (20%), 8 weeks (80%) | 0.84 | 0.71 | 0.47 | 0.16 | 0 |
+| | day | 2 days (42%), 5 weeks (58%) | 0.80 | 0.49 | 0.25 | 0.05 | 0 |
+| recurring bias | night | 1 day (29%), 9 weeks (39%), $\pm$5 weeks of the date (32%) | 0.83 | 0.66 | 0.41 | 0.10 | 0.32 |
+| | day | 2 days (48%), 7 weeks (33%), $\pm$2.5 weeks of the date (20%) | 0.80 | 0.46 | 0.18 | 0.05 | 0.20 |
+
+. . .
+
+- Short memory: neighbors are nearly independent after a few days
+- Long memory: a misfit lasting a month is still strongly correlated, so
+  cheap
+- Recurring bias: the same date a year later is correlated again
 
 ## LAI, biomass and soil carbon
 
