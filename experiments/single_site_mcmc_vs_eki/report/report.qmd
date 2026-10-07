@@ -38,13 +38,10 @@ import xarray as xr
 from sipnet_calibration.plotting.style import use_project_style
 from sipnet_calibration.probability import joint, condition_on
 
-from experiments.single_site_mcmc_vs_eki import config
-from experiments.single_site_mcmc_vs_eki.figures import comparison as comparison_figures
+from experiments.single_site_mcmc_vs_eki import config, models
 from experiments.single_site_mcmc_vs_eki.figures import diagnostics as diagnostic_figures
-from experiments.single_site_mcmc_vs_eki.figures import eki as eki_figures
 from experiments.single_site_mcmc_vs_eki.figures import prior_predictive as predictive_figures
 from experiments.single_site_mcmc_vs_eki.model import (
-    calibration,
     diagnostics,
     inputs,
     noise,
@@ -53,22 +50,13 @@ from experiments.single_site_mcmc_vs_eki.model import (
 )
 from experiments.single_site_mcmc_vs_eki.model.outputs import (
     load_diagnostics,
-    load_eki_run,
     load_predictive,
+    load_run,
+    run_directory,
 )
 
 use_project_style()
 plt.rcParams.update({"figure.dpi": 150})
-
-# The runs the document reads: each EKI setup's observed-data run, and the
-# synthetic-truth run of the first setup.
-EKI_OBSERVED_DIRECTORIES = {
-    setup: config.OUTPUT_DIRECTORY / "eki" / setup / "observed"
-    for setup in comparison_figures.COMPARED_SETUPS
-}
-EKI_SYNTHETIC_DIRECTORY = (
-    config.OUTPUT_DIRECTORY / "eki" / "single_term_discrepancy" / "synthetic"
-)
 ```
 
 # Setup
@@ -386,7 +374,8 @@ print(sipnet_parameters.photosynthesis.dict())
 ```{python}
 from sipnet_calibration.calibration import describe_calibration
 
-posterior = calibration.calibration_posterior()
+# Every model declares the same parameters, so any one gives their table.
+posterior = models.fixed_posterior(models.Model.parse("short_memory/fixed"))
 sipnet_parameter_map = prior.sipnet_parameter_map()
 component_table, sipnet_parameter_table = describe_calibration(posterior, sipnet_parameter_map)
 ```
