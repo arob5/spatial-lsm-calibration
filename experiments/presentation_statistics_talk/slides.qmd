@@ -489,7 +489,7 @@ Long memory, inferred noise: replicated data, each draw with its own noise
 scales from their prior
 :::
 
-![](../single_site_mcmc_vs_eki/output/figures/prior_predictive/long_memory_inferred/prior_predictive_nee_seasonal.png){width=100%}
+![](figures/generated/prior_predictive_nee.png){width=100%}
 
 ## Prior predictive: LAI, biomass and soil carbon
 
@@ -648,50 +648,100 @@ Details in the appendix
 - Inferred noise: chain on the $\theta$-marginal; each draw carries an $s$
   from its conditional
 
-# Results
+# Results: model interpretation
 
-## Ecological takeaways: the noise models
+## Posterior predictive: NEE
 
 ::: {.corner-note}
-Inferred noise, MCMC; noise included
+Long memory, inferred noise; MCMC
 :::
 
-![](../single_site_mcmc_vs_eki/output/figures/error_models/error_model_nee_inferred.png){width=88%}
+![](figures/generated/posterior_predictive_nee.png){width=100%}
 
-## The error models in numbers {.big-table}
+## Posterior predictive: three error models
+
+::: {.corner-note}
+Inferred noise; MCMC
+:::
+
+![](figures/generated/error_models_nee.png){width=100%}
+
+## Daily NEE, summer 2015
+
+::: {.corner-note}
+Daytime windows; posterior median prediction, MCMC
+:::
+
+![](figures/generated/daily_nee_summer.png){width=100%}
+
+## Parameters by error model
+
+::: {.corner-note}
+Inferred noise; MCMC
+:::
 
 ```{python}
-#| output: asis
-print(plots.error_model_table())
+plots.parameters_by_error_model();
 ```
 
-## Comparing the inference algorithms {.big-table}
-
-::: {.corner-note}
-Long memory, inferred noise. MCMC: 56 chains, 1,000 kept steps each; seed
-runs counted in each algorithm's total
-:::
+## Noise scales by error model
 
 ```{python}
-#| output: asis
-print(plots.algorithm_table())
+plots.noise_scales_by_error_model();
+```
+
+# Results: computation
+
+## Cost and accuracy
+
+```{python}
+plots.cost_and_accuracy();
 ```
 
 ## Parameters: EKI, SMC and MCMC
+
+::: {.corner-note}
+Long memory, inferred noise
+:::
 
 ```{python}
 plots.algorithm_pairs();
 ```
 
-## Parameter marginals
+## Posterior predictive: EKI, SMC and MCMC
 
-```{python}
-plots.algorithm_marginals();
-```
-
-## Predictions: EKI, SMC and MCMC
+::: {.corner-note}
+Long memory, inferred noise
+:::
 
 ![](../single_site_mcmc_vs_eki/output/figures/algorithms/long_memory_inferred/algorithm_predictive_nee.png){width=88%}
+
+## Importance sampling weights
+
+::: {.corner-note}
+Long memory, inferred noise; 1,000 draws from a Student-t fitted to EKI
+:::
+
+```{python}
+plots.importance_weights();
+```
+
+## Noise scales: EKI, SMC and MCMC
+
+::: {.corner-note}
+Long memory, inferred noise
+:::
+
+```{python}
+plots.noise_scales_by_algorithm();
+```
+
+## MCMC convergence {.big-table}
+
+```{python}
+#| output: asis
+print(plots.mcmc_convergence_table())
+```
 
 # Appendix
 

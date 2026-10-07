@@ -3,3 +3,6 @@
 /slides_files/
 /.quarto/
 /slides.quarto_ipynb
+
+# Figures make_figures.py draws from the experiment's runs.
+/figures/generated/

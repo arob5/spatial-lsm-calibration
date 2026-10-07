@@ -12,6 +12,8 @@ diagram a slide shows.
 """
 
 import functools
+
+import arviz
 import xml.etree.ElementTree as ElementTree
 from pathlib import Path
 
@@ -40,20 +42,27 @@ from sipnet_calibration.sites import load_sites, site_coordinates
 from experiments.single_site_mcmc_vs_eki import config as experiment_config
 from experiments.single_site_mcmc_vs_eki.figures import algorithms
 from experiments.single_site_mcmc_vs_eki.figures.common import PARAMETER_TITLES
-from experiments.single_site_mcmc_vs_eki.figures.error_models import ERROR_MODEL_LABELS
+from experiments.single_site_mcmc_vs_eki.algorithms.records import load_samples
+from experiments.single_site_mcmc_vs_eki.figures.error_models import (
+    ERROR_MODEL_COLORS,
+    ERROR_MODEL_LABELS,
+)
 from experiments.single_site_mcmc_vs_eki.model import inputs, noise, prior, sipnet
-from experiments.single_site_mcmc_vs_eki.models import Model
+from experiments.single_site_mcmc_vs_eki.models import MODEL_NAMES, Model
 
 __all__ = [
-    "algorithm_marginals",
     "algorithm_pairs",
-    "algorithm_table",
     "box_model",
-    "error_model_table",
+    "cost_and_accuracy",
     "eddy_covariance",
     "forward_map_schematic",
+    "importance_weights",
+    "mcmc_convergence_table",
     "model_output",
     "noise_scale_prior",
+    "noise_scales_by_algorithm",
+    "noise_scales_by_error_model",
+    "parameters_by_error_model",
     "prior_marginals",
     "sites_and_towers",
     "state_space_graph",
@@ -114,20 +123,43 @@ PAIR_SLIDE_PARAMETER_NAMES = (
     "wood_respiration_rate_at_10c",
 )
 
+#: The parameters of the error-model marginals: those the error model moves.
+ERROR_MODEL_PARAMETER_NAMES = (
+    "photosynthetic_capacity",
+    "half_saturation_light",
+    "respiration_share",
+    "optimum_photosynthesis_temperature",
+    "soil_respiration_q10",
+    "wood_respiration_rate_at_10c",
+)
+
+#: The scaled sources, with their panel titles.
+NOISE_SCALE_TITLES = {
+    "nee_night_centered": "NEE, night",
+    "nee_day_centered": "NEE, day",
+    "modis_leaf_area_index": "LAI",
+}
+
+#: The algorithms of the cost figure: their runs (either noise treatment),
+#: color and marker.
+ALGORITHM_POINTS = {
+    "EKI": (("eki", "eki_gibbs_common", "eki_gibbs_per_particle"), "#E69F00", "o"),
+    "EKI → IS": (("eki_is", "eki_gibbs_common_is", "eki_gibbs_per_particle_is"), "#CC79A7", "v"),
+    "EKI → SMC": (("eki_smc", "eki_gibbs_common_smc"), "#0072B2", "s"),
+}
+
+#: The algorithms of the noise-scale comparison: their run and color.
+NOISE_SCALE_ALGORITHMS = {
+    "EKI, common gain": ("eki_gibbs_common", "#E69F00"),
+    "EKI, per-particle gain": ("eki_gibbs_per_particle", "#D55E00"),
+    "SMC": ("eki_gibbs_common_smc", "#0072B2"),
+    "MCMC": ("mcmc", "#009E73"),
+}
+
 #: The tables ``run/compare.py`` writes.
 COMPARISON_DIRECTORY = experiment_config.OUTPUT_DIRECTORY / "comparison"
 
-#: Each run's row label in the algorithm table, in its order.
-RUN_LABELS = {
-    "eki": "EKI",
-    "eki_gibbs_common": "EKI, Gibbs scales, common gain",
-    "eki_gibbs_per_particle": "EKI, Gibbs scales, per-particle gain",
-    "eki_is": "EKI → IS",
-    "eki_gibbs_common_is": "EKI → IS",
-    "eki_smc": "EKI → SMC",
-    "eki_gibbs_common_smc": "EKI → SMC",
-    "mcmc": "MCMC",
-}
+
 
 
 def box_model(*, observations: bool) -> HTML:
@@ -339,16 +371,34 @@ def model_output() -> Figure:
     return figure
 
 
-def algorithm_marginals(model_name: str = ALGORITHM_COMPARISON_MODEL) -> Figure:
-    """EKI, SMC and MCMC's marginals of the parameters the error model moves,
-    over the prior (``figures/algorithms.py``)."""
-    runs = algorithms.load_algorithm_runs(Model.parse(model_name), replicate=False)
-    return algorithms.plot_marginal_histograms(
-        runs,
-        algorithms.prior_natural_values(),
-        algorithms.PAIR_PARAMETER_NAMES,
-        n_columns=3,
+def parameters_by_error_model(noise_treatment: str = "inferred") -> Figure:
+    """Each error model's MCMC marginals of :data:`ERROR_MODEL_PARAMETER_NAMES`,
+    over the prior."""
+    runs = [
+        _as_algorithm_run(
+            Model(error_model, noise_treatment).directory("mcmc"),
+            ERROR_MODEL_LABELS[error_model],
+            ERROR_MODEL_COLORS[error_model],
+        )
+        for error_model in ERROR_MODEL_LABELS
+    ]
+    figure = algorithms.plot_marginal_histograms(
+        runs, algorithms.prior_natural_values(), ERROR_MODEL_PARAMETER_NAMES, n_columns=3
     )
+    figure.set_size_inches(14, 7.6)
+    return figure
+
+
+def noise_scales_by_error_model() -> Figure:
+    """Each error model's MCMC posterior of :math:`s_k^2`, per scaled source, over the prior."""
+    runs = {
+        ERROR_MODEL_LABELS[error_model]: (
+            Model(error_model, "inferred").directory("mcmc"),
+            ERROR_MODEL_COLORS[error_model],
+        )
+        for error_model in ERROR_MODEL_LABELS
+    }
+    return _noise_scale_densities(runs)
 
 
 def algorithm_pairs(model_name: str = ALGORITHM_COMPARISON_MODEL) -> Figure:
@@ -360,64 +410,144 @@ def algorithm_pairs(model_name: str = ALGORITHM_COMPARISON_MODEL) -> Figure:
     )
 
 
-def algorithm_table(model_name: str = ALGORITHM_COMPARISON_MODEL) -> str:
-    """Per run of *model_name*: its SIPNET runs and node-hours (seed
-    included), its Gaussian KL divergence from MCMC's posterior, and the
-    held-out log predictive density, as a Markdown table."""
-    cost = _comparison("cost").query("model == @model_name").set_index("run")
-    against = _comparison("against_reference").query("model == @model_name")
-    kl = against[against.parameter == "theta"].set_index("run")["gaussian_kl"]
-    heldout = (
-        _comparison("heldout_scores").query("model == @model_name")
-        .groupby("run")["log_predictive_density"].sum()
-    )
+def cost_and_accuracy() -> Figure:
+    """Each algorithm's SIPNET runs against its Gaussian KL divergence from
+    MCMC's posterior, one point per model, :data:`ALGORITHM_COMPARISON_MODEL`
+    ringed."""
+    cost = _comparison("cost").set_index(["model", "run"])
+    against = _comparison("against_reference")
+    kl = against[against.parameter == "theta"].set_index(["model", "run"])["gaussian_kl"]
+    figure, ax = plt.subplots(figsize=(12, 6.5))
+    for label, (runs, color, marker) in ALGORITHM_POINTS.items():
+        points = [(cost.loc[key, "sipnet_runs"], kl[key]) for key in kl.index if key[1] in runs]
+        x, y = np.array(points).T
+        ax.scatter(x, y, s=90, color=color, marker=marker, label=label, zorder=3)
+        for key in kl.index:
+            if key[1] in runs and key[0] == ALGORITHM_COMPARISON_MODEL:
+                ax.scatter(cost.loc[key, "sipnet_runs"], kl[key], s=320, facecolors="none",
+                           edgecolors="black", linewidths=1.5, zorder=4)
+    ax.scatter([], [], s=320, facecolors="none", edgecolors="black", linewidths=1.5,
+               label=ALGORITHM_COMPARISON_MODEL.replace("_", " ").replace("/", ", "))
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    mcmc_runs = cost.xs("mcmc", level="run")["sipnet_runs"].median()
+    low, high = ax.get_ylim()
+    ax.axvline(mcmc_runs, color="#009E73", linestyle="--", linewidth=1.5)
+    ax.text(mcmc_runs * 0.92, np.sqrt(low * high), "MCMC\n(reference)", color="#009E73", ha="right")
+    ax.set_xlabel("SIPNET runs (seed runs included)")
+    ax.set_ylabel("KL divergence from MCMC")
+    ax.legend(frameon=False, loc="upper center")
+    return figure
+
+
+def importance_weights(model_name: str = ALGORITHM_COMPARISON_MODEL) -> Figure:
+    """The normalized importance weights of the IS run seeded by EKI, largest
+    first, and their effective sample size."""
+    model = Model.parse(model_name)
+    seed = "eki" if model.noise == "fixed" else "eki_gibbs_common"
+    samples = load_samples(model.directory(f"{seed}_is"))
+    weights = np.sort(np.exp(samples["log_weight"].to_numpy()))[::-1]
+    figure, ax = plt.subplots(figsize=(12, 5.5))
+    shown = 30
+    ax.bar(np.arange(1, shown + 1), weights[:shown], color="#0072B2")
+    ax.set_xlabel(f"draws, largest weight first (of {len(weights):,})")
+    ax.set_ylabel("normalized weight")
+    ess = 1.0 / np.sum(weights**2)
+    ax.text(0.97, 0.9, f"effective sample size: {ess:.1f} of {len(weights):,}",
+            transform=ax.transAxes, ha="right", fontsize="large")
+    return figure
+
+
+def noise_scales_by_algorithm(model_name: str = ALGORITHM_COMPARISON_MODEL) -> Figure:
+    """Each algorithm's posterior of :math:`s_k^2`, per scaled source, over the prior."""
+    model = Model.parse(model_name)
+    runs = {
+        label: (model.directory(run), color)
+        for label, (run, color) in NOISE_SCALE_ALGORITHMS.items()
+    }
+    return _noise_scale_densities(runs)
+
+
+def mcmc_convergence_table() -> str:
+    """Per model, MCMC's kept steps, largest split R-hat and smallest bulk and
+    tail effective sample size over the parameters, as a Markdown table.
+    Read from each run's ``convergence.csv`` where it has one, else computed
+    from its ``chains.npz``."""
     rows = []
-    for run, label in RUN_LABELS.items():
-        if run not in cost.index:
-            continue
+    for name in MODEL_NAMES:
+        directory = Model.parse(name).directory("mcmc")
+        table, steps = _convergence(directory)
         rows.append({
-            "algorithm": label,
-            "SIPNET runs": f"{cost.loc[run, 'sipnet_runs']:,.0f}",
-            "node-hours": f"{cost.loc[run, 'wall_seconds'] / 3600:.1f}",
-            "KL from MCMC": "reference" if run == "mcmc" else f"{kl.get(run, np.nan):.1f}",
-            "held-out log density": f"{heldout.get(run, np.nan):,.0f}",
+            "model": name.replace("_", " ").replace("/", ", "),
+            "kept steps × chains": steps,
+            "max $\\hat R$": f"{table['r_hat'].max():.2f}",
+            "min bulk ESS": f"{table['bulk_ess'].min():.0f}",
+            "min tail ESS": f"{table['tail_ess'].min():.0f}",
         })
     return _markdown_table(pd.DataFrame(rows))
 
 
-def error_model_table(noise_treatment: str = "inferred") -> str:
-    """Per NEE error model, from its MCMC run: the held-out log predictive
-    density of each NEE source; the daytime residual's slow and fast
-    variances and the model's day-to-day spread against the observed's;
-    and, for inferred noise, the posterior median noise scales. A Markdown
-    table."""
-    heldout = _comparison("heldout_scores").query("run == 'mcmc'")
-    scales = _comparison("noise_scales").query("run == 'mcmc'")
-    rows = []
-    for error_model, label in ERROR_MODEL_LABELS.items():
-        model = Model(error_model, noise_treatment)
-        scores = heldout.query("model == @model.name").set_index("observation_source")
-        slow_fast = pd.read_csv(
-            model.directory("mcmc") / "diagnostics" / "nee_slow_fast.csv", index_col=0
-        ).loc["nee_day_centered"]
-        row = {
-            "error model": label,
-            "held-out, night": f"{scores.loc['nee_night_centered', 'log_predictive_density']:,.0f}",
-            "held-out, day": f"{scores.loc['nee_day_centered', 'log_predictive_density']:,.0f}",
-            "day residual, slow var.": f"{slow_fast['slow_variance']:.1f}",
-            "day residual, fast var.": f"{slow_fast['fast_variance']:.1f}",
-            "day, model / observed fast sd": f"{slow_fast['fast_standard_deviation_ratio']:.2f}",
-        }
-        if noise_treatment == "inferred":
-            medians = scales.query("model == @model.name").set_index("observation_source")["q50"]
-            row["$s^2$: night, day, LAI"] = ", ".join(
-                f"{medians[name]:.2f}" for name in experiment_config.NOISE_SCALED_SOURCES
-            )
-        rows.append(row)
-    return _markdown_table(pd.DataFrame(rows))
-
-
 # ── helpers ──
+
+
+def _as_algorithm_run(directory: Path, label: str, color: str) -> algorithms.AlgorithmRun:
+    """A run's natural values and weights, labeled and colored for an overlay."""
+    natural = pd.read_csv(directory / "natural_values.csv", index_col=0)
+    weights = np.exp(natural.pop("log_weight").to_numpy())
+    return algorithms.AlgorithmRun(
+        algorithm=algorithms.ComparedAlgorithm(label, {}, color),
+        natural_values=natural,
+        weights=weights / weights.sum(),
+        predictive=None,
+        replicated=None,
+    )
+
+
+def _noise_scale_densities(runs: dict[str, tuple[Path, str]]) -> Figure:
+    """Per scaled source, each run's weighted density of :math:`s_k^2` and the
+    prior's, each scaled to a peak of 1 so a narrow posterior and the flat
+    prior share an axis; *runs* maps a label to its directory and color."""
+    law = scipy.stats.invgamma(
+        experiment_config.NOISE_SCALE_SHAPE, scale=noise.noise_scale_prior_scale()
+    )
+    figure, axes = plt.subplots(1, 3, figsize=(15, 4.8))
+    for ax, (name, title) in zip(axes, NOISE_SCALE_TITLES.items(), strict=True):
+        draws = {}
+        for label, (directory, color) in runs.items():
+            samples = load_samples(directory)
+            weights = np.exp(samples["log_weight"].to_numpy())
+            draws[label] = (samples[f"{name}_noise_scale"].to_numpy(), weights / weights.sum(), color)
+        low = min(np.quantile(values, 0.001) for values, _, _ in draws.values())
+        high = max(np.quantile(values, 0.999) for values, _, _ in draws.values())
+        grid = np.linspace(low - 0.1 * (high - low), high + 0.1 * (high - low), 300)
+        for label, (values, weights, color) in draws.items():
+            density = scipy.stats.gaussian_kde(values, weights=weights)(grid)
+            ax.plot(grid, density / density.max(), color=color, linewidth=2, label=label)
+        prior_density = law.pdf(grid)
+        ax.plot(grid, prior_density / prior_density.max(), color=PRIOR_COLOR,
+                linestyle="--", label="prior")
+        ax.set_title(title)
+        ax.set_xlabel(r"$s_k^2$")
+        ax.set_yticks([])
+        ax.spines["left"].set_visible(False)
+    axes[0].legend(frameon=False, fontsize="small")
+    return figure
+
+
+def _convergence(directory: Path) -> tuple[pd.DataFrame, str]:
+    """A run's convergence table and its kept steps × chains."""
+    samples = load_samples(directory)
+    steps = f"{samples.attrs['steps'] - samples.attrs['discarded_steps']:,} × {samples.attrs['chains']}"
+    if (directory / "convergence.csv").exists():
+        return pd.read_csv(directory / "convergence.csv", index_col=0), steps
+    chains = np.load(directory / "chains.npz")["theta"][samples.attrs["discarded_steps"]:]
+    values = np.transpose(chains, (1, 0, 2))
+    table = pd.DataFrame({
+        "r_hat": [float(arviz.rhat(values[:, :, i])) for i in range(values.shape[2])],
+        "bulk_ess": [float(arviz.ess(values[:, :, i], method="bulk")) for i in range(values.shape[2])],
+        "tail_ess": [float(arviz.ess(values[:, :, i], method="tail")) for i in range(values.shape[2])],
+    })
+    return table, steps
 
 
 def _comparison(name: str) -> pd.DataFrame:
