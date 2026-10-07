@@ -118,3 +118,9 @@
   text-align: center;
   margin: 0.5em 0;
 }
+
+/* Inside a model box, display math sits left and tight. */
+.reveal .model-box mjx-container[display="true"] {
+  margin: 0.25em 0 !important;
+  text-align: left !important;
+}

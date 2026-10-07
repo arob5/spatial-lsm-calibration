@@ -760,9 +760,11 @@ fits to an earlier calibration's residuals, used for their shape only
 
 $$
 \big(\Sigma^{\delta}_k\big)_{WW'} = v^\delta_k\, \rho^L_k(t_W - t_{W'}),
-\quad
-\rho^L_k = \sum_m w_m\, \kappa_m,
-\quad
+\qquad
+\rho^L_k = \sum_m w_m\, \kappa_m
+$$
+
+$$
 \kappa_\tau(\Delta) = e^{-|\Delta|/\tau},
 \quad
 \kappa^{\text{per}}_\lambda(\Delta) = \exp\!\Big(-\frac{2\sin^2(\pi\Delta/P)}{\lambda^2}\Big),
@@ -822,8 +824,10 @@ $q_k(\theta) = \|y_k - \mathcal G_k(\theta)\|^2_{C_k^{-1}}$, $\ n_k = \dim y_k$
 - **Increment:** the ESS of the ratio of the $s$-marginal tempered targets,
 
 $$
-\log w_j = \sum_k \Big[A_k(\beta) \log B_{jk}(\beta) - A_k(\beta') \log B_{jk}(\beta')\Big],
-\quad
+\log w_j = \sum_k \Big[A_k(\beta) \log B_{jk}(\beta) - A_k(\beta') \log B_{jk}(\beta')\Big]
+$$
+
+$$
 A_k(\beta) = a + \tfrac{\beta n_k}{2},
 \quad
 B_{jk}(\beta) = b + \tfrac{\beta\, q_k(\theta^{(j)})}{2}
