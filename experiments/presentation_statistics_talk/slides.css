@@ -136,3 +136,9 @@
 .reveal .nowrap-table col {
   width: auto !important;
 }
+
+/* A table inside a model box spans the box's second column. */
+.reveal .model-box > table {
+  grid-column: 2;
+  margin: 0.2em 0 0.4em;
+}

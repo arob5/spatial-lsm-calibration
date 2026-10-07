@@ -178,7 +178,7 @@ $$
 \theta \sim \mathcal N(m, C)
 $$
 
-[$\pi_0$: this prior, on the unconstrained (log, logit) scale]{.box-note}
+[prior on unconstrained scale]{.box-note}
 :::
 :::
 
@@ -209,7 +209,7 @@ $$
 ## Challenges and responses
 
 ::: {.pair-head}
-[Challenge]{} [Response]{}
+[Challenge]{} [Solution]{}
 :::
 
 ::: {.fragment .pair-row}
@@ -219,8 +219,8 @@ runs in parallel]{}
 :::
 
 ::: {.fragment .pair-row}
-[**No gradients:** compiled code, no adjoint; finite differences cost
-$D + 1$ runs]{} [**Derivative-free updates:** ensemble Kalman steps;
+[**No gradients:** compiled code, no adjoint]{} [**Derivative-free
+methods:** ensemble Kalman steps;
 random-walk and independence proposals]{}
 :::
 
@@ -231,17 +231,16 @@ linearization]{}
 :::
 
 ::: {.fragment .pair-row}
-[**The data overwhelm the prior** in a single update]{} [**Tempering:**
-$\beta: 0 \to 1$ in adaptive increments]{}
+[**Concentrated posterior** relative to prior]{} [**Tempered steps**
+between prior and posterior]{}
 :::
 
 ::: {.fragment .pair-row}
-[**Ensemble Kalman is approximate** for nonlinear $\mathcal G$]{}
-[**Correct it:** importance sampling, SMC or MCMC, seeded by the
-ensemble]{}
+[**Uncalibrated uncertainties** in approximate methods]{}
+[**Seed exact methods** (SMC/MCMC) using approximate algorithms]{}
 :::
 
-# Harvard Forest
+# Harvard Forest Calibration
 
 ## The data {.big-table}
 
@@ -250,11 +249,20 @@ Harvard Forest, Massachusetts: a temperate deciduous forest. One run:
 2012–2024, three-hourly steps
 :::
 
-::: {.headline}
-$\theta \in \mathbb R^{15}$ parameters, $\quad y \in \mathbb R^{2715}$ observations
+::: {.fragment}
+::: {.model-box .prior-box}
+[Parameters]{.box-title}
+
+[$\theta \in \mathbb R^{15}$: photosynthesis, respiration, allocation,
+phenology, soil water, initial pools]{}
+:::
 :::
 
-. . .
+::: {.fragment}
+::: {.model-box .data-box}
+[Data Constraints]{.box-title}
+
+[$y \in \mathbb R^{2715}$; NEE is 96% of the data, from one flux tower]{}
 
 | Data type $k$ | What | $n_k$ |
 |---|---|---|
@@ -263,13 +271,10 @@ $\theta \in \mathbb R^{15}$ parameters, $\quad y \in \mathbb R^{2715}$ observati
 | LAI | summer satellite composites | 89 |
 | Biomass | annual, satellite | 6 |
 | Soil carbon | one static value | 1 |
+:::
+:::
 
-. . .
-
-- NEE: 96% of the data, from one flux tower
-- Held out: a second tower, 943 NEE windows (2021–2024)
-
-# Harvard Forest: the likelihood
+# Likelihood Model
 
 ## Observation operators {.big-table}
 
@@ -386,7 +391,7 @@ residuals
 - **Long memory:** a misfit lasting a month stays strongly correlated
 - **Recurring bias:** the same date a year later is correlated again
 
-# Harvard Forest: the prior
+# Prior Model
 
 ## Calibration parameters
 
@@ -415,8 +420,18 @@ $[l, u]$: the central 95% interval. Independent marginals
 SIPNET's photosynthesis in the appendix
 :::
 
-- Four photosynthesis parameters $A, f, r, c$ enter the model only through
-  two combinations:
+- Four photosynthesis parameters:
+
+| | name | meaning |
+|---|---|---|
+| $A$ | `aMax` | maximum photosynthetic rate per gram of leaf, in full light and with no stress |
+| $f$ | `aMaxFrac` | daily mean rate as a fraction of $A$ |
+| $r$ | `baseFolRespFrac` | leaf respiration as a fraction of $A$ |
+| $c$ | `cFracLeaf` | carbon fraction of leaf mass |
+
+. . .
+
+- They enter the model only through two combinations:
 
 $$
 P = \frac{A\,(f + r)}{c},
@@ -435,7 +450,7 @@ $$
 . . .
 
 - Calibrate $(P, \rho)$: capacity, and the share the leaves respire
-- Fix $f$, $c$; map back to $A$, $r$
+- Fix $f = 0.861$, $c = 0.466$; map back to $A$, $r$
 
 ## The noise scales
 
