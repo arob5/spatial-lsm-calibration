@@ -415,74 +415,51 @@ Formulas in the appendix
 ## Calibration parameters
 
 ::: {.corner-note}
-$[l, u]$: the central 95% interval. Every parameter independent
+$[l, u]$: the central 95% interval. Independent marginals
 :::
 
-| Parameter | Prior | SIPNET parameters written |
-|---|---|---|
-| photosynthetic capacity $P$ (nmol g⁻¹ s⁻¹) | log-normal, $[140, 450]$ | `aMax` (with $\rho$) |
-| foliar respiration share $\rho$ | logit-normal, $[0.04, 0.20]$ | `aMax`, `baseFolRespFrac` |
-| optimum photosynthesis temperature $T_{\text{opt}}$ (°C) | $\mathcal N(22, 2.5^2)$ | `psnTOpt`; `psnTMin` $= T_{\text{opt}} - 23.96$ |
-| half-saturation light $I_{1/2}$ (mol m⁻² d⁻¹) | log-normal, $[4.6, 26.3]$ | `halfSatPar` |
-| soil water holding capacity $W$ (cm) | log-normal, $[15, 150]$ | `soilWHC` |
-| leaf growth at leaf-on (g C m⁻²) | log-normal, $[50, 180]$ | `leafGrowth` |
-| leaf-on growing degree-days (°C d) | log-normal, $[500, 1100]$ | `gddLeafOn` |
-| allocation (leaf, wood, fine root, coarse root) | softmax-normal about $(0.18, 0.45, 0.065, 0.305)$ | `leafAllocation`, `woodAllocation`, `fineRootAllocation` |
-| wood respiration rate at 10 °C $r_{10}$ (yr⁻¹) | log-normal, $[0.006, 0.04]$ | `baseVegResp`, `baseCoarseRootResp` $= r_{10}/Q_{10}$ |
-| soil respiration flux at 10 °C $F_{10}$ (g C m⁻² yr⁻¹) | log-normal, $[200, 900]$ | `baseSoilResp` $= F_{10} / (1000\, C_{s,0}\, Q^{\text{soil}}_{10})$ |
-| soil respiration $Q^{\text{soil}}_{10}$ | log-normal, $[1.3, 3.2]$ | `soilRespQ10` |
-| initial wood carbon (kg C m⁻²) | log-normal, fitted to 100 initial-condition draws | `plantWoodInit` |
-| initial soil carbon $C_{s,0}$ (kg C m⁻²) | log-normal, the same | `soilInit` |
+| Parameter $(D = 15)$ | Prior |
+|---|---|
+| photosynthetic capacity $P$ (nmol g⁻¹ s⁻¹) | log-normal, $[140, 450]$ |
+| foliar respiration share $\rho$ | logit-normal, $[0.04, 0.20]$ |
+| optimum photosynthesis temperature $T_{\text{opt}}$ (°C) | $\mathcal N(22, 2.5^2)$ |
+| half-saturation light $I_{1/2}$ (mol m⁻² d⁻¹) | log-normal, $[4.6, 26.3]$ |
+| soil water holding capacity $W$ (cm) | log-normal, $[15, 150]$ |
+| leaf growth at leaf-on (g C m⁻²) | log-normal, $[50, 180]$ |
+| leaf-on growing degree-days (°C d) | log-normal, $[500, 1100]$ |
+| allocation: leaf, wood, fine root, coarse root (4, on the simplex) | softmax-normal about $(0.18, 0.45, 0.065, 0.305)$ |
+| wood respiration rate at 10 °C (yr⁻¹) | log-normal, $[0.006, 0.04]$ |
+| soil respiration flux at 10 °C (g C m⁻² yr⁻¹) | log-normal, $[200, 900]$ |
+| soil respiration $Q_{10}$ | log-normal, $[1.3, 3.2]$ |
+| initial wood carbon, initial soil carbon (kg C m⁻²) | log-normal, fitted to an initial-condition ensemble |
 
-## Photosynthesis in SIPNET
+## Reparameterizing for identifiability
 
 ::: {.corner-note}
-`sipnet.c` at SIPNET v2.2.0-alpha.1. $\omega$: a units constant. Leaf
-respiration is also reduced when the soil is frozen
+SIPNET's photosynthesis in the appendix
 :::
 
-$$
-\mathrm{GPP} = \underbrace{A\,(f + r)}_{\text{gross capacity}}\; \frac{C_{\text{leaf}}}{c}\;
-D_T\, D_{\text{VPD}}\, D_{\text{light}}\, D_{\text{water}}\; \omega,
-\qquad
-R_{\text{leaf}} = r A\, \frac{C_{\text{leaf}}}{c}\, \omega\; Q_{10}^{(T - T_{\text{opt}})/10}
-$$
-
-- $A$ `aMax`, the maximum rate per gram of leaf, in full light and with no
-  stress; $f$ `aMaxFrac`, its daily mean as a fraction; $r$ `baseFolRespFrac`, leaf respiration as a fraction
-  of $A$; $c$ `cFracLeaf`, the carbon fraction of leaf mass
-- $D_T = \max\!\Big(0,\ \dfrac{(T_{\max} - T)(T - T_{\min})}{\big((T_{\max} - T_{\min})/2\big)^2}\Big)$,
-  $\ T_{\max} = 2T_{\text{opt}} - T_{\min}$
-- $D_{\text{light}} = \displaystyle\int_0^1 \big(1 - 2^{-I e^{-k\, \mathrm{LAI}\, \ell} / I_{1/2}}\big)\, d\ell$,
-  the canopy's mean light response
-- $D_{\text{VPD}} \in [0, 1]$ falls with vapor pressure deficit;
-  $D_{\text{water}} \in [0, 1]$ is the transpiration the soil water (up to
-  $W$) can supply over the demand
-
-## Photosynthesis: two identifiable combinations
-
-$A, f, r, c$ enter only through
+- Four photosynthesis parameters $A, f, r, c$ enter the model only through
+  two combinations:
 
 $$
 P = \frac{A\,(f + r)}{c},
 \qquad
-\rho = \frac{r}{f + r},
+\rho = \frac{r}{f + r}
 $$
 
-so that
+. . .
 
 $$
-\mathrm{GPP} = P\, C_{\text{leaf}}\, D_T D_{\text{VPD}} D_{\text{light}} D_{\text{water}}\, \omega,
+\mathrm{GPP} = P\, C_{\text{leaf}} \times \underbrace{D_T D_{\text{VPD}} D_{\text{light}} D_{\text{water}}}_{\text{stresses in } [0, 1]},
 \qquad
-R_{\text{leaf}} = \rho\, P\, C_{\text{leaf}}\, \omega\, Q_{10}^{(T - T_{\text{opt}})/10}
+R_{\text{leaf}} = \rho\, P\, C_{\text{leaf}} \times \underbrace{Q_{10}^{(T - T_{\text{opt}})/10}}_{\text{temperature}}
 $$
 
-- $P$: gross photosynthetic capacity per gram of leaf carbon; $\rho$: the
-  share of it the leaves respire
-- Calibrate $(P, \rho)$, fix $f = 0.861$ and $c = 0.466$, and write
-  $A = P c (1 - \rho)/f$, $\ r = \rho f / (1 - \rho)$
-- Also calibrated: $T_{\text{opt}}$ in $D_T$ (with $T_{\min} = T_{\text{opt}} - 23.96$ °C),
-  $I_{1/2}$ in $D_{\text{light}}$, $W$ in $D_{\text{water}}$
+. . .
+
+- Calibrate $(P, \rho)$: capacity, and the share the leaves respire
+- Fix $f$, $c$; map back to $A$, $r$
 
 ## The noise scales
 
@@ -512,21 +489,19 @@ plots.noise_scale_prior();
 ## Six models {.big-table}
 
 $$
-\theta \sim \pi_0,
-\qquad
-y_k \mid \theta, s \sim \mathcal N\big(\mathcal G_k(\theta),\ s_k\, C^L_k\big),
+p(y_k \mid \theta, s) = \mathcal N\big(y_k \mid \mathcal G_k(\theta),\ s_k\, C^L_k\big),
 \qquad
 s_k \sim \mathrm{IG}(a, b)\ \text{(inferred)} \ \text{ or } \ s_k = 1\ \text{(fixed)}
 $$
 
-| | fixed noise | inferred noise |
+| NEE error model $L$ | fixed noise | inferred noise |
 |---|---|---|
 | short memory | ✓ | ✓ |
 | long memory | ✓ | ✓ |
 | recurring bias | ✓ | ✓ |
 
-Every model shares the prior, the forward map and the noise of biomass and
-soil carbon.
+- Shared: the prior, the forward map, the noise of LAI, biomass and soil
+  carbon
 
 ## Prior marginals
 
@@ -918,3 +893,29 @@ $$
   rate; from step 100, every 50 steps, $LL^\top$ re-estimated from the second
   half of all chains' history
 - **Then freeze** the kernel and discard the first 1000 of 2000 steps
+
+## SIPNET's photosynthesis
+
+::: {.corner-note}
+`sipnet.c` at SIPNET v2.2.0-alpha.1. $\omega$: a units constant. Leaf
+respiration is also reduced when the soil is frozen
+:::
+
+$$
+\mathrm{GPP} = \underbrace{A\,(f + r)}_{\text{gross capacity}}\; \frac{C_{\text{leaf}}}{c}\;
+D_T\, D_{\text{VPD}}\, D_{\text{light}}\, D_{\text{water}}\; \omega,
+\qquad
+R_{\text{leaf}} = r A\, \frac{C_{\text{leaf}}}{c}\, \omega\; Q_{10}^{(T - T_{\text{opt}})/10}
+$$
+
+- $A$ `aMax`, the maximum rate per gram of leaf, in full light and with no
+  stress; $f$ `aMaxFrac`, its daily mean as a fraction; $r$ `baseFolRespFrac`, leaf respiration as a fraction
+  of $A$; $c$ `cFracLeaf`, the carbon fraction of leaf mass
+- $D_T = \max\!\Big(0,\ \dfrac{(T_{\max} - T)(T - T_{\min})}{\big((T_{\max} - T_{\min})/2\big)^2}\Big)$,
+  $\ T_{\max} = 2T_{\text{opt}} - T_{\min}$
+- $D_{\text{light}} = \displaystyle\int_0^1 \big(1 - 2^{-I e^{-k\, \mathrm{LAI}\, \ell} / I_{1/2}}\big)\, d\ell$,
+  the canopy's mean light response
+- $D_{\text{VPD}} \in [0, 1]$ falls with vapor pressure deficit;
+  $D_{\text{water}} \in [0, 1]$ is the transpiration the soil water (up to
+  $W$) can supply over the demand
+
