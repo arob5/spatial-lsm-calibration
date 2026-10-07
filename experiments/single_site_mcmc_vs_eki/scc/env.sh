@@ -5,7 +5,8 @@ export SIPNET_CALIBRATION_DATA=$SCC_ROOT/hf_data
 export UV_CACHE_DIR=$SCC_ROOT/uv_cache
 export PYSIPNET_CACHE_DIR=$SCC_ROOT/pysipnet_cache
 export TMPDIR=$SCC_ROOT/tmp
-export XDG_CACHE_HOME=$SCC_ROOT/tmp/xdg_cache
+# One cache per job: libraries write into it on import, and jobs start together.
+export XDG_CACHE_HOME=$SCC_ROOT/tmp/xdg_cache/${JOB_ID:-interactive}
 export MPLCONFIGDIR=$SCC_ROOT/tmp/matplotlib
 export JAX_COMPILATION_CACHE_DIR=$SCC_ROOT/jax_cache
 # One thread per process: the SIPNET workers are the parallelism.
