@@ -25,8 +25,11 @@ run" slide runs SIPNET once, at the prior's center, through the experiment
 `experiments/single_site_mcmc_vs_eki` (about a second, after the prior
 binds): it needs the experiment's prepared driver file
 (`run/prepare_drivers.py`) and a SIPNET binary (`pysipnet install-sipnet`).
-The results slides, still to come, will read what the experiment writes under
-its untracked `output/`, which the experiment's `README.md` says how to make.
+The prior marginals draw from the prior alone, with no run. The prior
+predictive slides, placeholders for now, will read the experiment's prior
+predictive (`run/prior_predictive.py`), and the results slides, still to
+come, the runs; both are written under the experiment's untracked `output/`,
+which its `README.md` says how to make.
 
 ## Rendering and editing
 

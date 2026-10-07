@@ -122,3 +122,621 @@ NEE summed over each day, pools end of day
 ```{python}
 plots.model_output();
 ```
+
+# Calibration as an Inverse Problem
+
+## From the model to the data
+
+::: {.corner-note}
+Reductions illustrative
+:::
+
+```{python}
+plots.forward_map_schematic();
+```
+
+$$
+\mathcal G_k(\theta) = \mathcal H_k\big(\mathcal M(\theta)\big),
+\qquad k \in \{\text{NEE},\ \text{LAI},\ \text{biomass},\ \text{soil C}\}
+$$
+
+## Parameters
+
+$\theta$: the parameters of the flux functions $f$, and some of the initial
+pools $x_0$.
+
+- **Photosynthesis:** capacity, temperature optimum, light response
+- **Respiration:** rates and their temperature sensitivity
+- **Allocation** of new carbon to leaf, wood and roots
+- **Phenology:** when leaves come on, and how many
+- **Soil water:** holding capacity
+- **Initial pools:** wood and soil carbon
+
+None is measurable at the scale of the model, so each gets a prior
+$\pi_0(\theta)$: from plant-trait data, the literature, and an ensemble of
+initial conditions.
+
+## The inverse problem
+
+$$
+\begin{aligned}
+\theta &\sim \pi_0, & y &= \mathcal G(\theta) + \varepsilon, &
+\varepsilon \mid s &\sim \mathcal N\big(0, \Sigma(s)\big), \\
+s_k &\overset{\text{ind}}{\sim} \mathrm{IG}(a, b), &
+\Sigma(s) &= \operatorname{blockdiag}(\Sigma_k), & \Sigma_k &= s_k\, C_k
+\end{aligned}
+$$
+
+- $y = (y_{\text{NEE}}, y_{\text{LAI}}, y_{\text{biomass}}, y_{\text{soil C}})$:
+  the observations, stacked, and $\mathcal G = (\mathcal G_k)_k$ likewise;
+  errors independent across data types
+- $C_k$: a reference covariance, measurement error plus model discrepancy
+- $s_k$: an unknown scale on it, with an inverse-gamma prior
+
+$$
+\pi(\theta, s \mid y) \;\propto\; \pi_0(\theta) \prod_k \mathrm{IG}(s_k;\, a, b)\;
+\mathcal N\big(y_k;\ \mathcal G_k(\theta),\ s_k C_k\big)
+$$
+
+## Difficulty: $\mathcal G$ is expensive
+
+$$
+\text{cost} \;\approx\; n_{\text{eval}} \times n_{\text{sites}} \times t_{\text{run}}
+$$
+
+- $t_{\text{run}}$: one evaluation is a full multi-year simulation
+- $n_{\text{eval}}$: standard samplers need many evaluations, and MCMC makes
+  them one after another
+- $n_{\text{sites}}$: a spatial calibration repeats every evaluation at every
+  site
+
+## Difficulty: no gradients
+
+- SIPNET is compiled code: no adjoint, no automatic differentiation
+- Finite differences cost $D + 1$ runs per gradient, for $\theta \in \mathbb R^D$
+- $\mathcal G$ is not smooth: thresholds, such as the one that triggers
+  leaf-on, make it piecewise
+
+::: {.placeholder}
+Placeholder: the log-likelihood along one parameter, from the SCC runs
+:::
+
+## What an algorithm must do
+
+- **Derivative-free:** use only evaluations of $\mathcal G$
+- **Few rounds:** sequential steps are what cost wall-clock time
+- **Parallel batches:** many evaluations within each round, run at once
+
+# Harvard Forest
+
+## The site and the data {.big-table}
+
+::: {.corner-note}
+$\theta \in \mathbb R^{15}$; $y \in \mathbb R^{2715}$
+:::
+
+A temperate deciduous forest in Massachusetts. One SIPNET run covers
+2012–2024 at three-hourly steps, driven by ERA5 weather with its time labels
+and averaging corrected.
+
+| Data | $k$ | $n_k$ | Years |
+|---|---|---|---|
+| NEE, night-centered 12-hour windows (US-Ha1 tower) | NEE night | 800 | 2012–2020 |
+| NEE, day-centered 12-hour windows (US-Ha1 tower) | NEE day | 1,819 | 2012–2020 |
+| Leaf area index (MODIS, June–August composites) | LAI | 89 | 2012–2024 |
+| Aboveground biomass (LandTrendr, annual) | biomass | 6 | 2012–2017 |
+| Soil organic carbon, 0–200 cm (SoilGrids) | soil C | 1 | static |
+
+Held out: the second tower, US-xHA, 943 NEE windows over 2021–2024.
+
+# Harvard Forest: the likelihood
+
+## Observation operators
+
+::: {.corner-note}
+$\langle \cdot \rangle_W$: the step-length-weighted mean over the model steps
+tiling $W$; units converted to the observations'
+:::
+
+**NEE.** Hourly tower NEE over each UTC day's windows $W = (w^-, w^+]$,
+$(d, d + 12\,\mathrm h]$ (night) and $(d + 12\,\mathrm h, d + 24\,\mathrm h]$
+(day), kept if at least half the hours were measured rather than gap-filled:
+
+$$
+y_W = \frac{1}{12} \sum_{h \in W} \mathrm{NEE}^{\text{obs}}_h,
+\qquad
+\mathcal H_W(\mathcal M) = \frac{1}{w^+ - w^-} \sum_{s:\ b_s \in W} \mathrm{NEE}_s
+$$
+
+**LAI**, composite $i$ dated $t_i$, from leaf carbon and the leaf carbon per
+area $\lambda$; **biomass**, year $j$, from wood carbon and its carbon
+fraction $f_{\mathrm C} = 0.48$; **soil carbon**, from the run's mean soil pool:
+
+$$
+\mathcal H_i(\mathcal M) = \frac{C^{\text{leaf}}_{s(t_i)}}{\lambda},
+\qquad
+\mathcal H_j(\mathcal M) = \frac{\langle C^{\text{wood}} \rangle_{\text{year } j}}{f_{\mathrm C}},
+\qquad
+\mathcal H(\mathcal M) = \langle C^{\text{soil}} \rangle_{\text{run}}
+$$
+
+## The noise model
+
+$$
+y_k \mid \theta, s_k \sim \mathcal N\big(\mathcal G_k(\theta),\ s_k C_k\big),
+\qquad
+C_k = \Sigma^{\text{obs}}_k + \Sigma^{\delta}_k
+$$
+
+- $\Sigma^{\text{obs}}_k$: measurement error, from each data product's own
+  reported uncertainty
+- $\Sigma^{\delta}_k$: model discrepancy, what SIPNET gets wrong: its
+  structure, its drivers, a tower's footprint against the model's pixel
+- Sources independent; a scale $s_k$ on NEE night, NEE day and LAI, and
+  $s_k = 1$ for biomass and soil carbon, too few to inform one
+
+## NEE: measurement error
+
+::: {.corner-note}
+AmeriFlux's `RANDUNC` ($r_h$) and `JOINTUNC` ($j_h$); a window reporting
+neither takes its source's median
+:::
+
+$$
+\big(\Sigma^{\text{obs}}\big)_{WW'} = \mathbf 1[W = W']\,\Big(\frac{\overline{r^2}_W}{12} + \bar u_W^{\,2}\Big),
+\qquad
+u_h = \sqrt{\max\big(j_h^2 - r_h^2,\ 0\big)}
+$$
+
+- $r_h$: the hour's random uncertainty, independent from hour to hour, so
+  it averages down over the window's 12 hours
+- $j_h$: the joint uncertainty, which adds the spread over friction-velocity
+  ($u_*$) filtering thresholds; $u_h$, that part alone, shifts a whole
+  window together and does not average down
+- $\overline{r^2}_W$, $\bar u_W$: means over the window's hours
+
+## NEE: discrepancy
+
+::: {.corner-note}
+$t_W = w^+$ in days
+:::
+
+A stationary Gaussian process in the window ends:
+
+$$
+\big(\Sigma^{\delta}_k\big)_{WW'} = v^\delta_k\, \rho^L_k(t_W - t_{W'}),
+\qquad
+\rho^L_k = \sum_m w_m\, \kappa_m, \quad \sum_m w_m = 1
+$$
+
+$$
+\kappa_\tau(\Delta) = e^{-|\Delta|/\tau},
+\qquad
+\kappa^{\text{per}}_\lambda(\Delta) = \exp\!\Big(-\frac{2\sin^2(\pi\Delta/P)}{\lambda^2}\Big),
+\quad P = 365.25\ \text{d}
+$$
+
+- A short exponential for weather-scale error, a long one for anomalies
+  that last a season, a periodic one for a bias recurring every year
+- $v^\delta_k$, the variance at one window, is the same in every error model
+  $L$: $1.43^2$ (night), $2.99^2$ (day), in (µmol m⁻² s⁻¹)²
+
+## Three NEE error models {.big-table}
+
+::: {.corner-note}
+Weights and timescales (days): maximum-likelihood fits to an earlier
+calibration's residuals, used for their shape only
+:::
+
+| Error model $L$ | $\rho^L$, night | $\rho^L$, day |
+|---|---|---|
+| short memory | $\kappa_{0.74}$ | $\kappa_{1.72}$ |
+| long memory | $0.20\,\kappa_{0.74} + 0.80\,\kappa_{57.2}$ | $0.42\,\kappa_{1.72} + 0.58\,\kappa_{36.5}$ |
+| recurring bias | $0.29\,\kappa_{1.17} + 0.39\,\kappa_{64.2} + 0.32\,\kappa^{\text{per}}_{0.437}$ | $0.48\,\kappa_{1.78} + 0.33\,\kappa_{46.6} + 0.20\,\kappa^{\text{per}}_{0.208}$ |
+
+The three nest, and differ only in memory: same $v^\delta_k$, same
+measurement error.
+
+## LAI, biomass and soil carbon
+
+::: {.corner-note}
+$\sigma_i$, $\sigma_j$, $\sigma$: each product's reported standard deviations;
+$t_i$ in days
+:::
+
+$$
+\begin{aligned}
+\text{LAI:}\quad & (C)_{ii'} = \max(\sigma_i,\ 0.66)^2\, \mathbf 1[i = i']
+  + 0.5^2\, e^{-|t_i - t_{i'}|/30}\, \mathbf 1[\text{same summer}] \\[4pt]
+\text{biomass:}\quad & C = \sigma\sigma^\top + \kappa^2\, y y^\top + 5^2 I,
+  \qquad \kappa = 0.02 / 0.48 \\[4pt]
+\text{soil C:}\quad & C = \sigma^2 + (0.25\, y)^2
+\end{aligned}
+$$
+
+- **LAI:** the product's spread, floored, plus discrepancy correlated within
+  a summer
+- **Biomass:** LandTrendr's error and the carbon fraction's, each shared by
+  every year, plus independent discrepancy
+- **Soil carbon:** a discrepancy proportional to the stock, for a 0–200 cm
+  stock against SIPNET's single soil pool
+
+# Harvard Forest: the prior
+
+## Calibration parameters
+
+::: {.corner-note}
+$[l, u]$: the central 95% interval. Every parameter independent
+:::
+
+| Parameter | Prior | SIPNET parameters written |
+|---|---|---|
+| photosynthetic capacity $P$ (nmol g⁻¹ s⁻¹) | log-normal, $[140, 450]$ | `aMax` (with $\rho$) |
+| foliar respiration share $\rho$ | logit-normal, $[0.04, 0.20]$ | `aMax`, `baseFolRespFrac` |
+| optimum photosynthesis temperature $T_{\text{opt}}$ (°C) | $\mathcal N(22, 2.5^2)$ | `psnTOpt`; `psnTMin` $= T_{\text{opt}} - 23.96$ |
+| half-saturation light $I_{1/2}$ (mol m⁻² d⁻¹) | log-normal, $[4.6, 26.3]$ | `halfSatPar` |
+| soil water holding capacity $W$ (cm) | log-normal, $[15, 150]$ | `soilWHC` |
+| leaf growth at leaf-on (g C m⁻²) | log-normal, $[50, 180]$ | `leafGrowth` |
+| leaf-on growing degree-days (°C d) | log-normal, $[500, 1100]$ | `gddLeafOn` |
+| allocation (leaf, wood, fine root, coarse root) | softmax-normal about $(0.18, 0.45, 0.065, 0.305)$ | `leafAllocation`, `woodAllocation`, `fineRootAllocation` |
+| wood respiration rate at 10 °C $r_{10}$ (yr⁻¹) | log-normal, $[0.006, 0.04]$ | `baseVegResp`, `baseCoarseRootResp` $= r_{10}/Q_{10}$ |
+| soil respiration flux at 10 °C $F_{10}$ (g C m⁻² yr⁻¹) | log-normal, $[200, 900]$ | `baseSoilResp` $= F_{10} / (1000\, C_{s,0}\, Q^{\text{soil}}_{10})$ |
+| soil respiration $Q^{\text{soil}}_{10}$ | log-normal, $[1.3, 3.2]$ | `soilRespQ10` |
+| initial wood carbon (kg C m⁻²) | log-normal, fitted to 100 initial-condition draws | `plantWoodInit` |
+| initial soil carbon $C_{s,0}$ (kg C m⁻²) | log-normal, the same | `soilInit` |
+
+## Photosynthesis in SIPNET
+
+::: {.corner-note}
+`sipnet.c` at SIPNET v2.2.0-alpha.1. $\omega$: a units constant. Leaf
+respiration is also reduced when the soil is frozen
+:::
+
+$$
+\mathrm{GPP} = \underbrace{A\,(f + r)}_{\text{gross capacity}}\; \frac{C_{\text{leaf}}}{c}\;
+D_T\, D_{\text{VPD}}\, D_{\text{light}}\, D_{\text{water}}\; \omega,
+\qquad
+R_{\text{leaf}} = r A\, \frac{C_{\text{leaf}}}{c}\, \omega\; Q_{10}^{(T - T_{\text{opt}})/10}
+$$
+
+- $A$ `aMax`, the maximum rate per gram of leaf, in full light and with no
+  stress; $f$ `aMaxFrac`, its daily mean as a fraction; $r$ `baseFolRespFrac`, leaf respiration as a fraction
+  of $A$; $c$ `cFracLeaf`, the carbon fraction of leaf mass
+- $D_T = \max\!\Big(0,\ \dfrac{(T_{\max} - T)(T - T_{\min})}{\big((T_{\max} - T_{\min})/2\big)^2}\Big)$,
+  $\ T_{\max} = 2T_{\text{opt}} - T_{\min}$
+- $D_{\text{light}} = \displaystyle\int_0^1 \big(1 - 2^{-I e^{-k\, \mathrm{LAI}\, \ell} / I_{1/2}}\big)\, d\ell$,
+  the canopy's mean light response
+- $D_{\text{VPD}} \in [0, 1]$ falls with vapor pressure deficit;
+  $D_{\text{water}} \in [0, 1]$ is the transpiration the soil water (up to
+  $W$) can supply over the demand
+
+## Photosynthesis: two identifiable combinations
+
+$A, f, r, c$ enter only through
+
+$$
+P = \frac{A\,(f + r)}{c},
+\qquad
+\rho = \frac{r}{f + r},
+$$
+
+so that
+
+$$
+\mathrm{GPP} = P\, C_{\text{leaf}}\, D_T D_{\text{VPD}} D_{\text{light}} D_{\text{water}}\, \omega,
+\qquad
+R_{\text{leaf}} = \rho\, P\, C_{\text{leaf}}\, \omega\, Q_{10}^{(T - T_{\text{opt}})/10}
+$$
+
+- $P$: gross photosynthetic capacity per gram of leaf carbon; $\rho$: the
+  share of it the leaves respire
+- Calibrate $(P, \rho)$, fix $f = 0.861$ and $c = 0.466$, and write
+  $A = P c (1 - \rho)/f$, $\ r = \rho f / (1 - \rho)$
+- Also calibrated: $T_{\text{opt}}$ in $D_T$ (with $T_{\min} = T_{\text{opt}} - 23.96$ °C),
+  $I_{1/2}$ in $D_{\text{light}}$, $W$ in $D_{\text{water}}$
+
+## The noise scales
+
+::: {.corner-note}
+Shaded: the central 90%, $[0.35, 4.72]$; dashed: the median
+:::
+
+$$
+s_k \overset{\text{ind}}{\sim} \mathrm{IG}(a, b),
+\qquad a = 2,\quad b = \operatorname{median}\,\mathrm{Gamma}(2, 1) \approx 1.678
+$$
+
+:::: {.columns}
+::: {.column width="45%"}
+- Median 1: $C_k$ is the reference
+- Central 90%: the noise standard deviation times 0.59 to 2.2
+- **Fixed noise:** $s_k = 1$, the prior median
+- **Inferred noise:** $s_k$ unknown
+:::
+::: {.column width="55%"}
+```{python}
+plots.noise_scale_prior();
+```
+:::
+::::
+
+## Six models {.big-table}
+
+$$
+\theta \sim \pi_0,
+\qquad
+y_k \mid \theta, s \sim \mathcal N\big(\mathcal G_k(\theta),\ s_k\, C^L_k\big),
+\qquad
+s_k \sim \mathrm{IG}(a, b)\ \text{(inferred)} \ \text{ or } \ s_k = 1\ \text{(fixed)}
+$$
+
+| | fixed noise | inferred noise |
+|---|---|---|
+| short memory | ✓ | ✓ |
+| long memory | ✓ | ✓ |
+| recurring bias | ✓ | ✓ |
+
+Every model shares the prior, the forward map and the noise of biomass and
+soil carbon.
+
+## Prior marginals
+
+::: {.corner-note}
+Histograms of prior draws, each law's density over them, the median dashed
+:::
+
+```{python}
+plots.prior_marginals();
+```
+
+## Prior predictive: NEE
+
+::: {.placeholder}
+Placeholder: the prior predictive against the NEE windows, from
+`figures/prior_predictive.py`'s `plot_nee_windows` and
+`plot_nee_seasonal_cycle`. The stored prior predictive predates the current
+models; regenerate it with
+`uv run python -m experiments.single_site_mcmc_vs_eki.run.prior_predictive`.
+:::
+
+## Prior predictive: LAI, biomass and soil carbon
+
+::: {.placeholder}
+Placeholder: the prior predictive against LAI, biomass and soil carbon, from
+`figures/prior_predictive.py`'s `plot_pool_observations`, once the prior
+predictive is regenerated.
+:::
+
+# Inference Algorithms
+
+## One Gaussian conditioning step
+
+Under $\theta \sim \pi_0$ and $y = \mathcal G(\theta) + \varepsilon$, approximate
+the joint law of $(\theta, y)$ by a Gaussian with its first two moments:
+
+$$
+\begin{pmatrix} \theta \\ y \end{pmatrix}
+\;\approx\;
+\mathcal N\!\left(
+\begin{pmatrix} m_\theta \\ m_g \end{pmatrix},
+\begin{pmatrix} C_{\theta\theta} & C_{\theta g} \\ C_{g\theta} & C_{gg} + \Sigma \end{pmatrix}
+\right),
+\qquad
+\begin{aligned}
+m_\theta &= \mathbb E[\theta], & C_{\theta\theta} &= \operatorname{Cov}(\theta), \\
+m_g &= \mathbb E[\mathcal G(\theta)], & C_{gg} &= \operatorname{Cov}\big(\mathcal G(\theta)\big), \\
+& & C_{\theta g} &= \operatorname{Cov}\big(\theta, \mathcal G(\theta)\big)
+\end{aligned}
+$$
+
+Then condition on the observed $y$:
+
+$$
+\theta \mid y \;\approx\; \mathcal N\big(m_\theta + K(y - m_g),\ C_{\theta\theta} - K C_{g\theta}\big),
+\qquad
+K = C_{\theta g}\,(C_{gg} + \Sigma)^{-1}
+$$
+
+Exact when $\mathcal G$ is linear and $\pi_0$ Gaussian.
+
+## The ensemble form
+
+Draw $\theta_j \sim \pi_0$ and run $g_j = \mathcal G(\theta_j)$, $j = 1, \dots, J$;
+estimate the moments by the ensemble's, $\hat C_{\theta g}$ and $\hat C_{gg}$.
+Then move each particle:
+
+$$
+\theta_j' = \theta_j + \hat K\big(y - g_j - \varepsilon_j\big),
+\qquad
+\varepsilon_j \sim \mathcal N(0, \Sigma),
+\qquad
+\hat K = \hat C_{\theta g}\,(\hat C_{gg} + \Sigma)^{-1}
+$$
+
+- If $(\theta, y)$ is jointly Gaussian with the exact moments, $\theta_j'$ is
+  an exact draw of $\theta \mid y$ (Matheron's rule)
+- One batch of $J$ model runs, all in parallel, and no gradients
+
+## EKI: iterating by tempering
+
+$$
+\pi_\varphi(\theta) \;\propto\; \pi_0(\theta)\, \mathcal N\big(y;\ \mathcal G(\theta),\ \Sigma\big)^{\varphi},
+\qquad \varphi: 0 \to 1,
+\qquad
+\mathcal N(y; \mathcal G, \Sigma)^{\Delta\varphi} \propto \mathcal N(y; \mathcal G, \Sigma/\Delta\varphi)
+$$
+
+Each increment is one conditioning step, with the noise inflated and the
+moments re-estimated at the current ensemble:
+
+$$
+\theta_j \leftarrow \theta_j + \hat C_{\theta g}\big(\hat C_{gg} + \Sigma/\Delta\varphi\big)^{-1}\big(y - g_j - \eta_j\big),
+\qquad
+\eta_j \sim \mathcal N(0, \Sigma/\Delta\varphi)
+$$
+
+$$
+\Delta\varphi = \sup\Big\{\delta \le 1 - \varphi :\ \mathrm{ESS}\big(e^{-\delta \Phi_j}\big) \ge J/2\Big\},
+\qquad
+\Phi_j = \tfrac12\, \|y - g_j\|^2_{\Sigma^{-1}}
+$$
+
+- One batch of $J$ runs per stage; repeated until $\varphi = 1$
+- Exact for a linear $\mathcal G$ and Gaussian prior as $J \to \infty$;
+  otherwise an approximation, not a consistent sampler
+
+## Unknown noise scales
+
+$$
+\pi_\varphi(\theta, s) \;\propto\; \pi_0(\theta) \prod_k \mathrm{IG}(s_k;\, a, b)\;
+\mathcal N\big(y_k;\ \mathcal G_k(\theta),\ s_k C_k\big)^{\varphi}
+$$
+
+With $q_k(\theta) = \|y_k - \mathcal G_k(\theta)\|^2_{C_k^{-1}}$ and $n_k = \dim y_k$,
+the conjugacy gives two closed forms:
+
+$$
+s_k \mid \theta, y \;\sim\; \mathrm{IG}\Big(a + \frac{\varphi n_k}{2},\ b + \frac{\varphi\, q_k(\theta)}{2}\Big),
+\qquad
+p(y_k \mid \theta) \;\propto\; |C_k|^{-1/2} \Big(b + \frac{q_k(\theta)}{2}\Big)^{-(a + n_k/2)}
+$$
+
+- The conditional of $s$: an exact Gibbs step, with no model run
+- The marginal in $\theta$: a Student-t, $t_{2a}\big(\mathcal G_k(\theta),\ \tfrac{b}{a} C_k\big)$
+
+## EKI with Gibbs noise updates
+
+::: {.corner-note}
+After Botha et al. (2023), *Inverse Problems* 39, 125014, with the noise
+step an exact draw
+:::
+
+One stage $\varphi \to \varphi' = \varphi + \Delta\varphi$, at particles
+$(\theta_j, s_j)$ with predictions $g_j$:
+
+1. **Increment.** The largest $\Delta\varphi$ keeping $\mathrm{ESS}(w) \ge J/2$,
+   with weights the ratio of the $s$-marginal tempered targets:
+   $$
+   \log w_j = \sum_k \Big[A_k(\varphi) \log B_{jk}(\varphi) - A_k(\varphi') \log B_{jk}(\varphi')\Big],
+   $$
+   $$
+   A_k(\varphi) = a + \tfrac{\varphi n_k}{2},
+   \qquad
+   B_{jk}(\varphi) = b + \tfrac{\varphi\, q_k(\theta_j)}{2}
+   $$
+2. **$\theta$ step.** The Kalman update over $\Delta\varphi$ with noise
+   covariance $\Sigma(s) = \operatorname{blockdiag}(s_k C_k)$, in one of two
+   versions
+3. **Evaluate** $g_j = \mathcal G(\theta_j)$: the stage's one batch of runs
+4. **$s$ step.** $s_{jk} \sim \mathrm{IG}\big(a + \varphi' n_k/2,\ b + \varphi' q_k(\theta_j)/2\big)$
+
+## Two $\theta$ steps
+
+With $T, U$ the centered ensembles of $\theta$ and $g$ over $\sqrt{J - 1}$
+(rows are particles), so that $\hat C_{\theta g} = T^\top U$ and
+$\hat C_{gg} = U^\top U$:
+
+$$
+\begin{aligned}
+\textbf{common:}\quad
+\theta_j' &= \theta_j + T^\top U\big(U^\top U + \Sigma(\bar s)/\Delta\varphi\big)^{-1}\big(y - g_j - \eta_j\big), \\
+&\qquad \eta_j \sim \mathcal N\big(0, \Sigma(\bar s)/\Delta\varphi\big),
+\qquad \bar s_k = \Big(\tfrac1J \textstyle\sum_j s_{jk}^{-1}\Big)^{-1} \\[6pt]
+\textbf{per-particle:}\quad
+\theta_j' &= \theta_j + \tilde T^\top \tilde U\big(\tilde U^\top \tilde U + \Sigma(s_j)/\Delta\varphi\big)^{-1}\big(y - g_j - \eta_j\big), \\
+&\qquad \eta_j \sim \mathcal N\big(0, \Sigma(s_j)/\Delta\varphi\big)
+\end{aligned}
+$$
+
+- $\tilde T, \tilde U$: $T$ and $U$ less their least-squares fit on the
+  centered $\log s_j$, an estimate of $\mathbb E[\operatorname{Cov}(\theta, g \mid s)]$
+- Neither is exact, even for a linear $\mathcal G$: the ensemble's covariance
+  is the $\theta$-marginal's, which exceeds $\mathbb E[\operatorname{Cov}(\theta \mid s)]$
+  by $\operatorname{Cov}(\mathbb E[\theta \mid s])$
+
+## Correcting EKI: importance sampling
+
+The target is the posterior of $\theta$, $\pi(\theta) \propto \pi_0(\theta)\, L(\theta)$,
+with $L$ Gaussian (fixed noise) or the Student-t marginal (inferred noise).
+Fit a base density to EKI's final ensemble:
+
+$$
+q = (1 - \alpha)\; t_\nu\big(\hat m,\ \kappa\, \hat C\big) + \alpha\, \pi_0,
+\qquad \nu = 5,\ \ \kappa = 1.5,\ \ \alpha = 0.1
+$$
+
+$$
+\theta_m \sim q,
+\qquad
+\tilde w_m = \frac{\pi_0(\theta_m)\, L(\theta_m)}{q(\theta_m)},
+\qquad
+W_m = \frac{\tilde w_m}{\sum_{m'} \tilde w_{m'}},
+$$
+
+$$
+\mathrm{ESS} = \frac{1}{\sum_m W_m^2},
+\qquad
+\hat Z = \frac1M \sum_m \tilde w_m
+$$
+
+- The prior component bounds the weights: $\tilde w \le L / \alpha$
+- One batch of $M$ runs; consistent as $M \to \infty$ whatever EKI's bias
+
+## Correcting EKI: tempered SMC
+
+$$
+\pi_\beta(\theta) \;\propto\; q(\theta)^{1 - \beta}\, \big(\pi_0(\theta)\, L(\theta)\big)^{\beta},
+\qquad \beta: 0 \to 1,
+\qquad
+\ell = \log \pi_0 + \log L - \log q
+$$
+
+From $\theta_i \sim q$, $W_i = 1/n$, each stage $t$:
+
+1. **Increment:** the largest $\delta_t$ with
+   $\mathrm{CESS}(\delta) = \dfrac{\big(\sum_i W_i e^{\delta \ell_i}\big)^2}{\sum_i W_i e^{2\delta \ell_i}} \ge \tfrac12$
+2. **Reweight:** $W_i \propto W_i\, e^{\delta_t \ell_i}$, and
+   $\log \hat Z \mathrel{+}= \log \sum_i W_i e^{\delta_t \ell_i}$
+3. **Resample** systematically
+4. **Move** by Metropolis–Hastings steps invariant for $\pi_{\beta_t}$,
+   proposing an independent $t_5(\hat m_t, \hat C_t)$ draw or a random walk
+   $\theta + \lambda_t \hat L_t z$, until 99% of the samples have moved
+
+Importance sampling is the one-stage case, $\delta_1 = 1$ with no resampling
+or moves.
+
+## EKI-initialized MCMC
+
+$C$ chains in lockstep, so that each step is one batch of $C$ runs:
+
+$$
+\theta_c' = \theta_c + \lambda\, \frac{2.38}{\sqrt D}\, L z_c,
+\quad z_c \sim \mathcal N(0, I_D),
+\qquad
+\text{accepted with probability } \min\Big(1,\ \frac{\pi(\theta_c')}{\pi(\theta_c)}\Big)
+$$
+
+- **Start:** $C$ draws resampled by weight from an importance-sampling run;
+  $LL^\top$ the covariance of the EKI ensemble behind it; $\lambda = 1$
+- **Adapt**, during the first 500 steps: every 25 steps
+  $\log \lambda \mathrel{+}= 2(\bar a - 0.234)$, $\bar a$ their acceptance
+  rate; from step 100, every 50 steps, $LL^\top$ re-estimated from the second
+  half of all chains' history
+- **Then freeze** the kernel and discard the first 1000 of 2000 steps: the
+  kept draws are a Metropolis chain with a fixed kernel
+- Under inferred noise the chain runs on the $\theta$-marginal, and each kept
+  draw carries a draw of $s$ from its conditional
+
+# Results
+
+## Ecological takeaways: the noise models
+
+::: {.placeholder}
+To come, from the MCMC runs if they go well
+:::
+
+## Comparing the inference algorithms
+
+::: {.placeholder}
+To come
+:::

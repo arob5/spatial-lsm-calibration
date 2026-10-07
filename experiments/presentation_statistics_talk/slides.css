@@ -28,3 +28,20 @@
   font-size: 0.6em;
   color: #444;
 }
+
+/* Where a figure will go once its results exist. */
+.reveal .placeholder {
+  border: 2px dashed #b0b0b0;
+  border-radius: 8px;
+  padding: 1.2em;
+  margin: 0.6em auto;
+  width: 70%;
+  text-align: center;
+  font-size: 0.6em;
+  color: #777;
+}
+
+/* A table that is the slide's content, set larger than a spec table. */
+.reveal .big-table table {
+  font-size: 0.85em;
+}
