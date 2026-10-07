@@ -142,224 +142,273 @@ $$
 
 ## Parameters
 
-$\theta$: the parameters of the flux functions $f$, and some of the initial
-pools $x_0$.
+$\theta$: flux-function parameters and initial pools
+
+. . .
 
 - **Photosynthesis:** capacity, temperature optimum, light response
-- **Respiration:** rates and their temperature sensitivity
-- **Allocation** of new carbon to leaf, wood and roots
-- **Phenology:** when leaves come on, and how many
+- **Respiration:** rates, temperature sensitivity
+- **Allocation** of new carbon: leaf, wood, roots
+- **Phenology:** timing and size of leaf-on
 - **Soil water:** holding capacity
-- **Initial pools:** wood and soil carbon
+- **Initial pools:** wood, soil carbon
 
-None is measurable at the scale of the model, so each gets a prior
-$\pi_0(\theta)$: from plant-trait data, the literature, and an ensemble of
-initial conditions.
+. . .
+
+Not measurable at the model's scale $\Rightarrow$ a prior $\pi_0(\theta)$:
+plant traits, literature, initial-condition ensemble
 
 ## The inverse problem
 
-$$
-\begin{aligned}
-\theta &\sim \pi_0, & y &= \mathcal G(\theta) + \varepsilon, &
-\varepsilon \mid s &\sim \mathcal N\big(0, \Sigma(s)\big), \\
-s_k &\overset{\text{ind}}{\sim} \mathrm{IG}(a, b), &
-\Sigma(s) &= \operatorname{blockdiag}(\Sigma_k), & \Sigma_k &= s_k\, C_k
-\end{aligned}
-$$
-
-- $y = (y_{\text{NEE}}, y_{\text{LAI}}, y_{\text{biomass}}, y_{\text{soil C}})$:
-  the observations, stacked, and $\mathcal G = (\mathcal G_k)_k$ likewise;
-  errors independent across data types
-- $C_k$: a reference covariance, measurement error plus model discrepancy
-- $s_k$: an unknown scale on it, with an inverse-gamma prior
+::: {.model-box .data-box}
+[Data model]{.box-title}
 
 $$
-\pi(\theta, s \mid y) \;\propto\; \pi_0(\theta) \prod_k \mathrm{IG}(s_k;\, a, b)\;
-\mathcal N\big(y_k;\ \mathcal G_k(\theta),\ s_k C_k\big)
+p(y \mid \theta, s) = \mathcal N\big(y \mid \mathcal G(\theta),\ R(s)\big),
+\qquad
+R(s) = \operatorname{blockdiag}_k\big(s_k\, C_k\big)
 $$
 
-## Difficulty: $\mathcal G$ is expensive
-
-$$
-\text{cost} \;\approx\; n_{\text{eval}} \times n_{\text{sites}} \times t_{\text{run}}
-$$
-
-- $t_{\text{run}}$: one evaluation is a full multi-year simulation
-- $n_{\text{eval}}$: standard samplers need many evaluations, and MCMC makes
-  them one after another
-- $n_{\text{sites}}$: a spatial calibration repeats every evaluation at every
-  site
-
-## Difficulty: no gradients
-
-- SIPNET is compiled code: no adjoint, no automatic differentiation
-- Finite differences cost $D + 1$ runs per gradient, for $\theta \in \mathbb R^D$
-- $\mathcal G$ is not smooth: thresholds, such as the one that triggers
-  leaf-on, make it piecewise
-
-::: {.placeholder}
-Placeholder: the log-likelihood along one parameter, from the SCC runs
+[$y = (y_{\text{NEE}}, y_{\text{LAI}}, y_{\text{biomass}}, y_{\text{soil C}})$;
+$C_k$: measurement error + model discrepancy]{.box-note}
 :::
 
-## What an algorithm must do
+::: {.fragment}
+::: {.model-box .prior-box}
+[Prior model]{.box-title}
 
-- **Derivative-free:** use only evaluations of $\mathcal G$
-- **Few rounds:** sequential steps are what cost wall-clock time
-- **Parallel batches:** many evaluations within each round, run at once
+$$
+\theta \sim \pi_0(\theta)
+$$
+
+[independent marginals over $\theta \in \mathbb R^{D}$]{.box-note}
+:::
+:::
+
+::: {.fragment}
+::: {.model-box .hyper-box}
+[Hyperparameter model]{.box-title}
+
+$$
+s_k \overset{\text{ind}}{\sim} \mathrm{IG}(a, b)
+$$
+
+[unknown scale of each data type's noise; prior median 1]{.box-note}
+:::
+:::
+
+::: {.fragment}
+::: {.model-box .posterior-box}
+[Posterior]{.box-title}
+
+$$
+\pi(\theta, s \mid y) \;\propto\;
+\mathcal N\big(y \mid \mathcal G(\theta),\ R(s)\big)\;
+\pi_0(\theta) \prod_k \mathrm{IG}(s_k \mid a, b)
+$$
+:::
+:::
+
+## Challenges and responses
+
+::: {.pair-head}
+[Challenge]{} [Response]{}
+:::
+
+::: {.fragment .pair-row}
+[**Expensive $\mathcal G$:** a multi-year simulation, repeated at every
+site]{} [**Ensemble methods:** few sequential rounds, each a large batch of
+runs in parallel]{}
+:::
+
+::: {.fragment .pair-row}
+[**No gradients:** compiled code, no adjoint; finite differences cost
+$D + 1$ runs]{} [**Derivative-free updates:** ensemble Kalman steps;
+random-walk and independence proposals]{}
+:::
+
+::: {.fragment .pair-row}
+[**Nonsmooth $\mathcal G$:** thresholds (e.g. leaf-on) make it
+piecewise]{} [**Global, not local:** ensemble moments rather than
+linearization]{}
+:::
+
+::: {.fragment .pair-row}
+[**The data overwhelm the prior** in a single update]{} [**Tempering:**
+$\beta: 0 \to 1$ in adaptive increments]{}
+:::
+
+::: {.fragment .pair-row}
+[**Ensemble Kalman is approximate** for nonlinear $\mathcal G$]{}
+[**Correct it:** importance sampling, SMC or MCMC, seeded by the
+ensemble]{}
+:::
 
 # Harvard Forest
 
-## The site and the data {.big-table}
+## The data {.big-table}
 
 ::: {.corner-note}
-$\theta \in \mathbb R^{15}$; $y \in \mathbb R^{2715}$
+Harvard Forest, Massachusetts: a temperate deciduous forest. One run:
+2012–2024, three-hourly steps
 :::
 
-A temperate deciduous forest in Massachusetts. One SIPNET run covers
-2012–2024 at three-hourly steps, driven by ERA5 weather with its time labels
-and averaging corrected.
+::: {.headline}
+$\theta \in \mathbb R^{15}$ parameters, $\quad y \in \mathbb R^{2715}$ observations
+:::
 
-| Data | $k$ | $n_k$ | Years |
-|---|---|---|---|
-| NEE, night-centered 12-hour windows (US-Ha1 tower) | NEE night | 800 | 2012–2020 |
-| NEE, day-centered 12-hour windows (US-Ha1 tower) | NEE day | 1,819 | 2012–2020 |
-| Leaf area index (MODIS, June–August composites) | LAI | 89 | 2012–2024 |
-| Aboveground biomass (LandTrendr, annual) | biomass | 6 | 2012–2017 |
-| Soil organic carbon, 0–200 cm (SoilGrids) | soil C | 1 | static |
+. . .
 
-Held out: the second tower, US-xHA, 943 NEE windows over 2021–2024.
+| Data type $k$ | What | $n_k$ |
+|---|---|---|
+| NEE, night | mean flux, night-centered 12-hour windows | 800 |
+| NEE, day | mean flux, day-centered 12-hour windows | 1,819 |
+| LAI | summer satellite composites | 89 |
+| Biomass | annual, satellite | 6 |
+| Soil carbon | one static value | 1 |
+
+. . .
+
+- NEE: 96% of the data, from one flux tower
+- Held out: a second tower, 943 NEE windows (2021–2024)
 
 # Harvard Forest: the likelihood
 
 ## Observation operators
 
 ::: {.corner-note}
-$\langle \cdot \rangle_W$: the step-length-weighted mean over the model steps
-tiling $W$; units converted to the observations'
+$\mathcal M(\theta)$: the simulated trajectory, three-hourly steps $t$;
+units converted to the observations'
 :::
 
-**NEE.** Hourly tower NEE over each UTC day's windows $W = (w^-, w^+]$,
-$(d, d + 12\,\mathrm h]$ (night) and $(d + 12\,\mathrm h, d + 24\,\mathrm h]$
-(day), kept if at least half the hours were measured rather than gap-filled:
+Each data type: a reduction of the trajectory $\mathcal M(\theta)$
 
-$$
-y_W = \frac{1}{12} \sum_{h \in W} \mathrm{NEE}^{\text{obs}}_h,
-\qquad
-\mathcal H_W(\mathcal M) = \frac{1}{w^+ - w^-} \sum_{s:\ b_s \in W} \mathrm{NEE}_s
-$$
+. . .
 
-**LAI**, composite $i$ dated $t_i$, from leaf carbon and the leaf carbon per
-area $\lambda$; **biomass**, year $j$, from wood carbon and its carbon
-fraction $f_{\mathrm C} = 0.48$; **soil carbon**, from the run's mean soil pool:
+| $k$ | $\mathcal H_k(\mathcal M)$ | reduction |
+|---|---|---|
+| NEE | $\operatorname{mean}_{t \in W} \mathrm{NEE}_t$ | time average over a 12-hour window $W$ |
+| LAI | $C^{\text{leaf}}_{t_i} / \lambda$ | leaf carbon at the composite's date |
+| Biomass | $\operatorname{mean}_{t \in \text{year } j} C^{\text{wood}}_t / 0.48$ | yearly mean of wood carbon |
+| Soil carbon | $\operatorname{mean}_{t} C^{\text{soil}}_t$ | mean over the run |
 
-$$
-\mathcal H_i(\mathcal M) = \frac{C^{\text{leaf}}_{s(t_i)}}{\lambda},
-\qquad
-\mathcal H_j(\mathcal M) = \frac{\langle C^{\text{wood}} \rangle_{\text{year } j}}{f_{\mathrm C}},
-\qquad
-\mathcal H(\mathcal M) = \langle C^{\text{soil}} \rangle_{\text{run}}
-$$
+. . .
+
+$\lambda$: leaf carbon per area (a fixed parameter); 0.48: carbon fraction
+of wood
 
 ## The noise model
 
 $$
-y_k \mid \theta, s_k \sim \mathcal N\big(\mathcal G_k(\theta),\ s_k C_k\big),
-\qquad
-C_k = \Sigma^{\text{obs}}_k + \Sigma^{\delta}_k
+C_k \;=\; \underbrace{\Sigma^{\text{obs}}_k}_{\text{measurement}} \;+\; \underbrace{\Sigma^{\delta}_k}_{\text{model discrepancy}}
 $$
 
-- $\Sigma^{\text{obs}}_k$: measurement error, from each data product's own
-  reported uncertainty
-- $\Sigma^{\delta}_k$: model discrepancy, what SIPNET gets wrong: its
-  structure, its drivers, a tower's footprint against the model's pixel
-- Sources independent; a scale $s_k$ on NEE night, NEE day and LAI, and
-  $s_k = 1$ for biomass and soil carbon, too few to inform one
+. . .
 
-## NEE: measurement error
+- **Measurement:** each data product's own reported uncertainty
+- **Discrepancy:** what SIPNET gets wrong: structure, drivers, a tower's
+  footprint vs the model's pixel
+
+. . .
+
+- Independent across data types
+- Scales $s_k$ on NEE night, NEE day, LAI; $s_k = 1$ for biomass and soil
+  carbon (too few data)
+
+## NEE: the error is discrepancy
 
 ::: {.corner-note}
-AmeriFlux's `RANDUNC` ($r_h$) and `JOINTUNC` ($j_h$); a window reporting
-neither takes its source's median
+µmol m⁻² s⁻¹; measurement error in the appendix
 :::
 
-$$
-\big(\Sigma^{\text{obs}}\big)_{WW'} = \mathbf 1[W = W']\,\Big(\frac{\overline{r^2}_W}{12} + \bar u_W^{\,2}\Big),
-\qquad
-u_h = \sqrt{\max\big(j_h^2 - r_h^2,\ 0\big)}
-$$
-
-- $r_h$: the hour's random uncertainty, independent from hour to hour, so
-  it averages down over the window's 12 hours
-- $j_h$: the joint uncertainty, which adds the spread over friction-velocity
-  ($u_*$) filtering thresholds; $u_h$, that part alone, shifts a whole
-  window together and does not average down
-- $\overline{r^2}_W$, $\bar u_W$: means over the window's hours
-
-## NEE: discrepancy
-
-::: {.corner-note}
-$t_W = w^+$ in days
-:::
-
-A stationary Gaussian process in the window ends:
-
-$$
-\big(\Sigma^{\delta}_k\big)_{WW'} = v^\delta_k\, \rho^L_k(t_W - t_{W'}),
-\qquad
-\rho^L_k = \sum_m w_m\, \kappa_m, \quad \sum_m w_m = 1
-$$
-
-$$
-\kappa_\tau(\Delta) = e^{-|\Delta|/\tau},
-\qquad
-\kappa^{\text{per}}_\lambda(\Delta) = \exp\!\Big(-\frac{2\sin^2(\pi\Delta/P)}{\lambda^2}\Big),
-\quad P = 365.25\ \text{d}
-$$
-
-- A short exponential for weather-scale error, a long one for anomalies
-  that last a season, a periodic one for a bias recurring every year
-- $v^\delta_k$, the variance at one window, is the same in every error model
-  $L$: $1.43^2$ (night), $2.99^2$ (day), in (µmol m⁻² s⁻¹)²
-
-## Three NEE error models {.big-table}
-
-::: {.corner-note}
-Weights and timescales (days): maximum-likelihood fits to an earlier
-calibration's residuals, used for their shape only
-:::
-
-| Error model $L$ | $\rho^L$, night | $\rho^L$, day |
+| | night | day |
 |---|---|---|
-| short memory | $\kappa_{0.74}$ | $\kappa_{1.72}$ |
-| long memory | $0.20\,\kappa_{0.74} + 0.80\,\kappa_{57.2}$ | $0.42\,\kappa_{1.72} + 0.58\,\kappa_{36.5}$ |
-| recurring bias | $0.29\,\kappa_{1.17} + 0.39\,\kappa_{64.2} + 0.32\,\kappa^{\text{per}}_{0.437}$ | $0.48\,\kappa_{1.78} + 0.33\,\kappa_{46.6} + 0.20\,\kappa^{\text{per}}_{0.208}$ |
+| tower's own measurement error (median) | 0.7 | 1.0 |
+| residual size, first calibration | 1.6 | 3.2 |
 
-The three nest, and differ only in memory: same $v^\delta_k$, same
-measurement error.
+. . .
+
+Discrepancy: a Gaussian process in time,
+
+$$
+\operatorname{Cov}(\delta_W, \delta_{W'}) = v^\delta\, \rho(t_W - t_{W'}),
+\qquad \rho(0) = 1
+$$
+
+- $v^\delta$: the size at one window, **fixed**
+- $\rho$: the error's **memory**, which the three error models differ in
+
+## Three NEE error models
+
+::: {.fragment}
+::: {.model-box .data-box}
+[Short memory]{.box-title}
+
+[Errors forget within **1–2 days**: weather-scale]{}
+:::
+:::
+
+::: {.fragment}
+::: {.model-box .prior-box}
+[Long memory]{.box-title}
+
+[\+ anomalies lasting a **season** (about 5–8 weeks)]{}
+:::
+:::
+
+::: {.fragment}
+::: {.model-box .hyper-box}
+[Recurring bias]{.box-title}
+
+[\+ a bias repeating at the **same time every year**]{}
+:::
+:::
+
+::: {.fragment}
+- Nested; timescales fitted to an earlier calibration's residuals
+- Same per-window size $v^\delta$; **different memory**
+:::
+
+## Why memory matters
+
+::: {.corner-note}
+Kernels and fitted weights in the appendix
+:::
+
+$n$ windows sharing one bias $b \sim \mathcal N(0, \sigma_b^2)$, plus
+independent errors of variance $\sigma_e^2$:
+
+$$
+\mathbf 1^\top C^{-1} \mathbf 1 = \frac{n}{\sigma_e^2 + n\sigma_b^2} \;\xrightarrow[n \to \infty]{}\; \frac{1}{\sigma_b^2}
+$$
+
+. . .
+
+Memory caps the information along slow directions. A seasonal misfit in
+day NEE ($n = 1819$) counts as
+
+| short memory | long memory | recurring bias |
+|---|---|---|
+| ≈ 850 windows | ≈ 115 windows | ≈ 50 windows |
+
+. . .
+
+- Memory decides which misfits are **cheap**
+- SIPNET can't match both the summer amplitude and the day-to-day variation
+  of daytime NEE: the error model decides which it gives up
 
 ## LAI, biomass and soil carbon
 
 ::: {.corner-note}
-$\sigma_i$, $\sigma_j$, $\sigma$: each product's reported standard deviations;
-$t_i$ in days
+Formulas in the appendix
 :::
 
-$$
-\begin{aligned}
-\text{LAI:}\quad & (C)_{ii'} = \max(\sigma_i,\ 0.66)^2\, \mathbf 1[i = i']
-  + 0.5^2\, e^{-|t_i - t_{i'}|/30}\, \mathbf 1[\text{same summer}] \\[4pt]
-\text{biomass:}\quad & C = \sigma\sigma^\top + \kappa^2\, y y^\top + 5^2 I,
-  \qquad \kappa = 0.02 / 0.48 \\[4pt]
-\text{soil C:}\quad & C = \sigma^2 + (0.25\, y)^2
-\end{aligned}
-$$
-
-- **LAI:** the product's spread, floored, plus discrepancy correlated within
-  a summer
-- **Biomass:** LandTrendr's error and the carbon fraction's, each shared by
-  every year, plus independent discrepancy
-- **Soil carbon:** a discrepancy proportional to the stock, for a 0–200 cm
-  stock against SIPNET's single soil pool
+- **LAI:** product's spread (floored) + discrepancy correlated within a
+  summer (about a month)
+- **Biomass:** satellite error and carbon-fraction error, each shared across
+  years, + independent discrepancy
+- **Soil carbon:** discrepancy 25% of the stock (a 0–200 cm stock vs one
+  model pool)
 
 # Harvard Forest: the prior
 
