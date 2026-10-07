@@ -1,6 +1,7 @@
 #!/bin/bash -l
 #$ -P dietzelab
 #$ -l buyin
+#$ -l avx2
 #$ -pe omp 28
 #$ -l h_rt=12:00:00
 #$ -j y
