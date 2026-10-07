@@ -862,8 +862,10 @@ $\hat C_{\theta g} = T^\top U$, $\hat C_{gg} = U^\top U$
 ## Importance sampling and SMC: the details
 
 $$
-q = 0.9\; t_5\big(\hat m,\ 1.5\, \hat C\big) + 0.1\, \pi_0,
-\qquad
+q = 0.9\; t_5\big(\hat m,\ 1.5\, \hat C\big) + 0.1\, \pi_0
+$$
+
+$$
 W_m = \frac{\tilde w_m}{\sum_{m'} \tilde w_{m'}},
 \qquad
 \mathrm{ESS} = \frac{1}{\sum_m W_m^2},
