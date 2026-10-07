@@ -164,13 +164,10 @@ plant traits, literature, initial-condition ensemble
 [Data model]{.box-title}
 
 $$
-p(y \mid \theta, s) = \mathcal N\big(y \mid \mathcal G(\theta),\ R(s)\big),
+y \mid \theta, \Sigma \sim \mathcal N\big(\mathcal G(\theta),\ \Sigma\big),
 \qquad
-R(s) = \operatorname{blockdiag}_k\big(s_k\, C_k\big)
+\Sigma = \operatorname{blockdiag}\big(s_1^2 \Sigma_1, \dots, s_K^2 \Sigma_K\big)
 $$
-
-[$y = (y_{\text{NEE}}, y_{\text{LAI}}, y_{\text{biomass}}, y_{\text{soil C}})$;
-$C_k$: measurement error + model discrepancy]{.box-note}
 :::
 
 ::: {.fragment}
@@ -178,10 +175,10 @@ $C_k$: measurement error + model discrepancy]{.box-note}
 [Prior model]{.box-title}
 
 $$
-\theta \sim \pi_0(\theta)
+\theta \sim \mathcal N(m, C)
 $$
 
-[independent marginals over $\theta \in \mathbb R^{D}$]{.box-note}
+[$\pi_0$: this prior, on the unconstrained (log, logit) scale]{.box-note}
 :::
 :::
 
@@ -190,7 +187,7 @@ $$
 [Hyperparameter model]{.box-title}
 
 $$
-s_k \overset{\text{ind}}{\sim} \mathrm{IG}(a, b)
+s_k^2 \overset{\text{ind}}{\sim} \mathrm{IG}(a_k, b_k)
 $$
 
 [unknown scale of each data type's noise; prior median 1]{.box-note}
@@ -203,8 +200,8 @@ $$
 
 $$
 \pi(\theta, s \mid y) \;\propto\;
-\mathcal N\big(y \mid \mathcal G(\theta),\ R(s)\big)\;
-\pi_0(\theta) \prod_k \mathrm{IG}(s_k \mid a, b)
+\mathcal N\big(y \mid \mathcal G(\theta),\ \Sigma\big)\;
+\mathcal N(\theta \mid m, C) \prod_k \mathrm{IG}(s_k^2 \mid a_k, b_k)
 $$
 :::
 :::
@@ -300,7 +297,7 @@ of wood
 ## The noise model
 
 $$
-C_k \;=\; \underbrace{\Sigma^{\text{obs}}_k}_{\text{measurement}} \;+\; \underbrace{\Sigma^{\delta}_k}_{\text{model discrepancy}}
+\Sigma_k \;=\; \underbrace{\Sigma^{\text{obs}}_k}_{\text{measurement}} \;+\; \underbrace{\Sigma^{\delta}_k}_{\text{model discrepancy}}
 $$
 
 . . .
@@ -312,7 +309,7 @@ $$
 . . .
 
 - Independent across data types
-- Scales $s_k$ on NEE night, NEE day, LAI; $s_k = 1$ for biomass and soil
+- Scales $s_k$ on NEE night, NEE day, LAI; $s_k^2 = 1$ for biomass and soil
   carbon (too few data)
 
 ## NEE: the error is discrepancy {.big-table}
@@ -368,34 +365,6 @@ $$
 - Nested; timescales fitted to an earlier calibration's residuals
 - Same per-window size $v^\delta$; **different memory**
 :::
-
-## Why memory matters {.big-table}
-
-::: {.corner-note}
-Kernels and fitted weights in the appendix
-:::
-
-$n$ windows sharing one bias $b \sim \mathcal N(0, \sigma_b^2)$, plus
-independent errors of variance $\sigma_e^2$:
-
-$$
-\mathbf 1^\top C^{-1} \mathbf 1 = \frac{n}{\sigma_e^2 + n\sigma_b^2} \;\xrightarrow[n \to \infty]{}\; \frac{1}{\sigma_b^2}
-$$
-
-. . .
-
-Memory caps the information along slow directions. A seasonal misfit in
-day NEE ($n = 1819$) counts as
-
-| short memory | long memory | recurring bias |
-|---|---|---|
-| ≈ 850 windows | ≈ 115 windows | ≈ 50 windows |
-
-. . .
-
-- Memory decides which misfits are **cheap**
-- SIPNET can't match both the summer amplitude and the day-to-day variation
-  of daytime NEE: the error model decides which it gives up
 
 ## LAI, biomass and soil carbon
 
@@ -468,15 +437,15 @@ Shaded: the central 90%, $[0.35, 4.72]$; dashed: the median
 :::
 
 $$
-s_k \overset{\text{ind}}{\sim} \mathrm{IG}(a, b),
-\qquad a = 2,\quad b = \operatorname{median}\,\mathrm{Gamma}(2, 1) \approx 1.678
+s_k^2 \overset{\text{ind}}{\sim} \mathrm{IG}(a_k, b_k),
+\qquad a_k = 2,\quad b_k = \operatorname{median}\,\mathrm{Gamma}(2, 1) \approx 1.678
 $$
 
 :::: {.columns}
 ::: {.column width="45%"}
-- Median 1: $C_k$ is the reference
+- Median 1: $\Sigma_k$ is the reference
 - Central 90%: the noise standard deviation times 0.59 to 2.2
-- **Fixed noise:** $s_k = 1$, the prior median
+- **Fixed noise:** $s_k^2 = 1$, the prior median
 - **Inferred noise:** $s_k$ unknown
 :::
 ::: {.column width="55%"}
@@ -489,9 +458,9 @@ plots.noise_scale_prior();
 ## Six models {.big-table}
 
 $$
-p(y_k \mid \theta, s) = \mathcal N\big(y_k \mid \mathcal G_k(\theta),\ s_k\, C^L_k\big),
+y_k \mid \theta, s_k \sim \mathcal N\big(\mathcal G_k(\theta),\ s_k^2\, \Sigma^L_k\big),
 \qquad
-s_k \sim \mathrm{IG}(a, b)\ \text{(inferred)} \ \text{ or } \ s_k = 1\ \text{(fixed)}
+s_k^2 \sim \mathrm{IG}(a_k, b_k)\ \text{(inferred)} \ \text{ or } \ s_k^2 = 1\ \text{(fixed)}
 $$
 
 | NEE error model $L$ | fixed noise | inferred noise |
@@ -546,36 +515,36 @@ $J$: ensemble size (100 here)
 $$
 \begin{aligned}
 \mathrm{EKI\text{-}UPDATE}\big(\theta^{(j)} \mid s, \Delta\beta\big)
-&= \theta^{(j)} + \hat C_{\theta g}\Big(\hat C_{gg} + \tfrac{R(s)}{\Delta\beta}\Big)^{-1}\big(y - g^{(j)} - \eta^{(j)}\big), \\
-\eta^{(j)} &\sim \mathcal N\Big(0,\ \tfrac{R(s)}{\Delta\beta}\Big)
+&= \theta^{(j)} + \hat C_{\theta g}\Big(\hat C_{gg} + \tfrac{\Sigma(s)}{\Delta\beta}\Big)^{-1}\big(y - g^{(j)} - \eta^{(j)}\big), \\
+\eta^{(j)} &\sim \mathcal N\Big(0,\ \tfrac{\Sigma(s)}{\Delta\beta}\Big)
 \end{aligned}
 $$
 :::
 
 . . .
 
-- $\Delta\beta = 1$: Gaussian conditioning, $K = \hat C_{\theta g}(\hat C_{gg} + R)^{-1}$
+- $\Delta\beta = 1$: Gaussian conditioning, $K = \hat C_{\theta g}(\hat C_{gg} + \Sigma)^{-1}$
 - Exact for linear $\mathcal G$, Gaussian prior, $J \to \infty$
 - No gradients; no likelihood evaluations
 
 ## EKI: tempering
 
 $$
-\pi_\beta(\theta) \;\propto\; \pi_0(\theta)\; \mathcal N\big(y \mid \mathcal G(\theta),\ R\big)^{\beta},
+\pi_\beta(\theta) \;\propto\; \pi_0(\theta)\; \mathcal N\big(y \mid \mathcal G(\theta),\ \Sigma\big)^{\beta},
 \qquad \beta: 0 \to 1
 $$
 
 . . .
 
-- An increment $\Delta\beta$ = conditioning with noise inflated to $R/\Delta\beta$:
-  $\ \mathcal N(y \mid \mathcal G, R)^{\Delta\beta} \propto \mathcal N(y \mid \mathcal G, R/\Delta\beta)$
+- An increment $\Delta\beta$ = conditioning with noise inflated to $\Sigma/\Delta\beta$:
+  $\ \mathcal N(y \mid \mathcal G, \Sigma)^{\Delta\beta} \propto \mathcal N(y \mid \mathcal G, \Sigma/\Delta\beta)$
 
 . . .
 
 ::: {.algorithm-box}
 $\theta^{(j)} \sim \pi_0$, $\ \beta = 0$; **while** $\beta < 1$:
 
-1. $\Delta\beta$: adaptive, keeping the ESS of weights $e^{-\Delta\beta\, \Phi_j}$ at $J/2$, $\ \Phi_j = \tfrac12\|y - g^{(j)}\|^2_{R^{-1}}$
+1. $\Delta\beta$: adaptive, keeping the ESS of weights $e^{-\Delta\beta\, \Phi_j}$ at $J/2$, $\ \Phi_j = \tfrac12\|y - g^{(j)}\|^2_{\Sigma}$
 2. $\theta^{(j)} \leftarrow \mathrm{EKI\text{-}UPDATE}\big(\theta^{(j)} \mid s = 1, \Delta\beta\big)$ $\quad$ (one batch of $J$ runs)
 3. $\beta \leftarrow \beta + \Delta\beta$
 :::
@@ -592,7 +561,7 @@ After Botha et al. (2023), *Inverse Problems* 39, 125014
 :::
 
 $$
-\pi_\beta(\theta, s) \;\propto\; \pi_0(\theta)\, p(s)\; \mathcal N\big(y \mid \mathcal G(\theta),\ R(s)\big)^{\beta}
+\pi_\beta(\theta, s) \;\propto\; \pi_0(\theta)\, p(s)\; \mathcal N\big(y \mid \mathcal G(\theta),\ \Sigma(s)\big)^{\beta}
 $$
 
 . . .
@@ -622,8 +591,8 @@ ensemble, mixed 9:1 with the prior
 
 **Target:** $\pi(\theta) \propto \pi_0(\theta)\, L(\theta)$
 
-- Fixed noise: $L(\theta) = \mathcal N\big(y \mid \mathcal G(\theta), R\big)$
-- Inferred noise: $s$ integrated out, $L(\theta) = \prod_k t_{2a}\big(y_k \mid \mathcal G_k(\theta),\ \tfrac ba C_k\big)$;
+- Fixed noise: $L(\theta) = \mathcal N\big(y \mid \mathcal G(\theta), \Sigma\big)$, all $s_k = 1$
+- Inferred noise: $s$ integrated out, $L(\theta) = \prod_k t_{2a_k}\big(y_k \mid \mathcal G_k(\theta),\ \tfrac{b_k}{a_k} \Sigma_k\big)$;
   $s$ drawn afterwards from its conditional
 
 . . .
@@ -780,22 +749,6 @@ $$
 $v^\delta_k$: $1.43^2$ (night), $2.99^2$ (day), in (µmol m⁻² s⁻¹)², the same
 for every $L$
 
-## Why memory matters: the general statement
-
-- Along any direction $v$ in which a parameter moves the predictions, an
-  error of variance $\sigma^2$ along $v$ caps $v^\top C^{-1} v$ at
-  $\|v\|^2 / \sigma^2$ (Sherman–Morrison)
-- Effective number of windows along $v$:
-
-$$
-n_{\text{eff}}(v) = \bar\sigma^2\, \frac{v^\top C^{-1} v}{\|v\|^2 / n},
-\qquad \bar\sigma^2 = \operatorname{mean}_W C_{WW}
-$$
-
-- By frequency (Whittle): $r^\top C^{-1} r \approx \sum_j |\hat r(\omega_j)|^2 / S(\omega_j)$,
-  so a misfit is cheap where the error's spectrum $S$ is large; long memory
-  raises $S$ at low frequencies
-
 ## LAI, biomass and soil carbon: covariances
 
 ::: {.corner-note}
@@ -805,22 +758,22 @@ $t_i$ in days
 
 $$
 \begin{aligned}
-\text{LAI:}\quad & (C)_{ii'} = \max(\sigma_i,\ 0.66)^2\, \mathbf 1[i = i']
+\text{LAI:}\quad & (\Sigma_{\text{LAI}})_{ii'} = \max(\sigma_i,\ 0.66)^2\, \mathbf 1[i = i']
   + 0.5^2\, e^{-|t_i - t_{i'}|/30}\, \mathbf 1[\text{same summer}] \\[4pt]
-\text{biomass:}\quad & C = \sigma\sigma^\top + \kappa^2\, y y^\top + 5^2 I,
+\text{biomass:}\quad & \Sigma_{\text{biomass}} = \sigma\sigma^\top + \kappa^2\, y y^\top + 5^2 I,
   \qquad \kappa = 0.02 / 0.48 \\[4pt]
-\text{soil C:}\quad & C = \sigma^2 + (0.25\, y)^2
+\text{soil C:}\quad & \Sigma_{\text{soil C}} = \sigma^2 + (0.25\, y)^2
 \end{aligned}
 $$
 
 ## EKI with noise scales: the details
 
 ::: {.corner-note}
-$q_k(\theta) = \|y_k - \mathcal G_k(\theta)\|^2_{C_k^{-1}}$, $\ n_k = \dim y_k$
+$q_k(\theta) = \|y_k - \mathcal G_k(\theta)\|^2_{\Sigma_k}$, $\ n_k = \dim y_k$
 :::
 
 - **$s$ step**, by conjugacy:
-  $\ \pi_\beta(s_k \mid \theta, y) = \mathrm{IG}\big(s_k \mid a + \tfrac{\beta n_k}{2},\ b + \tfrac{\beta\, q_k(\theta)}{2}\big)$
+  $\ \pi_\beta(s_k^2 \mid \theta, y) = \mathrm{IG}\big(s_k^2 \mid a_k + \tfrac{\beta n_k}{2},\ b_k + \tfrac{\beta\, q_k(\theta)}{2}\big)$
 - **Increment:** the ESS of the ratio of the $s$-marginal tempered targets,
 
 $$
@@ -828,13 +781,13 @@ $$
 $$
 
 $$
-A_k(\beta) = a + \tfrac{\beta n_k}{2},
+A_k(\beta) = a_k + \tfrac{\beta n_k}{2},
 \quad
-B_{jk}(\beta) = b + \tfrac{\beta\, q_k(\theta^{(j)})}{2}
+B_{jk}(\beta) = b_k + \tfrac{\beta\, q_k(\theta^{(j)})}{2}
 $$
 
 - **Marginal** in $\theta$:
-  $p(y_k \mid \theta) = t_{2a}\big(y_k \mid \mathcal G_k(\theta),\ \tfrac{b}{a} C_k\big)$
+  $p(y_k \mid \theta) = t_{2a_k}\big(y_k \mid \mathcal G_k(\theta),\ \tfrac{b_k}{a_k} \Sigma_k\big)$
 
 ## EKI with noise scales: two $\theta$ steps
 
@@ -844,7 +797,7 @@ $\hat C_{\theta g} = T^\top U$, $\hat C_{gg} = U^\top U$
 :::
 
 - **Common gain:** one scale for every particle, the mean precision
-  $\bar s_k = \big(\tfrac1J \sum_j 1/s^{(j)}_k\big)^{-1}$:
+  $\bar s_k^2 = \big(\tfrac1J \sum_j 1/(s^{(j)}_k)^2\big)^{-1}$:
   $\ \mathrm{EKI\text{-}UPDATE}(\theta^{(j)} \mid \bar s, \Delta\beta)$;
   tends to under-disperse
 - **Per-particle gain:** each particle's own $s^{(j)}$, with $T, U$ less
