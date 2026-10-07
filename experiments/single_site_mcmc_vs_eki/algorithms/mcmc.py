@@ -10,12 +10,18 @@ batch of SIPNET runs:
     \\theta'_c = \\theta_c + \\tfrac{2.38}{\\sqrt D} L z_c,\\quad z_c \\sim \\mathcal N(0, I),
     \\qquad \\text{accepted with probability } \\min\\big(1, \\pi(\\theta'_c)/\\pi(\\theta_c)\\big).
 
-The chains start from an importance-sampling run's draws, resampled by
-weight among those whose runs succeeded, and :math:`LL^\\top` starts as that
-run's weighted covariance. During the first ``config.MCMC_ADAPTATION_STEPS``
-steps it is re-estimated every 50 steps from the second half of all chains'
-history, then frozen; the first ``config.MCMC_DISCARDED_STEPS`` steps are
-discarded, so the kept draws are a Metropolis chain with a fixed kernel.
+with :math:`L` scaled by a factor :math:`\\lambda`. The chains start from an
+importance-sampling run's draws, resampled by weight among those whose runs
+succeeded; :math:`LL^\\top` starts as the covariance of the EKI ensemble that
+run was seeded from (the run's own weights are too concentrated to estimate
+one), and :math:`\\lambda = 1`. During the first
+``config.MCMC_ADAPTATION_STEPS`` steps, every 25 steps
+:math:`\\log\\lambda \\mathrel{+}= 2(\\bar a - 0.234)`, :math:`\\bar a` the
+acceptance rate of those steps, and from step 100 on, every 50 steps,
+:math:`LL^\\top` is re-estimated from the second half of all chains'
+history; both are then frozen. The first ``config.MCMC_DISCARDED_STEPS``
+steps are discarded, so the kept draws are a Metropolis chain with a fixed
+kernel.
 
 The run checkpoints every 25 steps (``checkpoint.npz``) and ``resume=True``
 continues from the last checkpoint. It writes every draw of theta
@@ -25,6 +31,7 @@ scales' conditional is drawn) and, in ``samples.nc``, the kept draws.
 """
 
 import json
+from pathlib import Path
 
 import numpy as np
 
@@ -82,7 +89,8 @@ def run_mcmc(
             "theta": start,
             "log_p": log_p,
             "forms": forms,
-            "cholesky": _scaled_cholesky(covariance),
+            "covariance": covariance,
+            "log_scale": 0.0,
             "draws": np.empty((n_steps, n_chains, start.shape[1])),
             "log_densities": np.empty((n_steps, n_chains)),
             "accepted": np.zeros((n_steps, n_chains), bool),
@@ -108,7 +116,8 @@ def run_mcmc(
 def _step(state, log_density, rng, D: int) -> None:
     """One Metropolis step of every chain, adapting the proposal while allowed."""
     step = state["step"]
-    proposal = state["theta"] + rng.normal(size=state["theta"].shape) @ state["cholesky"].T
+    cholesky = _scaled_cholesky(state["covariance"]) * np.exp(float(state["log_scale"]))
+    proposal = state["theta"] + rng.normal(size=state["theta"].shape) @ cholesky.T
     log_p_new, forms_new = log_density(proposal)
     accept = np.log(rng.uniform(size=len(proposal))) < log_p_new - state["log_p"]
     state["theta"][accept] = proposal[accept]
@@ -119,23 +128,26 @@ def _step(state, log_density, rng, D: int) -> None:
     state["draws"][step] = state["theta"]
     state["log_densities"][step] = state["log_p"]
     state["accepted"][step] = accept
-    if 50 <= step < config.MCMC_ADAPTATION_STEPS and step % 50 == 0:
+    if step < config.MCMC_ADAPTATION_STEPS and (step + 1) % 25 == 0:
+        recent = state["accepted"][step - 24 : step + 1].mean()
+        state["log_scale"] = float(state["log_scale"]) + 2.0 * (recent - 0.234)
+    if 100 <= step < config.MCMC_ADAPTATION_STEPS and (step + 1) % 50 == 0:
         history = state["draws"][step // 2 : step + 1].reshape(-1, D)
-        state["cholesky"] = _scaled_cholesky(np.cov(history.T) + 1e-9 * np.eye(D))
+        state["covariance"] = np.cov(history.T) + 1e-9 * np.eye(D)
     state["step"] = step + 1
 
 
 def _starting_points(start_directory, n_chains: int, rng):
     """*n_chains* draws of the importance-sampling run, by weight among its
-    valid samples, and its weighted covariance."""
+    valid samples, and the covariance of the EKI ensemble it was seeded from."""
     samples = load_samples(start_directory)
     theta = samples["theta"].values
     log_weights = np.where(samples["valid"].values.astype(bool), samples["log_weight"].values, -np.inf)
     weights = np.exp(log_weights - np.logaddexp.reduce(log_weights))
     chosen = rng.choice(len(theta), size=n_chains, p=weights)
-    mean = weights @ theta
-    covariance = (weights[:, None] * (theta - mean)).T @ (theta - mean)
-    return theta[chosen].copy(), covariance
+    seed = load_samples(Path(samples.attrs["seed_run"]))
+    ensemble = seed["theta"].values[seed["valid"].values.astype(bool)]
+    return theta[chosen].copy(), np.cov(ensemble.T)
 
 
 def _scaled_cholesky(covariance) -> np.ndarray:
@@ -171,6 +183,7 @@ def _load_checkpoint(path) -> dict:
         else:
             state[key] = value
     state["step"] = int(state["step"])
+    state["log_scale"] = float(state["log_scale"])
     return state
 
 
