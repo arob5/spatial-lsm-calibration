@@ -274,7 +274,7 @@ $\theta \in \mathbb R^{15}$ parameters, $\quad y \in \mathbb R^{2715}$ observati
 
 # Harvard Forest: the likelihood
 
-## Observation operators
+## Observation operators {.big-table}
 
 ::: {.corner-note}
 $\mathcal M(\theta)$: the simulated trajectory, three-hourly steps $t$;
@@ -315,7 +315,7 @@ $$
 - Scales $s_k$ on NEE night, NEE day, LAI; $s_k = 1$ for biomass and soil
   carbon (too few data)
 
-## NEE: the error is discrepancy
+## NEE: the error is discrepancy {.big-table}
 
 ::: {.corner-note}
 µmol m⁻² s⁻¹; measurement error in the appendix
@@ -369,7 +369,7 @@ $$
 - Same per-window size $v^\delta$; **different memory**
 :::
 
-## Why memory matters
+## Why memory matters {.big-table}
 
 ::: {.corner-note}
 Kernels and fitted weights in the appendix
@@ -544,10 +544,11 @@ $J$: ensemble size (100 here)
 
 ::: {.algorithm-box}
 $$
+\begin{aligned}
 \mathrm{EKI\text{-}UPDATE}\big(\theta^{(j)} \mid s, \Delta\beta\big)
-= \theta^{(j)} + \hat C_{\theta g}\Big(\hat C_{gg} + \tfrac{R(s)}{\Delta\beta}\Big)^{-1}\big(y - g^{(j)} - \eta^{(j)}\big),
-\qquad
-\eta^{(j)} \sim \mathcal N\Big(0, \tfrac{R(s)}{\Delta\beta}\Big)
+&= \theta^{(j)} + \hat C_{\theta g}\Big(\hat C_{gg} + \tfrac{R(s)}{\Delta\beta}\Big)^{-1}\big(y - g^{(j)} - \eta^{(j)}\big), \\
+\eta^{(j)} &\sim \mathcal N\Big(0,\ \tfrac{R(s)}{\Delta\beta}\Big)
+\end{aligned}
 $$
 :::
 
@@ -612,7 +613,7 @@ $(\theta^{(j)}, s^{(j)}) \sim \pi_0 \times p$, $\ \beta = 0$; **while** $\beta <
 - Which $s$ in the gain: one common, or each particle's own (appendix)
 - Still approximate: corrected next
 
-## Correcting EKI
+## Correcting EKI {.big-table}
 
 ::: {.corner-note}
 $q$: Student-t ($\nu = 5$, covariance $\times 1.5$) fitted to EKI's
