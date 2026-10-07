@@ -45,3 +45,72 @@
 .reveal .big-table table {
   font-size: 0.85em;
 }
+
+/* A boxed piece of a model: a title on the left, the math beside it. */
+.reveal .model-box {
+  display: flex;
+  align-items: center;
+  gap: 0.8em;
+  border: 2px solid var(--box-color, #4a7ab0);
+  border-left-width: 10px;
+  border-radius: 8px;
+  padding: 0.1em 0.8em;
+  margin: 0.3em 0;
+  background: #fafbfd;
+}
+.reveal .model-box > p {
+  margin: 0.2em 0;
+}
+.reveal .model-box .box-title {
+  display: inline-block;
+  width: 7.5em;
+  font-size: 0.75em;
+  font-weight: bold;
+  color: var(--box-color, #4a7ab0);
+}
+.reveal .model-box .box-note {
+  font-size: 0.6em;
+  color: #555;
+}
+.reveal .data-box { --box-color: #2f6db0; }
+.reveal .prior-box { --box-color: #3a8a4f; }
+.reveal .hyper-box { --box-color: #b07a2f; }
+.reveal .posterior-box { --box-color: #8a3a7a; }
+
+/* A stacked box holding an algorithm's loop. */
+.reveal .algorithm-box {
+  border: 2px solid #8a3a7a;
+  border-left-width: 10px;
+  border-radius: 8px;
+  padding: 0.2em 1em;
+  margin: 0.4em 0;
+  background: #fafbfd;
+  font-size: 0.85em;
+}
+.reveal .algorithm-box p {
+  margin: 0.15em 0;
+}
+
+/* Rows pairing a challenge with the response to it. */
+.reveal .pair-row > p,
+.reveal .pair-head > p {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  column-gap: 1.5em;
+  margin: 0.25em 0;
+}
+.reveal .pair-head > p {
+  font-weight: bold;
+  border-bottom: 2px solid #ccc;
+}
+.reveal .pair-row > p {
+  border-bottom: 1px solid #eee;
+  padding-bottom: 0.2em;
+}
+
+/* A large, centered display of one statement. */
+.reveal .headline {
+  font-size: 1.3em;
+  text-align: center;
+  margin: 0.5em 0;
+}
