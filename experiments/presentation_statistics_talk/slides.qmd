@@ -801,7 +801,7 @@ $$
 $v^\delta_k$: $1.43^2$ (night), $2.99^2$ (day), in (µmol m⁻² s⁻¹)², the same
 for every $L$
 
-## LAI, biomass and soil carbon: covariances
+## LAI, biomass, soil carbon: errors
 
 ::: {.corner-note}
 $\sigma_i$, $\sigma_j$, $\sigma$: each product's reported standard deviations;
