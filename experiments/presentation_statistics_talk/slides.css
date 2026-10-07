@@ -9,6 +9,22 @@
   top: 0;
   right: 0;
   margin: 0;
+  max-width: 38%;
+  text-align: right;
   font-size: 0.45em;
   color: #666;
+}
+
+/* A hand-drawn SVG diagram, inline so its text takes the slide's font. */
+.reveal .diagram svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 680px;
+}
+
+/* A one-line gloss under a figure. */
+.reveal .figure-gloss {
+  font-size: 0.6em;
+  color: #444;
 }

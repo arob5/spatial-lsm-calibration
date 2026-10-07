@@ -1,6 +1,5 @@
 ---
-title: "Bayesian Calibration of a Land Surface Model"
-subtitle: "SIPNET at Harvard Forest"
+title: "Bayesian Calibration of Land Surface Models"
 author: "Andrew Roberts"
 date: today
 format:
@@ -34,6 +33,7 @@ REPOSITORY = Path.cwd().resolve().parents[1]
 if str(REPOSITORY) not in sys.path:
     sys.path.insert(0, str(REPOSITORY))
 
+import plots
 from sipnet_calibration.plotting.style import use_project_style
 
 # The project style, scaled up for slides.
@@ -49,4 +49,75 @@ plt.rcParams.update({
     "legend.fontsize": "small",
     "legend.title_fontsize": "medium",
 })
+```
+
+# Land Surface Models
+
+## Carbon pools and fluxes
+
+::: {.corner-note}
+Simplified schematic of SIPNET's carbon cycle
+:::
+
+```{python}
+plots.box_model(observations=False)
+```
+
+## Observations
+
+::: {.corner-note}
+MODIS LAI, LandTrendr AGB (Landsat), SoilGrids soil carbon, AmeriFlux NEE
+:::
+
+```{python}
+plots.box_model(observations=True)
+```
+
+## Observations: sites and flux towers
+
+::: {.corner-note}
+Gray: sites, each a 30″ (about 1 km) pixel. Orange: AmeriFlux FLUXNET towers matched to a site. Equal-area projection centered at 50 °N, 100 °W
+:::
+
+```{python}
+plots.sites_and_towers();
+```
+
+## Observations: eddy covariance
+
+::: {.corner-note}
+Schematic. The method: Baldocchi (2003), *Global Change Biology* 9, 479–492
+:::
+
+```{python}
+plots.eddy_covariance()
+```
+
+$$
+F_c = \overline{w'c'}, \qquad w' = w - \bar w, \quad c' = c - \bar c,
+$$
+
+::: {.figure-gloss}
+averaged over each 30- or 60-minute interval. NEE is $F_c$ plus the change in
+CO₂ stored below the sensor.
+:::
+
+## Model
+
+::: {.corner-note}
+SIPNET: Braswell et al. (2005), *Global Change Biology* 11, 335–355.
+:::
+
+```{python}
+plots.state_space_graph();
+```
+
+## Model: one run
+
+::: {.corner-note}
+NEE summed over each day, pools end of day
+:::
+
+```{python}
+plots.model_output();
 ```
