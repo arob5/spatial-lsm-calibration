@@ -303,7 +303,8 @@ def prior_marginals() -> Figure:
 
 
 def noise_scale_prior() -> Figure:
-    """The noise scales' inverse-gamma prior, its median and central 90%."""
+    """The noise scales' inverse-gamma prior, its median and central 90%; the
+    scale multiplies a covariance, so it is written :math:`s_k^2`."""
     law = scipy.stats.invgamma(
         experiment_config.NOISE_SCALE_SHAPE, scale=noise.noise_scale_prior_scale()
     )
@@ -314,7 +315,7 @@ def noise_scale_prior() -> Figure:
     inside = (grid >= low) & (grid <= high)
     ax.fill_between(grid[inside], law.pdf(grid[inside]), color=CURVE_COLORS[0], alpha=0.15)
     ax.axvline(law.median(), color="black", linestyle="--", linewidth=1)
-    ax.set_xlabel(r"$s_k$", fontsize="x-large")
+    ax.set_xlabel(r"$s_k^2$", fontsize="x-large")
     ax.set_yticks([])
     ax.spines["left"].set_visible(False)
     return figure
@@ -409,7 +410,7 @@ def error_model_table(noise_treatment: str = "inferred") -> str:
         }
         if noise_treatment == "inferred":
             medians = scales.query("model == @model.name").set_index("observation_source")["q50"]
-            row["scales: night, day, LAI"] = ", ".join(
+            row["$s^2$: night, day, LAI"] = ", ".join(
                 f"{medians[name]:.2f}" for name in experiment_config.NOISE_SCALED_SOURCES
             )
         rows.append(row)
