@@ -1,7 +1,11 @@
 """Figures for the statistics talk.
 
-Each public function draws one figure and returns it; ``slides.qmd`` calls
-them. Nothing here saves a file: the deck renders what is returned. The
+Each public function draws one figure, or writes one Markdown table, and
+returns it; ``slides.qmd`` calls them. Nothing here saves a file: the deck
+renders what is returned. Only what is cheap is drawn here: the results'
+predictive figures need the model's posteriors built, so ``run/compare.py``
+draws them into the experiment's ``output/figures/`` and the deck includes
+them as images. The
 diagrams are SVG files under ``figures/``, drawn by hand so they can be
 edited in any SVG editor; the functions here only choose which layers of a
 diagram a slide shows.
@@ -34,11 +38,18 @@ from sipnet_calibration.projection import SITE_PROJECTION
 from sipnet_calibration.sites import load_sites, site_coordinates
 
 from experiments.single_site_mcmc_vs_eki import config as experiment_config
+from experiments.single_site_mcmc_vs_eki.figures import algorithms
 from experiments.single_site_mcmc_vs_eki.figures.common import PARAMETER_TITLES
+from experiments.single_site_mcmc_vs_eki.figures.error_models import ERROR_MODEL_LABELS
 from experiments.single_site_mcmc_vs_eki.model import inputs, noise, prior, sipnet
+from experiments.single_site_mcmc_vs_eki.models import Model
 
 __all__ = [
+    "algorithm_marginals",
+    "algorithm_pairs",
+    "algorithm_table",
     "box_model",
+    "error_model_table",
     "eddy_covariance",
     "forward_map_schematic",
     "model_output",
@@ -90,6 +101,33 @@ TOWER_COLOR = CURVE_COLORS[1]
 
 #: Site marker color.
 SITE_COLOR = "#9a9a9a"
+
+#: The model whose algorithms the results compare.
+ALGORITHM_COMPARISON_MODEL = "long_memory/inferred"
+
+#: The parameters of the pairwise slide: those where EKI and the others differ
+#: most, few enough to read at slide size.
+PAIR_SLIDE_PARAMETER_NAMES = (
+    "photosynthetic_capacity",
+    "half_saturation_light",
+    "respiration_share",
+    "wood_respiration_rate_at_10c",
+)
+
+#: The tables ``run/compare.py`` writes.
+COMPARISON_DIRECTORY = experiment_config.OUTPUT_DIRECTORY / "comparison"
+
+#: Each run's row label in the algorithm table, in its order.
+RUN_LABELS = {
+    "eki": "EKI",
+    "eki_gibbs_common": "EKI, Gibbs scales, common gain",
+    "eki_gibbs_per_particle": "EKI, Gibbs scales, per-particle gain",
+    "eki_is": "EKI → IS",
+    "eki_gibbs_common_is": "EKI → IS",
+    "eki_smc": "EKI → SMC",
+    "eki_gibbs_common_smc": "EKI → SMC",
+    "mcmc": "MCMC",
+}
 
 
 def box_model(*, observations: bool) -> HTML:
@@ -300,7 +338,98 @@ def model_output() -> Figure:
     return figure
 
 
+def algorithm_marginals(model_name: str = ALGORITHM_COMPARISON_MODEL) -> Figure:
+    """EKI, SMC and MCMC's marginals of the parameters the error model moves,
+    over the prior (``figures/algorithms.py``)."""
+    runs = algorithms.load_algorithm_runs(Model.parse(model_name), replicate=False)
+    return algorithms.plot_marginal_histograms(
+        runs,
+        algorithms.prior_natural_values(),
+        algorithms.PAIR_PARAMETER_NAMES,
+        n_columns=3,
+    )
+
+
+def algorithm_pairs(model_name: str = ALGORITHM_COMPARISON_MODEL) -> Figure:
+    """EKI, SMC and MCMC's pairwise 50% and 90% contours of
+    :data:`PAIR_SLIDE_PARAMETER_NAMES` (``figures/algorithms.py``)."""
+    runs = algorithms.load_algorithm_runs(Model.parse(model_name), replicate=False)
+    return algorithms.plot_pairwise_contours(
+        runs, algorithms.prior_natural_values(), PAIR_SLIDE_PARAMETER_NAMES
+    )
+
+
+def algorithm_table(model_name: str = ALGORITHM_COMPARISON_MODEL) -> str:
+    """Per run of *model_name*: its SIPNET runs and node-hours (seed
+    included), its Gaussian KL divergence from MCMC's posterior, and the
+    held-out log predictive density, as a Markdown table."""
+    cost = _comparison("cost").query("model == @model_name").set_index("run")
+    against = _comparison("against_reference").query("model == @model_name")
+    kl = against[against.parameter == "theta"].set_index("run")["gaussian_kl"]
+    heldout = (
+        _comparison("heldout_scores").query("model == @model_name")
+        .groupby("run")["log_predictive_density"].sum()
+    )
+    rows = []
+    for run, label in RUN_LABELS.items():
+        if run not in cost.index:
+            continue
+        rows.append({
+            "algorithm": label,
+            "SIPNET runs": f"{cost.loc[run, 'sipnet_runs']:,.0f}",
+            "node-hours": f"{cost.loc[run, 'wall_seconds'] / 3600:.1f}",
+            "KL from MCMC": "reference" if run == "mcmc" else f"{kl.get(run, np.nan):.1f}",
+            "held-out log density": f"{heldout.get(run, np.nan):,.0f}",
+        })
+    return _markdown_table(pd.DataFrame(rows))
+
+
+def error_model_table(noise_treatment: str = "inferred") -> str:
+    """Per NEE error model, from its MCMC run: the held-out log predictive
+    density of each NEE source; the daytime residual's slow and fast
+    variances and the model's day-to-day spread against the observed's;
+    and, for inferred noise, the posterior median noise scales. A Markdown
+    table."""
+    heldout = _comparison("heldout_scores").query("run == 'mcmc'")
+    scales = _comparison("noise_scales").query("run == 'mcmc'")
+    rows = []
+    for error_model, label in ERROR_MODEL_LABELS.items():
+        model = Model(error_model, noise_treatment)
+        scores = heldout.query("model == @model.name").set_index("observation_source")
+        slow_fast = pd.read_csv(
+            model.directory("mcmc") / "diagnostics" / "nee_slow_fast.csv", index_col=0
+        ).loc["nee_day_centered"]
+        row = {
+            "error model": label,
+            "held-out, night": f"{scores.loc['nee_night_centered', 'log_predictive_density']:,.0f}",
+            "held-out, day": f"{scores.loc['nee_day_centered', 'log_predictive_density']:,.0f}",
+            "day residual, slow var.": f"{slow_fast['slow_variance']:.1f}",
+            "day residual, fast var.": f"{slow_fast['fast_variance']:.1f}",
+            "day, model / observed fast sd": f"{slow_fast['fast_standard_deviation_ratio']:.2f}",
+        }
+        if noise_treatment == "inferred":
+            medians = scales.query("model == @model.name").set_index("observation_source")["q50"]
+            row["scales: night, day, LAI"] = ", ".join(
+                f"{medians[name]:.2f}" for name in experiment_config.NOISE_SCALED_SOURCES
+            )
+        rows.append(row)
+    return _markdown_table(pd.DataFrame(rows))
+
+
 # ── helpers ──
+
+
+def _comparison(name: str) -> pd.DataFrame:
+    """The comparison table ``run/compare.py`` wrote as *name*."""
+    return pd.read_csv(COMPARISON_DIRECTORY / f"{name}.csv")
+
+
+def _markdown_table(frame: pd.DataFrame) -> str:
+    """*frame* as a Markdown table, for a cell with ``output: asis``."""
+    header = "| " + " | ".join(frame.columns) + " |"
+    rule = "|" + "---|" * len(frame.columns)
+    body = ["| " + " | ".join(str(value) for value in row) + " |" for row in frame.itertuples(index=False)]
+    return "\n".join([header, rule, *body])
 
 
 def _inline_svg(svg: str) -> HTML:

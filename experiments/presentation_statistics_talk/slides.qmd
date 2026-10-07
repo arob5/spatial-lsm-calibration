@@ -491,21 +491,16 @@ plots.prior_marginals();
 
 ## Prior predictive: NEE
 
-::: {.placeholder}
-Placeholder: the prior predictive against the NEE windows, from
-`figures/prior_predictive.py`'s `plot_nee_windows` and
-`plot_nee_seasonal_cycle`. The stored prior predictive predates the current
-models; regenerate it with
-`uv run python -m experiments.single_site_mcmc_vs_eki.run.prior_predictive`.
+::: {.corner-note}
+Long memory, inferred noise: replicated data, each draw with its own noise
+scales from their prior
 :::
+
+![](../single_site_mcmc_vs_eki/output/figures/prior_predictive/long_memory_inferred/prior_predictive_nee_seasonal.png){width=100%}
 
 ## Prior predictive: LAI, biomass and soil carbon
 
-::: {.placeholder}
-Placeholder: the prior predictive against LAI, biomass and soil carbon, from
-`figures/prior_predictive.py`'s `plot_pool_observations`, once the prior
-predictive is regenerated.
-:::
+![](../single_site_mcmc_vs_eki/output/figures/prior_predictive/long_memory_inferred/prior_predictive_pools.png){width=100%}
 
 # Inference Algorithms
 
@@ -731,12 +726,43 @@ $$
 
 ## Ecological takeaways: the noise models
 
-::: {.placeholder}
-To come, from the MCMC runs if they go well
+::: {.corner-note}
+Inferred noise, MCMC; noise included
 :::
 
-## Comparing the inference algorithms
+![](../single_site_mcmc_vs_eki/output/figures/error_models/error_model_nee_inferred.png){width=88%}
 
-::: {.placeholder}
-To come
+## The error models in numbers {.big-table}
+
+```{python}
+#| output: asis
+print(plots.error_model_table())
+```
+
+## Comparing the inference algorithms {.big-table}
+
+::: {.corner-note}
+Long memory, inferred noise. MCMC: 56 chains, 1,000 kept steps each; seed
+runs counted in each algorithm's total
 :::
+
+```{python}
+#| output: asis
+print(plots.algorithm_table())
+```
+
+## Parameters: EKI, SMC and MCMC
+
+```{python}
+plots.algorithm_pairs();
+```
+
+## Parameter marginals
+
+```{python}
+plots.algorithm_marginals();
+```
+
+## Predictions: EKI, SMC and MCMC
+
+![](../single_site_mcmc_vs_eki/output/figures/algorithms/long_memory_inferred/algorithm_predictive_nee.png){width=88%}

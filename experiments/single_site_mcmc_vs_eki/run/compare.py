@@ -19,7 +19,9 @@ by default): ``cost.csv``, ``parameters.csv``, ``against_reference.csv``,
 ``noise_scales.csv``, ``reweighting.csv`` and ``heldout_scores.csv``, as
 ``analysis/compare.py``'s tables of those names describe them; and, per
 model, ``figures/algorithms.py``'s figures under
-``config.FIGURE_DIRECTORY / "algorithms"`` (``--no-figures`` skips them).
+``config.FIGURE_DIRECTORY / "algorithms"``, and ``figures/error_models.py``'s
+under ``config.FIGURE_DIRECTORY / "error_models"`` (``--no-figures`` skips
+them).
 
 Usage
 -----
@@ -36,6 +38,7 @@ import pandas as pd
 from .. import config
 from ..analysis.compare import comparison_tables
 from ..figures.algorithms import draw_algorithm_figures
+from ..figures.error_models import draw_error_model_figures
 from ..models import MODEL_NAMES, Model
 
 __all__ = ["COMPARISON_DIRECTORY", "main"]
@@ -61,6 +64,7 @@ def main(argv: list[str] | None = None) -> int:
     if not arguments.no_figures:
         for name in MODEL_NAMES:
             draw_algorithm_figures(Model.parse(name))
+        draw_error_model_figures()
     return 0
 
 

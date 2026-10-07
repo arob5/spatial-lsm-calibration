@@ -71,6 +71,8 @@ __all__ = [
     "plot_predictive_nee",
     "plot_predictive_pools",
     "prior_natural_values",
+    "draw_band",
+    "weekly_band",
 ]
 
 
@@ -149,10 +151,15 @@ class AlgorithmRun:
 
 
 def load_algorithm_runs(
-    model: Model, algorithms: Sequence[ComparedAlgorithm] = COMPARED_ALGORITHMS
+    model: Model,
+    algorithms: Sequence[ComparedAlgorithm] = COMPARED_ALGORITHMS,
+    *,
+    replicate: bool = True,
 ) -> list[AlgorithmRun]:
     """The runs of *model* that *algorithms* read, those written so far,
-    each with its replicated data where its predictive has run.
+    each with its replicated data where its predictive has run and
+    *replicate* is true (which builds the model's posteriors, a minute or
+    two; the parameter figures need none).
 
     A sample whose run failed weighs 0.
     """
@@ -168,7 +175,7 @@ def load_algorithm_runs(
             samples["valid"].values.astype(bool), samples["log_weight"].values, -np.inf
         )
         predictive, replicated = None, None
-        if (directory / "predictive" / "ensemble_daily.nc").exists():
+        if replicate and (directory / "predictive" / "ensemble_daily.nc").exists():
             predictive = load_predictive(directory / "predictive")
             noise_models = noise_models or _noise_models(model)
             scales = pd.read_csv(directory / "predictive" / "samples.csv")
@@ -197,13 +204,14 @@ def plot_marginal_histograms(
     runs: Sequence[AlgorithmRun],
     prior: pd.DataFrame,
     parameter_names: Sequence[str] | None = None,
+    *,
+    n_columns: int = 4,
 ) -> plt.Figure:
     """Each parameter's weighted marginal histogram, one panel per parameter,
     the algorithms overlaid on shared bins, over the prior's density (*prior*,
     its draws in natural units). A panel spans the runs' central 99% and the
     prior's central 90%."""
     parameter_names = list(parameter_names or runs[0].natural_values.columns)
-    n_columns = 4
     n_rows = -(-len(parameter_names) // n_columns)
     figure, axes = plt.subplots(
         n_rows, n_columns, figsize=(4 * n_columns, 2.8 * n_rows), squeeze=False
@@ -282,7 +290,7 @@ def plot_predictive_nee(runs: Sequence[AlgorithmRun]) -> plt.Figure:
                 band = _band(
                     pd.DataFrame(run.replicated[vector][name].T).groupby(weeks).mean().T
                 )
-                _draw_band(ax, band.index, band, run)
+                draw_band(ax, band.index, band, run.algorithm.color, run.algorithm.label)
             observed_weekly = pd.Series(observed.to_numpy()).groupby(weeks).mean()
             ax.plot(
                 observed_weekly.index,
@@ -365,7 +373,26 @@ def draw_algorithm_figures(model: Model) -> None:
             save_figure(figure, name, directory)
 
 
+def weekly_band(replicated: np.ndarray, times) -> pd.DataFrame:
+    """The :data:`BAND_QUANTILES` over samples of each week's mean of
+    *replicated* ``(K, n)``, the windows placed by *times*; one row per week."""
+    return _band(pd.DataFrame(replicated.T).groupby(week_of_year(times)).mean().T)
+
+
+def draw_band(ax, positions, band: pd.DataFrame, color: str, label: str) -> None:
+    """A 90% band and its median, colored *color* and labeled *label*."""
+    ax.fill_between(
+        positions, band[0.05], band[0.95], color=color, alpha=0.2, linewidth=0, label=f"{label}, 90%"
+    )
+    ax.plot(positions, band[0.5], color=color, linewidth=1.5, label=f"{label}, median")
+
+
 # ── helpers ──
+
+
+def _band(values_by_sample: pd.DataFrame) -> pd.DataFrame:
+    """The :data:`BAND_QUANTILES` over samples (rows) of each column."""
+    return values_by_sample.quantile(list(BAND_QUANTILES)).T
 
 
 def _noise_models(model: Model) -> dict[str, NoiseModel]:
@@ -393,21 +420,6 @@ def _replicated(
         )
         for vector, noise_model in noise_models.items()
     }
-
-
-def _band(values_by_sample: pd.DataFrame) -> pd.DataFrame:
-    """The :data:`BAND_QUANTILES` over samples (rows) of each column."""
-    return values_by_sample.quantile(list(BAND_QUANTILES)).T
-
-
-def _draw_band(ax, positions, band: pd.DataFrame, run: AlgorithmRun) -> None:
-    """*run*'s 90% band and median."""
-    color = run.algorithm.color
-    label = run.algorithm.label
-    ax.fill_between(
-        positions, band[0.05], band[0.95], color=color, alpha=0.2, linewidth=0, label=f"{label}, 90%"
-    )
-    ax.plot(positions, band[0.5], color=color, linewidth=1.5, label=f"{label}, median")
 
 
 def _years(observed) -> np.ndarray:
