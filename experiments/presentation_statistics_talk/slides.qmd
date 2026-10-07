@@ -383,30 +383,32 @@ $$
 - Adding a term moves variance from short to long memory; it adds none
 :::
 
-## The error models in numbers {.big-table}
+## The error models in numbers {.nowrap-table}
 
 ::: {.corner-note}
-Correlation of the discrepancy at two windows a lag apart. A timescale is
-where its term's correlation falls to $e^{-1} \approx 0.37$; percentages are
+Timescale: where a term's correlation falls to $e^{-1} \approx 0.37$;
+recurring: that distance from the same date in another year. Percentages:
 the weights. Fitted by maximum likelihood to an earlier calibration's
 residuals
 :::
 
-| Model | NEE | timescales | 1 day | 1 week | 1 month | 3 months | 1 year |
-|---|---|---|---|---|---|---|---|
-| short memory | night | 18 hours | 0.26 | 0 | 0 | 0 | 0 |
-| | day | 2 days | 0.56 | 0.02 | 0 | 0 | 0 |
-| long memory | night | 18 hours (20%), 8 weeks (80%) | 0.84 | 0.71 | 0.47 | 0.16 | 0 |
-| | day | 2 days (42%), 5 weeks (58%) | 0.80 | 0.49 | 0.25 | 0.05 | 0 |
-| recurring bias | night | 1 day (29%), 9 weeks (39%), $\pm$5 weeks of the date (32%) | 0.83 | 0.66 | 0.41 | 0.10 | 0.32 |
-| | day | 2 days (48%), 7 weeks (33%), $\pm$2.5 weeks of the date (20%) | 0.80 | 0.46 | 0.18 | 0.05 | 0.20 |
+| Model | NEE | short | long | recurring | 1 day | 1 week | 1 month | 3 months | 1 year |
+|---|---|---|---|---|---|---|---|---|---|
+| short memory | night | 18 h | | | 0.26 | 0 | 0 | 0 | 0 |
+| | day | 2 d | | | 0.56 | 0.02 | 0 | 0 | 0 |
+| long memory | night | 18 h, 20% | 8 wk, 80% | | 0.84 | 0.71 | 0.47 | 0.16 | 0 |
+| | day | 2 d, 42% | 5 wk, 58% | | 0.80 | 0.49 | 0.25 | 0.05 | 0 |
+| recurring bias | night | 1 d, 29% | 9 wk, 39% | ±5 wk, 32% | 0.83 | 0.66 | 0.41 | 0.10 | 0.32 |
+| | day | 2 d, 48% | 7 wk, 33% | ±2.5 wk, 20% | 0.80 | 0.46 | 0.18 | 0.05 | 0.20 |
+
+: Correlation of the discrepancy at two windows a lag apart
 
 . . .
 
-- Short memory: neighbors are nearly independent after a few days
-- Long memory: a misfit lasting a month is still strongly correlated, so
+- **Short memory:** windows a few days apart are nearly independent
+- **Long memory:** a misfit lasting a month stays strongly correlated, so is
   cheap
-- Recurring bias: the same date a year later is correlated again
+- **Recurring bias:** the same date a year later is correlated again
 
 ## LAI, biomass and soil carbon
 

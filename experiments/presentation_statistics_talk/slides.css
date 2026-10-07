@@ -124,3 +124,15 @@
   margin: 0.25em 0 !important;
   text-align: left !important;
 }
+
+/* A wide numeric table, kept to one line per row. */
+.reveal .nowrap-table table {
+  font-size: 0.8em;
+}
+.reveal .nowrap-table th,
+.reveal .nowrap-table td {
+  white-space: nowrap !important;
+}
+.reveal .nowrap-table col {
+  width: auto !important;
+}
