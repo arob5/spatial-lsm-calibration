@@ -72,7 +72,8 @@ duplicate its content here — add data facts there instead.
 Facts specific to this working copy, which the README deliberately does not carry:
 
 - **Only a subset of `data/raw/` is present locally.** Drivers exist for
-  `ERA5_1_1`, `ERA5_1_2` and `ERA5_27_5`; of PEcAn's initial condition source
+  `ERA5_1_1`, `ERA5_1_2`, `ERA5_27_5` and all ten members of Harvard Forest,
+  `ERA5_4977_1` to `ERA5_4977_10`; of PEcAn's initial condition source
   files, site 1 members 1 and 2 and site 27 member 94, under
   `data/raw/initial_conditions/files/`; of the soil texture ensemble, sites 1
   and 27 only, three files of 769,300, which is why
