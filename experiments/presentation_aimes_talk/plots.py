@@ -65,13 +65,14 @@ def site_pool_map(north_america: NorthAmericaPrior) -> Figure:
     _north_america_frame(ax, x, y)
     ax.scatter(
         x[~is_tower], y[~is_tower], s=3, color=PALETTE["stone"], alpha=0.7, linewidth=0,
-        label=f"{len(x):,} sites",
+        label="site (~1 km grid cell)",
     )
     ax.scatter(
         x[is_tower], y[is_tower], **{**SITE_MARKERS["tower"], "s": 60},
-        label=f"{is_tower.sum()} of them with a flux tower",
+        label="site with flux tower",
     )
-    ax.legend(loc="lower left", markerscale=1.5, handletextpad=0.3)
+    legend = ax.legend(loc="lower left", handletextpad=0.3)
+    legend.legend_handles[0].set_sizes([40])  # the sites' 3-point dots, legible in the legend
     return fig
 
 

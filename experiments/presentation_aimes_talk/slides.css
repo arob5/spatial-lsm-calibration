@@ -58,10 +58,21 @@
   text-align: center;
 }
 
-/* Bullets beside a figure, set a little smaller. */
-.reveal .smaller-list li {
-  font-size: 0.8em;
-  margin-bottom: 0.4em;
+/* Columns centered vertically on each other. Quarto's columns are inline
+   blocks, so this is vertical-align, not flexbox. */
+.reveal .centered-columns > .column {
+  vertical-align: middle;
+}
+
+/* The prior model under the prior draws. */
+.reveal .prior-model {
+  text-align: center;
+  margin-top: 0.6em;
+}
+
+/* The options beside the site map, spaced out. */
+.reveal .options-list li {
+  margin-bottom: 1.1em;
 }
 
 /* The scalable method's three steps, stacked with arrows between. */

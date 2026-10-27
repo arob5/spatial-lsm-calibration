@@ -48,15 +48,11 @@ sys.path.insert(0, str(REPOSITORY))
 from experiments.presentation_aimes_talk import config, results
 
 toy = results.load(results.ToyResults, config.TOY_RESULTS_FILE)
-north_america = results.load(results.NorthAmericaPrior, config.NORTH_AMERICA_FILE)
 
-n_pool_sites = f"{len(north_america.site_ids):,}"
-n_tower_sites = len(north_america.tower_site_ids)
 n_toy_sites = len(toy.training_locations)
 n_toy_towers = int(toy.is_tower.sum())
 mcmc_runs = f"{toy.reference_model_runs_per_site:,}"
 ipl_runs = int(toy.ipl_history.runs_per_site[-1])
-fewer_runs = f"{toy.reference_model_runs_per_site / ipl_runs:,.0f}"
 ipl_ensemble_size = config.IPL_ENSEMBLE_SIZE
 ipl_iterations = len(toy.ipl_history.runs_per_site)
 
@@ -66,40 +62,43 @@ spatial_error = toy.spatial_reference.held_out_root_mean_square_error[TURNOVER]
 error_reduction = f"{100 * (1 - spatial_error / site_by_site_error):.0f}%"
 ```
 
-## Calibration today: one site at a time
+## Spatial structure
 
-:::: {.columns}
-::: {.column width="58%"}
-![](figures/site_pool_map.png){width=100%}
+:::: {.columns .centered-columns}
+::: {.column width="62%"}
+![](figures/site_pool_map.png){height=560px}
 :::
-::: {.column width="42%" .smaller-list}
-- `{python} n_pool_sites` sites across North America
-- Rich data (eddy covariance) at only `{python} n_tower_sites`
-- Everywhere else: sparse remote sensing and inventories
-- Standard practice: calibrate **each site** (or each plant functional type) **on its own**
+::: {.column width="38%" .options-list}
+::: {.fragment}
+- learn independently by site?
+:::
 
-::: {.fragment .box}
-But parameters vary smoothly with climate and place: a site's neighbors know something about it.
+::: {.fragment}
+- treat all sites the same (within a PFT)?
+:::
+
+::: {.fragment}
+- incorporate spatial structure [(this talk)]{.forest}
 :::
 :::
 ::::
 
 ::: notes
-The pool: 8000 sites chosen for coverage of North America's ecoregions. Towers are where we have rich, high-frequency data. Most sites see only sparse remote sensing. The community calibrates pixel by pixel or by PFT. Our idea is to treat the parameters as a map.
+The pool: 8000 sites, each a roughly 1 km grid cell, chosen for coverage of North America's ecoregions. The triangles are sites with a flux tower: rich, high-frequency data. Everywhere else we have only sparse remote sensing and inventories.
+
+How should we calibrate across these sites? Site by site, with no sharing; or one parameter set for every site of a PFT, ignoring variation within it. We do something in between: let the parameters vary in space, and learn how much.
 :::
 
-## The idea: parameters are maps
+## A first step: spatial parameter calibration
 
-![](figures/toy_decomposition.png){height=210px fig-align="center"}
+![](figures/north_america_prior_draws.png){width=100%}
 
-::: {.fragment}
-![](figures/north_america_prior_draws.png){height=240px fig-align="center"}
-
-[Three possible parameter maps, drawn from a spatial prior over the `{python} n_pool_sites` sites]{.caption}
+::: {.fragment .prior-model}
+prior model: $\theta(x) = \underbrace{z(x)^\top \beta}_{\text{spatial covariates}} + \underbrace{u(x)}_{\text{Gaussian process}}$
 :::
 
 ::: notes
-Each parameter is a field: a climate trend, plus smooth spatial variation the covariates miss, plus site-to-site noise. That's the prior, before any data. Bottom: three draws from such a prior over the real site pool. Calibrating means learning this map, not 8000 separate numbers.
+Three draws from a spatial prior over one parameter at the real sites: each is a possible map of the parameter before we see any data. The prior model: a trend in spatial covariates such as mean annual temperature, plus a Gaussian process for the smooth variation the covariates miss. Calibrating means learning this map, not 8000 separate numbers.
 :::
 
 ## How data at one site informs its neighbors
