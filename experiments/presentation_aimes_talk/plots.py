@@ -21,7 +21,7 @@ from sipnet_calibration.plotting.basemap import draw_basemap
 from sipnet_calibration.projection import SITE_PROJECTION
 
 from . import config
-from .results import NorthAmericaPrior, ToyResults, Transect
+from .results import CalibrationOptions, NorthAmericaPrior, ToyResults, Transect
 from .style import (
     DEVIATION_COLORMAP,
     FIELD_COLORMAP,
@@ -42,6 +42,9 @@ __all__ = [
     "maps_estimate",
     "maps_uncertainty",
     "north_america_prior_draws",
+    "option_independent_map",
+    "option_pft_map",
+    "option_spatial_map",
     "showcase_sites",
     "site_pool_map",
     "toy_decomposition",
@@ -53,6 +56,8 @@ __all__ = [
 CONTOUR_PROBABILITIES = (0.5, 0.9)
 #: How many reference draws the equifinality figure scatters.
 N_REFERENCE_DRAWS_SHOWN = 1500
+#: The size of one calibration-option map, inches.
+OPTION_MAP_SIZE = (5.2, 4.6)
 
 # ── North America ───────────────────────────────────────────────────────────
 
@@ -77,19 +82,39 @@ def site_pool_map(north_america: NorthAmericaPrior) -> Figure:
 
 
 def north_america_prior_draws(north_america: NorthAmericaPrior) -> Figure:
-    """Three draws of one parameter from a spatial prior over the site pool."""
+    """Three draws of one parameter from a spatial prior, as maps, with the sites over them.
+
+    There is no colorbar: the parameter is generic, and only the pattern
+    matters. The draws share one color scale.
+    """
     n_draws = len(north_america.draws)
-    fig, axes = plt.subplots(1, n_draws, figsize=(5.2 * n_draws, 5.0))
-    x, y = SITE_PROJECTION.forward(north_america.lon, north_america.lat)
-    low, high = np.percentile(north_america.draws, [1, 99])
-    norm = Normalize(vmin=low, vmax=high)
+    fig, axes = plt.subplots(1, n_draws, figsize=(5.2 * n_draws, 4.6), gridspec_kw={"wspace": 0.04})
+    norm = Normalize(*np.nanpercentile(north_america.draws, [1, 99]))
     for ax, draw in zip(np.atleast_1d(axes), north_america.draws):
-        _north_america_frame(ax, x, y)
-        points = ax.scatter(x, y, c=draw, s=3, cmap=FIELD_COLORMAP, norm=norm, linewidth=0)
-    fig.colorbar(
-        points, ax=axes, orientation="horizontal", fraction=0.05, pad=0.03, aspect=50,
-        label="parameter (log scale)",
-    )
+        _draw_field_map(ax, north_america, draw, norm)
+    return fig
+
+
+# ── the calibration options ─────────────────────────────────────────────────
+# One map each, a parameter at every site under one option, drawn alike:
+# no colorbar (the parameter is generic), each on its own 1-99% color range.
+
+
+def option_independent_map(options: CalibrationOptions) -> Figure:
+    """A parameter drawn independently at each site."""
+    return _site_values_map(options, options.independent)
+
+
+def option_pft_map(options: CalibrationOptions) -> Figure:
+    """A parameter drawn once per PFT, shared by the PFT's sites."""
+    return _site_values_map(options, options.by_pft)
+
+
+def option_spatial_map(north_america: NorthAmericaPrior) -> Figure:
+    """A parameter as a spatial field: the first North America prior draw, defined everywhere."""
+    fig, ax = plt.subplots(figsize=OPTION_MAP_SIZE)
+    draw = north_america.draws[0]
+    _draw_field_map(ax, north_america, draw, Normalize(*np.nanpercentile(draw, [1, 99])))
     return fig
 
 
@@ -448,6 +473,29 @@ def _toy_map_frame(ax) -> None:
     for spine in ax.spines.values():
         spine.set_visible(True)
         spine.set_color(PALETTE["stone"])
+
+
+def _site_values_map(options: CalibrationOptions, values: np.ndarray) -> Figure:
+    """One map of a value at every site of the pool."""
+    fig, ax = plt.subplots(figsize=OPTION_MAP_SIZE)
+    x, y = SITE_PROJECTION.forward(options.lon, options.lat)
+    _north_america_frame(ax, x, y)
+    ax.scatter(x, y, c=values, cmap=FIELD_COLORMAP, norm=Normalize(*np.percentile(values, [1, 99])),
+               s=4, linewidth=0, zorder=3)
+    return fig
+
+
+def _draw_field_map(ax, north_america: NorthAmericaPrior, draw: np.ndarray, norm: Normalize) -> None:
+    """One prior draw as a continuous map on ``ax``, with the sites over it."""
+    site_x, site_y = SITE_PROJECTION.forward(north_america.lon, north_america.lat)
+    half_cell = (north_america.grid_x[1] - north_america.grid_x[0]) / 2
+    extent = (
+        north_america.grid_x[0] - half_cell, north_america.grid_x[-1] + half_cell,
+        north_america.grid_y[0] - half_cell, north_america.grid_y[-1] + half_cell,
+    )
+    _north_america_frame(ax, site_x, site_y)
+    ax.imshow(draw, origin="lower", extent=extent, cmap=FIELD_COLORMAP, norm=norm, interpolation="nearest")
+    ax.scatter(site_x, site_y, s=0.4, color=PALETTE["ink"], alpha=0.35, linewidth=0, zorder=3)
 
 
 def _north_america_frame(ax, x: np.ndarray, y: np.ndarray) -> None:

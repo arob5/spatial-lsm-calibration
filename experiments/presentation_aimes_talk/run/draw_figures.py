@@ -8,9 +8,9 @@ computed yet is skipped, with the script that computes them named.
 
 Input data
 ----------
-``config.TOY_RESULTS_FILE``, ``config.TRANSECT_FILE`` and
-``config.NORTH_AMERICA_FILE``, written by ``run/toy_experiment.py`` and
-``run/illustrations.py``.
+``config.TOY_RESULTS_FILE``, written by ``run/toy_experiment.py``; and
+``config.TRANSECT_FILE``, ``config.NORTH_AMERICA_FILE`` and
+``config.CALIBRATION_OPTIONS_FILE``, written by ``run/illustrations.py``.
 
 Output data
 -----------
@@ -53,12 +53,16 @@ RESULT_TYPES = {
     config.TOY_RESULTS_FILE: (results.ToyResults, "run/toy_experiment.py"),
     config.TRANSECT_FILE: (results.Transect, "run/illustrations.py"),
     config.NORTH_AMERICA_FILE: (results.NorthAmericaPrior, "run/illustrations.py"),
+    config.CALIBRATION_OPTIONS_FILE: (results.CalibrationOptions, "run/illustrations.py"),
 }
 
 PRODUCTIVITY, TURNOVER = 0, 1
 
 FIGURES = (
     FigureSpec("site_pool_map.png", config.NORTH_AMERICA_FILE, plots.site_pool_map),
+    FigureSpec("option_independent.png", config.CALIBRATION_OPTIONS_FILE, plots.option_independent_map),
+    FigureSpec("option_pft.png", config.CALIBRATION_OPTIONS_FILE, plots.option_pft_map),
+    FigureSpec("option_spatial.png", config.NORTH_AMERICA_FILE, plots.option_spatial_map),
     FigureSpec("north_america_prior_draws.png", config.NORTH_AMERICA_FILE, plots.north_america_prior_draws),
     FigureSpec("transect_prior.png", config.TRANSECT_FILE, plots.transect, {"stage": "prior"}),
     FigureSpec("transect_posterior.png", config.TRANSECT_FILE, plots.transect, {"stage": "posterior"}),

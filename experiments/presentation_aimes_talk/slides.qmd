@@ -91,6 +91,48 @@ How should we calibrate across these sites? Site by site, with no sharing; or on
 
 ## A first step: spatial parameter calibration
 
+:::: {.columns .options-grid}
+::: {.column width="33%"}
+::: {.fragment}
+[Independent]{.option-name}
+
+$y_s = \mathcal{G}_s(\theta_s) + \epsilon_s$
+
+![](figures/option_independent.png){width=100%}
+
+[a separate $\theta_s$ at every site; nothing shared]{.caption}
+:::
+:::
+::: {.column width="33%"}
+::: {.fragment}
+[By PFT]{.option-name}
+
+$y_s = \mathcal{G}_s(\theta_{\mathrm{pft}(s)}) + \epsilon_s$
+
+![](figures/option_pft.png){width=100%}
+
+[one $\theta$ per PFT; no variation within a PFT]{.caption}
+:::
+:::
+::: {.column width="33%"}
+::: {.fragment}
+[Spatial]{.option-name .forest}
+
+$y_s = \mathcal{G}_s(\theta(x_s)) + \epsilon_s$
+
+![](figures/option_spatial.png){width=100%}
+
+[a field $\theta(x)$, defined everywhere]{.caption}
+:::
+:::
+::::
+
+::: notes
+The same three options, three ways: in words, as the model, and as a map of one parameter. Here y_s is site s's data, G_s the model run at site s, and epsilon_s the error. Independent: every site has its own parameter, and nothing is shared, which is salt-and-pepper on the map. By PFT: every site of a PFT shares one value, so the map is patches that follow vegetation type, with no variation within a PFT. Spatial: the parameter is a field theta(x), defined everywhere, not just at the sites; a site reads it at its location x_s, and nearby sites inform each other.
+:::
+
+## Spatial parameter model
+
 ![](figures/north_america_prior_draws.png){width=100%}
 
 ::: {.fragment .prior-model}

@@ -39,6 +39,7 @@ BRAND_FILE = TALK_DIRECTORY / "theme" / "_brand.yml"
 
 TOY_RESULTS_FILE = OUTPUT_DIRECTORY / "toy_results.npz"
 TRANSECT_FILE = OUTPUT_DIRECTORY / "transect.npz"
+CALIBRATION_OPTIONS_FILE = OUTPUT_DIRECTORY / "calibration_options.npz"
 NORTH_AMERICA_FILE = OUTPUT_DIRECTORY / "north_america_prior.npz"
 
 # ── the toy region ──────────────────────────────────────────────────────────
@@ -176,13 +177,29 @@ TRANSECT_MEASUREMENT_SD = 0.15
 TRANSECT_GRID_SIZE = 400
 TRANSECT_N_DRAWS = 5
 
-#: Prior draws of one parameter over the real 8000-site pool: a climate
-#: trend in the site's mean annual temperature plus a Matern-3/2 field of
-#: the chordal distance through the Earth between sites
-#: (illustrations/north_america.py).
+#: Prior draws of one parameter over North America, as continuous maps: a
+#: climate trend in mean annual temperature plus a Matern-3/2 Gaussian
+#: process in the chordal distance through the Earth
+#: (illustrations/north_america.py). Lengths in meters, areas in square
+#: meters. The field is drawn exactly on a grid NORTH_AMERICA_GRID_SPACING
+#: apart and shown on a raster NORTH_AMERICA_DISPLAY_SPACING apart, within
+#: NORTH_AMERICA_LAND_RADIUS of a site, with enclosed holes smaller than
+#: NORTH_AMERICA_MAX_HOLE_AREA filled.
 NORTH_AMERICA_SEED = 3
 NORTH_AMERICA_N_DRAWS = 3
-NORTH_AMERICA_LENGTH_SCALE_KM = 800.0
+NORTH_AMERICA_LENGTH_SCALE = 800e3
 NORTH_AMERICA_FIELD_SD = 0.6
 NORTH_AMERICA_TREND_SLOPE = 0.5
-NORTH_AMERICA_SITE_NOISE_SD = 0.1
+NORTH_AMERICA_GRID_SPACING = 60e3
+NORTH_AMERICA_DISPLAY_SPACING = 15e3
+NORTH_AMERICA_LAND_RADIUS = 90e3
+NORTH_AMERICA_MAX_HOLE_AREA = 3e10
+
+#: The calibration options compared on one slide: a parameter drawn
+#: independently at each site, and one drawn per PFT (the pft_16class site
+#: labels), each N(0, CALIBRATION_OPTIONS_PARAMETER_SD^2)
+#: (illustrations/calibration_options.py). The spatial option is a North
+#: America prior draw.
+CALIBRATION_OPTIONS_SEED = 4
+CALIBRATION_OPTIONS_PARAMETER_SD = 0.6
+CALIBRATION_OPTIONS_SITE_LABELS = "pft_16class"

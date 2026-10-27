@@ -16,6 +16,7 @@ from pathlib import Path
 import numpy as np
 
 __all__ = [
+    "CalibrationOptions",
     "IPLHistory",
     "MethodResults",
     "NorthAmericaPrior",
@@ -144,16 +145,37 @@ class Transect:
 
 @dataclass(frozen=True)
 class NorthAmericaPrior:
-    """Prior draws over the real site pool (``illustrations.north_america``)."""
+    """Prior draws over North America (``illustrations.north_america``)."""
 
-    site_ids: np.ndarray  # (sites,)
+    #: (sites,): the site pool, and the flux-tower sites among it (the tower
+    #: table's primary towers).
+    site_ids: np.ndarray
     lon: np.ndarray
     lat: np.ndarray
-    #: (sites,): the climate trend, and (draws, sites): full prior draws.
-    trend: np.ndarray
-    draws: np.ndarray
-    #: The flux-tower sites among them (the tower table's primary towers).
     tower_site_ids: np.ndarray
+    #: (nx,) and (ny,): the display raster's cell centers, projected meters
+    #: (``SITE_PROJECTION``).
+    grid_x: np.ndarray
+    grid_y: np.ndarray
+    #: (draws, ny, nx): the draws on the raster; NaN where the map is not drawn.
+    draws: np.ndarray
+
+
+@dataclass(frozen=True)
+class CalibrationOptions:
+    """Parameter values under the non-spatial options (``illustrations.calibration_options``)."""
+
+    #: (sites,): the site pool.
+    site_ids: np.ndarray
+    lon: np.ndarray
+    lat: np.ndarray
+    #: (pfts,) the PFT names, and (sites,) each site's position among them.
+    pft_names: np.ndarray
+    pft_codes: np.ndarray
+    #: (sites,): a value drawn independently at each site, and one drawn per
+    #: PFT and shared by its sites.
+    independent: np.ndarray
+    by_pft: np.ndarray
 
 
 # ── reading and writing ─────────────────────────────────────────────────────

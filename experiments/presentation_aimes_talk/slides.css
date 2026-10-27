@@ -64,6 +64,25 @@
   vertical-align: middle;
 }
 
+/* The calibration options slide: a name, the model, a map and a caption per
+   column, the columns appearing one per click. */
+.reveal .options-grid {
+  text-align: center;
+}
+.reveal .options-grid .option-name {
+  display: block;
+  font-family: "Nunito", sans-serif;
+  font-weight: 700;
+  font-size: 1.05em;
+}
+.reveal .options-grid p {
+  margin: 0.25em 0;
+}
+.reveal .options-grid .caption {
+  font-size: 0.6em;
+  padding: 0 0.4em;
+}
+
 /* The prior model under the prior draws. */
 .reveal .prior-model {
   text-align: center;

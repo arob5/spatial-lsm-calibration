@@ -111,9 +111,13 @@ scaling, not the size of the benefit on real data.
 
 - `transect`: a 1D Gaussian process, four direct noisy measurements of the
   parameter, exact posterior. A schematic of how information spreads.
-- `north_america`: three prior draws of one generic parameter over the real
-  8000-site pool: a trend in standardized mean annual temperature (the site
-  covariate table's `MAT`) plus a Matern-3/2 field (800 km) of the chordal
-  distance between sites, plus site noise. The tower sites are the tower
-  table's primary towers. The numbers are chosen to look plausible, not
-  fitted.
+- `north_america`: three prior draws of one generic parameter over North
+  America, as continuous maps: a trend in standardized mean annual
+  temperature (the site covariate table's `MAT`, carried to each grid point
+  from its nearest site) plus a Matern-3/2 Gaussian process (800 km) of the
+  chordal distance. The field is drawn exactly on a 60 km grid in the
+  display projection and shown on a 15 km raster interpolated from it,
+  within 90 km of a site (small enclosed gaps filled), which traces the land
+  the 8000-site pool covers; the sites are drawn over it. The tower sites (for the site map) are the
+  tower table's primary towers. The numbers are chosen to look plausible,
+  not fitted.
