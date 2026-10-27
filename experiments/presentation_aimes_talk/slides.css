@@ -1,5 +1,51 @@
 /* Additions to theme/theme.scss for this deck. */
 
+/* The title slide (theme/title-slide.html). */
+.reveal #title-slide {
+  text-align: left;
+}
+.reveal #title-slide .title {
+  font-size: 1.9em;
+  line-height: 1.12;
+  margin-bottom: 0.25em;
+}
+.reveal #title-slide .subtitle {
+  color: #3F7D58;
+  font-size: 1.05em;
+  margin: 0;
+}
+.reveal #title-slide .title-rule {
+  width: 3.2em;
+  height: 5px;
+  background: #E3A33B;
+  border-radius: 3px;
+  margin: 1.1em 0 0.9em;
+}
+.reveal #title-slide .title-authors {
+  font-size: 0.85em;
+  margin: 0;
+}
+.reveal #title-slide .title-author:first-child {
+  font-weight: 700;
+}
+.reveal #title-slide .title-separator {
+  color: #8A949A;
+  margin: 0 0.45em;
+}
+.reveal #title-slide .title-affiliation {
+  font-size: 0.62em;
+  color: #8A949A;
+  margin: 0.25em 0 0;
+}
+.reveal #title-slide .title-affiliation a {
+  color: #8A949A;
+}
+.reveal #title-slide .title-event {
+  font-size: 0.6em;
+  color: #8A949A;
+  margin: 2.6em 0 0;
+}
+
 /* A one-line caption under a figure. */
 .reveal .caption {
   display: block;

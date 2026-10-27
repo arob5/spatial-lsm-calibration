@@ -1,12 +1,23 @@
 ---
-title: "Calibrating land surface models as maps"
-subtitle: "Spatial parameter calibration across North America"
-author: "Andrew Roberts"
-institute: "Boston University · [co-authors and affiliations]"
-date: today
+title: "Scalable Bayesian parameter calibration of land surface models"
+subtitle: "Towards spatial land data assimilation"
+author:
+  - name: Andrew Roberts
+    email: arober@bu.edu
+    affiliations: Boston University
+  - name: Jonathan Huggins
+    affiliations: Boston University
+  - name: Michael Dietze
+    affiliations: Boston University
+date: 2026-10-28
+date-format: "MM/DD/YYYY"
+# Not a Quarto field: theme/title-slide.html prints it beside the date.
+event: "6th AIMES land data assimilation community virtual workshop"
 brand: theme/_brand.yml
 format:
   revealjs:
+    template-partials:
+      - theme/title-slide.html
     theme: [default, theme/theme.scss]
     css: slides.css
     width: 1280
