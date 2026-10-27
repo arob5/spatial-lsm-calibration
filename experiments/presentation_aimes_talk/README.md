@@ -29,7 +29,11 @@ be traced back to every assumption behind it.
 | `plots.py`, `style.py` | the figures (reading results, computing nothing) and their brand style |
 | `slides.qmd`, `slides.css`, `theme/` | the deck; `theme/` is the dissertation's brand and reveal.js theme |
 
-Results go to `output/` (untracked); figures to `figures/`.
+Results go to `output/` (untracked); figures to `figures/`. One figure is not
+made here: `figures/probpipe_workflow_language.png` is copied from ProbPipe's
+README (`docs/assets/probpipe-workflow-language.png` in
+[TARPS-group/prob-pipe](https://github.com/TARPS-group/prob-pipe), at commit
+`97891b7d793e`).
 
 ## Reproducing everything
 
@@ -94,7 +98,6 @@ results it reads and the function that draws it):
 | `toy_world` | the true turnover map with the sites; a tower's NEE and a sparse site's pools |
 | `posterior_tower`, `posterior_sparse` | one site's posterior, 50% and 90% regions, site by site (exact) and spatial (KDE of the reference draws), with a map locating the site |
 | `maps_estimate_*` | truth, site-by-site posterior means, spatial posterior mean of the smooth field |
-| `maps_uncertainty_turnover` | posterior SDs: site by site at each site, spatial everywhere |
 | `held_out_errors` | RMSE at the held-out sites, per parameter and method |
 | `cost_bars` | model runs per site: NUTS (warmup and sampling, all chains) against IPL |
 | `ipl_agreement_turnover` | exact and IPL posterior mean maps |

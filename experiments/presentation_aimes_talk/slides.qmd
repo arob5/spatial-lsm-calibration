@@ -228,22 +228,47 @@ Turnover, the harder parameter. Left, the truth. Middle, site by site: noisy, an
 The exact spatial posterior needs MCMC over every site's parameters at once: thousands of dimensions here, and in the toy almost two million model runs per site, with gradients SIPNET doesn't have. The way out is the problem's structure: each site's likelihood depends only on that site's parameters, so the model only ever needs to run locally. Ensemble Kalman methods and iterated posterior linearization both run small local ensembles, embarrassingly parallel and gradient-free, and do the spatial part with cheap Gaussian algebra. In the toy, iterated posterior linearization needs about four orders of magnitude fewer runs and gives essentially the same map.
 :::
 
-## Where this goes next
+## Next steps
 
-- **Spatial calibration** borrows strength across sites: fewer equifinality problems, and predictions where there are no data
-- **Scalable**: model runs stay local and parallel; only cheap algebra is global
-- **Next**: SIPNET at thousands of North American sites, with MODIS LAI, biomass, soil carbon and AmeriFlux NEE
-- **Then**: use the posterior map to decide **where new observations would help most**
+:::: {.columns .box-row}
+::: {.column width="49%"}
+::: {.step-box .fragment}
+[Scale to real problem]{.box-title}
 
-::: {.box .center-text}
-[contact / acknowledgments placeholder]
+- Initial target: moderately cheap model (SIPNET), 1000s of North American sites, NEE/AGB/LAI constraints
+- Key practical challenge: efficient spatial field parameterization
+:::
+:::
+::: {.column width="49%"}
+::: {.step-box .fragment}
+[Follow-up applications]{.box-title}
+
+- Integrate with state estimation
+- Active learning to identify promising sites to assimilate
+:::
+:::
+::::
+
+::: {.step-box .software-box .fragment}
+:::: {.columns .centered-columns}
+::: {.column width="40%"}
+[A new useful tool]{.box-title}
+
+**ProbPipe**: a probabilistic workflow language for Python
+
+[github.com/TARPS-group/prob-pipe](https://github.com/TARPS-group/prob-pipe)
+:::
+::: {.column width="60%"}
+![](figures/probpipe_workflow_language.png){.nostretch height=255px fig-align="center"}
+:::
+::::
 :::
 
-# Backup {.unnumbered .unlisted}
+::: notes
+Next, the real problem: SIPNET, which is cheap enough to run thousands of times, at thousands of North American sites, constrained by NEE, aboveground biomass and LAI. The practical challenge there is parameterizing the spatial fields efficiently. Beyond calibration, this connects to state estimation, and the posterior map tells us where new observations would help most. And to make all of this easier to build and more robust, we are developing ProbPipe, a probabilistic workflow language for Python.
+:::
 
-## Uncertainty: where we know, and where we don't
-
-![](figures/maps_uncertainty_turnover.png){width=80%}
+# Appendix {.unnumbered .unlisted}
 
 ## Error at sites with no data
 

@@ -75,6 +75,48 @@
   font-size: 0.95em;
 }
 
+/* The next-steps slide: boxes with a title, two side by side and stretched
+   to one height, then a full-width one. */
+.reveal .box-row {
+  display: flex;
+  justify-content: space-between;
+}
+.reveal .box-row > .column {
+  display: flex;
+}
+.reveal .step-box {
+  flex: 1;
+  background: #EDF1EA;
+  border-left: 8px solid #3F7D58;
+  border-radius: 10px;
+  padding: 0.3em 0.7em 0.4em;
+  font-size: 0.68em;
+}
+.reveal .step-box .box-title {
+  display: block;
+  font-family: "Nunito", sans-serif;
+  font-weight: 700;
+  font-size: 1.25em;
+  color: #3F7D58;
+  margin-bottom: 0.1em;
+}
+.reveal .step-box ul {
+  margin: 0 0 0 1em;
+}
+.reveal .step-box p {
+  margin: 0.2em 0;
+}
+.reveal .software-box {
+  margin-top: 0.6em;
+  border-left-color: #4A8FB5;
+}
+.reveal .software-box .box-title {
+  color: #4A8FB5;
+}
+.reveal .software-box img {
+  display: block;
+}
+
 /* A one-line box under a large figure. */
 .reveal .box.compact-box {
   font-size: 0.85em;

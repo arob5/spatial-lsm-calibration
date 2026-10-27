@@ -77,8 +77,6 @@ FIGURES = (
     FigureSpec("maps_estimate_turnover.png", config.TOY_RESULTS_FILE, plots.maps_estimate, {"parameter": TURNOVER}),
     FigureSpec("maps_estimate_productivity.png", config.TOY_RESULTS_FILE, plots.maps_estimate,
                {"parameter": PRODUCTIVITY}),
-    FigureSpec("maps_uncertainty_turnover.png", config.TOY_RESULTS_FILE, plots.maps_uncertainty,
-               {"parameter": TURNOVER}),
     FigureSpec("held_out_errors.png", config.TOY_RESULTS_FILE, plots.held_out_errors),
     FigureSpec("ipl_agreement_turnover.png", config.TOY_RESULTS_FILE, plots.ipl_agreement, {"parameter": TURNOVER}),
     FigureSpec("cost_bars.png", config.TOY_RESULTS_FILE, plots.cost_bars),

@@ -41,7 +41,6 @@ __all__ = [
     "ipl_agreement",
     "ipl_convergence",
     "maps_estimate",
-    "maps_uncertainty",
     "north_america_prior_draws",
     "site_posterior_comparison",
     "option_independent_map",
@@ -295,27 +294,6 @@ def maps_estimate(toy: ToyResults, *, parameter: int) -> Figure:
     colorbar = fig.colorbar(image, ax=axes, fraction=0.02, pad=0.015)
     colorbar.set_label(config.PARAMETER_LABELS[parameter], fontsize=MAP_LABEL_SIZE)
     colorbar.ax.tick_params(labelsize=MAP_LABEL_SIZE - 3)
-    return fig
-
-
-def maps_uncertainty(toy: ToyResults, *, parameter: int) -> Figure:
-    """Posterior SD of one parameter: site by site at each site, spatial everywhere."""
-    prior_sd = float(toy.prior.held_out_sd[0, parameter])
-    norm = Normalize(0.0, prior_sd)
-    fig, axes = plt.subplots(1, 2, figsize=(11.5, 5.0), gridspec_kw={"wspace": 0.08})
-
-    site_sd = np.sqrt(toy.site_by_site.posterior_site_covariance[:, parameter, parameter])
-    axes[0].scatter(*toy.training_locations.T, c=site_sd, cmap=UNCERTAINTY_COLORMAP, norm=norm, s=55,
-                    edgecolor=PALETTE["stone"], linewidth=0.4)
-    axes[0].set_title(METHOD_LABELS["site_by_site"])
-
-    image = _image(axes[1], toy.spatial_reference.map_sd[:, parameter], toy.map_grid_size,
-                   cmap=UNCERTAINTY_COLORMAP, norm=norm)
-    axes[1].scatter(*toy.training_locations[toy.is_tower].T, **SITE_MARKERS["tower"])
-    axes[1].set_title("spatial")
-    for ax in axes:
-        _toy_map_frame(ax)
-    fig.colorbar(image, ax=axes, fraction=0.03, pad=0.02, label="uncertainty (posterior SD)")
     return fig
 
 
