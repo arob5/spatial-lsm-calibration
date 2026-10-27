@@ -1,0 +1,202 @@
+/* Additions to theme/theme.scss for this deck. */
+
+/* The title slide (theme/title-slide.html). */
+.reveal #title-slide {
+  text-align: left;
+}
+.reveal #title-slide .title {
+  font-size: 1.9em;
+  line-height: 1.12;
+  margin-bottom: 0.25em;
+}
+.reveal #title-slide .subtitle {
+  color: #3F7D58;
+  font-size: 1.05em;
+  margin: 0;
+}
+.reveal #title-slide .title-rule {
+  width: 3.2em;
+  height: 5px;
+  background: #E3A33B;
+  border-radius: 3px;
+  margin: 1.1em 0 0.9em;
+}
+.reveal #title-slide .title-authors {
+  font-size: 0.85em;
+  margin: 0;
+}
+.reveal #title-slide .title-author:first-child {
+  font-weight: 700;
+}
+.reveal #title-slide .title-separator {
+  color: #8A949A;
+  margin: 0 0.45em;
+}
+.reveal #title-slide .title-affiliation {
+  font-size: 0.62em;
+  color: #8A949A;
+  margin: 0.25em 0 0;
+}
+.reveal #title-slide .title-affiliation a {
+  color: #8A949A;
+}
+.reveal #title-slide .title-event {
+  font-size: 0.6em;
+  color: #8A949A;
+  margin: 2.6em 0 0;
+}
+
+/* A one-line caption under a figure. */
+.reveal .caption {
+  display: block;
+  text-align: center;
+  font-size: 0.55em;
+  color: #8A949A;
+}
+
+/* The backup slides that write out a model: equations and bullets smaller. */
+.reveal .math-slide {
+  font-size: 0.78em;
+}
+.reveal .math-slide li {
+  margin-bottom: 0.2em;
+}
+.reveal .math-slide mjx-container[display="true"] {
+  margin: 0.4em 0;
+}
+
+/* Bullets under a full-width figure, set a little smaller and tighter. */
+.reveal .compact-list li {
+  font-size: 0.78em;
+  margin-bottom: 0.1em;
+}
+/* Nested items keep their parent's size, rather than shrinking again. */
+.reveal .compact-list li li {
+  font-size: 0.95em;
+}
+
+/* The next-steps slide: boxes with a title, two side by side and stretched
+   to one height, then a full-width one. */
+.reveal .box-row {
+  display: flex;
+  justify-content: space-between;
+}
+.reveal .box-row > .column {
+  display: flex;
+}
+.reveal .step-box {
+  flex: 1;
+  background: #EDF1EA;
+  border-left: 8px solid #3F7D58;
+  border-radius: 10px;
+  padding: 0.3em 0.7em 0.4em;
+  font-size: 0.68em;
+}
+.reveal .step-box .box-title {
+  display: block;
+  font-family: "Nunito", sans-serif;
+  font-weight: 700;
+  font-size: 1.25em;
+  color: #3F7D58;
+  margin-bottom: 0.1em;
+}
+.reveal .step-box ul {
+  margin: 0 0 0 1em;
+}
+.reveal .step-box p {
+  margin: 0.2em 0;
+}
+.reveal .software-box {
+  margin-top: 0.6em;
+  border-left-color: #4A8FB5;
+}
+.reveal .software-box .box-title {
+  color: #4A8FB5;
+}
+.reveal .software-box img {
+  display: block;
+}
+
+/* A one-line box under a large figure. */
+.reveal .box.compact-box {
+  font-size: 0.85em;
+  padding: 0.3em 0.9em;
+  margin-top: 0.2em;
+}
+.reveal .box.compact-box p {
+  margin: 0;
+}
+
+.reveal .center-text {
+  text-align: center;
+}
+
+/* Columns centered vertically on each other. Quarto's columns are inline
+   blocks, so this is vertical-align, not flexbox. */
+.reveal .centered-columns > .column {
+  vertical-align: middle;
+}
+
+/* The calibration options slide: a name, the model, a map and a caption per
+   column, the columns appearing one per click. */
+.reveal .options-grid {
+  text-align: center;
+}
+.reveal .options-grid .option-name {
+  display: block;
+  font-family: "Nunito", sans-serif;
+  font-weight: 700;
+  font-size: 1.05em;
+}
+.reveal .options-grid p {
+  margin: 0.25em 0;
+}
+.reveal .options-grid .caption {
+  font-size: 0.6em;
+  padding: 0 0.4em;
+}
+
+/* A heading over a column's figure. */
+.reveal .column-heading {
+  display: block;
+  text-align: center;
+  font-family: "Nunito", sans-serif;
+  font-weight: 700;
+  font-size: 1.05em;
+}
+
+/* Figures in columns as blocks, without the line space an inline image
+   leaves below it. */
+.reveal .figure-columns img {
+  display: block;
+  margin: 0 auto;
+}
+
+/* A slide whose one figure sits centered in the space under the title. */
+.reveal section.centered-figure img {
+  margin-top: 70px;
+}
+
+/* A takeaway that appears under a slide's figures, large. */
+.reveal .takeaway {
+  text-align: center;
+  font-family: "Nunito", sans-serif;
+  font-weight: 700;
+  font-size: 1.25em;
+  color: #3F7D58;
+  margin-top: 0.3em;
+}
+.reveal .takeaway p {
+  margin: 0;
+}
+
+/* The prior model under the prior draws. */
+.reveal .prior-model {
+  text-align: center;
+  margin-top: 0.6em;
+}
+
+/* The options beside the site map, spaced out. */
+.reveal .options-list li {
+  margin-bottom: 1.1em;
+}

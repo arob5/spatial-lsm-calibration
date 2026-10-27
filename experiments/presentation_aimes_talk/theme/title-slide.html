@@ -1,0 +1,15 @@
+<!--
+  The title slide, replacing Quarto's (named in slides.qmd's template-partials).
+  Authors share one line and their affiliations are listed once, deduplicated;
+  the presenter is the first author. Styled by slides.css's #title-slide rules.
+-->
+<section id="$idprefix$title-slide"$for(title-slide-attributes/pairs)$ $it.key$="$it.value$"$endfor$ class="quarto-title-block center">
+  <h1 class="title">$title$</h1>
+$if(subtitle)$
+  <p class="subtitle">$subtitle$</p>
+$endif$
+  <div class="title-rule"></div>
+  <p class="title-authors">$for(by-author)$<span class="title-author">$by-author.name.literal$</span>$sep$<span class="title-separator">·</span>$endfor$</p>
+  <p class="title-affiliation">$for(by-affiliation)$$it.name$$sep$ · $endfor$$for(by-author)$$if(by-author.email)$ · <a href="mailto:$by-author.email$">$by-author.email$</a>$endif$$endfor$</p>
+  <p class="title-event">$if(event)$$event$ · $endif$$date$</p>
+</section>

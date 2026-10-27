@@ -1,0 +1,27 @@
+"""The AIMES talk: slides on spatial calibration, and the toy experiment behind them.
+
+The package is organized by role, so each kind of choice has one home:
+
+- ``config``: every number (sizes, seeds, model constants, settings).
+- ``toy``: the toy *problem*: the region and its drivers (``domain``), the
+  carbon model standing in for SIPNET (``forward_model``), the spatial prior
+  over its parameters (``spatial_prior``), and what each site observes
+  (``observations``).
+- ``inference``: the *algorithms* that calibrate the toy: site by site,
+  the exact spatial posterior by MCMC, and the scalable method (IPL); and
+  the summaries that compare them, posterior densities among them.
+- ``illustrations``: computations that are pictures, not experiments: prior
+  draws and uncertainty over North America, and the calibration options.
+- ``results``: the files the computations write and the figures read.
+- ``showcase``: which sites the zoomed-in figures show.
+- ``run``: the scripts, each a short workflow over the pieces above.
+- ``plots`` and ``style``: the figures, which read results and compute
+  nothing.
+
+Importing the package turns on 64-bit JAX, which the MCMC reference and the
+model's gradients need for accurate log densities.
+"""
+
+import jax
+
+jax.config.update("jax_enable_x64", True)

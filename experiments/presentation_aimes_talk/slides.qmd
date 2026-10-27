@@ -1,0 +1,321 @@
+---
+title: "Scalable Bayesian parameter calibration of land surface models"
+subtitle: "Towards spatial land data assimilation"
+author:
+  - name: Andrew Roberts
+    email: arober@bu.edu
+    affiliations: Boston University
+  - name: Jonathan Huggins
+    affiliations: Boston University
+  - name: Michael Dietze
+    affiliations: Boston University
+date: 2026-10-28
+date-format: "MM/DD/YYYY"
+# Not a Quarto field: theme/title-slide.html prints it beside the date.
+event: "6th AIMES land data assimilation community virtual workshop"
+brand: theme/_brand.yml
+format:
+  revealjs:
+    template-partials:
+      - theme/title-slide.html
+    theme: [default, theme/theme.scss]
+    css: slides.css
+    width: 1280
+    height: 720
+    margin: 0.05
+    slide-number: c/t
+    transition: fade
+    transition-speed: fast
+    center: false
+    html-math-method: mathjax
+    fig-align: center
+jupyter: python3
+execute:
+  echo: false
+  warning: false
+---
+
+```{python}
+#| include: false
+# Every number quoted on the slides is read from the saved results here, so
+# the text cannot disagree with the figures. README.md says how to make them.
+import sys
+from pathlib import Path
+
+REPOSITORY = Path.cwd().resolve().parents[1]
+sys.path.insert(0, str(REPOSITORY))
+
+from experiments.presentation_aimes_talk import config, results
+
+toy = results.load(results.ToyResults, config.TOY_RESULTS_FILE)
+
+n_toy_sites = len(toy.training_locations)
+n_toy_towers = int(toy.is_tower.sum())
+mcmc_runs = f"{toy.reference_model_runs_per_site:,}"
+ipl_runs = int(toy.ipl_history.runs_per_site[-1])
+ipl_ensemble_size = config.IPL_ENSEMBLE_SIZE
+ipl_iterations = len(toy.ipl_history.runs_per_site)
+```
+
+## Spatial structure
+
+:::: {.columns .centered-columns}
+::: {.column width="62%"}
+![](figures/site_pool_map.png){height=560px}
+:::
+::: {.column width="38%" .options-list}
+::: {.fragment}
+- learn independently by site?
+:::
+
+::: {.fragment}
+- treat all sites the same (within a PFT)?
+:::
+
+::: {.fragment}
+- incorporate spatial structure [(this talk)]{.forest}
+:::
+:::
+::::
+
+::: notes
+The pool: 8000 sites, each a roughly 1 km grid cell, chosen for coverage of North America's ecoregions. The triangles are sites with a flux tower: rich, high-frequency data. Everywhere else we have only sparse remote sensing and inventories.
+
+How should we calibrate across these sites? Site by site, with no sharing; or one parameter set for every site of a PFT, ignoring variation within it. We do something in between: let the parameters vary in space, and learn how much.
+:::
+
+## A first step: spatial parameter calibration
+
+:::: {.columns .options-grid}
+::: {.column width="33%"}
+::: {.fragment}
+[Independent]{.option-name}
+
+$y_s = \mathcal{G}_s(\theta_s) + \epsilon_s$
+
+![](figures/option_independent.png){width=100%}
+
+[a separate $\theta_s$ at every site; nothing shared]{.caption}
+:::
+:::
+::: {.column width="33%"}
+::: {.fragment}
+[By PFT]{.option-name}
+
+$y_s = \mathcal{G}_s(\theta_{\mathrm{pft}(s)}) + \epsilon_s$
+
+![](figures/option_pft.png){width=100%}
+
+[one $\theta$ per PFT; no variation within a PFT]{.caption}
+:::
+:::
+::: {.column width="33%"}
+::: {.fragment}
+[Spatial]{.option-name .forest}
+
+$y_s = \mathcal{G}_s(\theta(x_s)) + \epsilon_s$
+
+![](figures/option_spatial.png){width=100%}
+
+[a field $\theta(x)$, defined everywhere]{.caption}
+:::
+:::
+::::
+
+::: notes
+The same three options, three ways: in words, as the model, and as a map of one parameter. Here y_s is site s's data, G_s the model run at site s, and epsilon_s the error. Independent: every site has its own parameter, and nothing is shared, which is salt-and-pepper on the map. By PFT: every site of a PFT shares one value, so the map is patches that follow vegetation type, with no variation within a PFT. Spatial: the parameter is a field theta(x), defined everywhere, not just at the sites; a site reads it at its location x_s, and nearby sites inform each other.
+:::
+
+## Spatial parameter model
+
+![](figures/north_america_prior_draws.png){width=100%}
+
+::: {.fragment .prior-model}
+prior model: $\theta(x) = \underbrace{z(x)^\top \beta}_{\text{spatial covariates}} + \underbrace{u(x)}_{\text{Gaussian process}}$
+:::
+
+::: notes
+Three draws from a spatial prior over one parameter at the real sites: each is a possible map of the parameter before we see any data. The prior model: a trend in spatial covariates such as mean annual temperature, plus a Gaussian process for the smooth variation the covariates miss. Calibrating means learning this map, not 8000 separate numbers.
+:::
+
+## Borrowing strength across space
+
+![](figures/uncertainty_maps.png){height=470px fig-align="center"}
+
+::: {.fragment .box .center-text .compact-box}
+Uncertainty drops everywhere, and most around the flux towers.
+:::
+
+::: notes
+Left: before any data, the parameter is equally uncertain everywhere. Right: after conditioning on the data. Every site has weak data, think remote sensing, and a handful of flux towers have strong data. Uncertainty drops everywhere, because each site's weak data are pooled with its neighbors', and it drops most around the towers, whose information spreads to the sites near them. This is what a site-by-site calibration cannot do: a site with weak data would stay uncertain however close it is to a tower.
+:::
+
+## A toy model
+
+![](figures/toy_world.png){.nostretch width=100%}
+
+::: {.compact-list}
+- Toy single-pool carbon model
+- Two parameters: **productivity** and **turnover**
+- `{python} n_toy_sites` sites, `{python} n_toy_towers` with a "tower"
+- Try to recover true parameters (each a spatial field)
+:::
+
+::: notes
+A synthetic world where we know the answer. The model has GPP and temperature-dependent respiration of one carbon pool. Towers see monthly NEE; every other site sees only its carbon pool once a year, like an inventory.
+:::
+
+## Posterior comparison: spatial vs. site-by-site
+
+:::: {.columns .figure-columns}
+::: {.column width="50%"}
+::: {.fragment}
+[Tower Site]{.column-heading}
+
+![](figures/posterior_tower.png){height=410px fig-align="center"}
+:::
+:::
+::: {.column width="50%"}
+::: {.fragment}
+[Sparse Site]{.column-heading}
+
+![](figures/posterior_sparse.png){height=410px fig-align="center"}
+:::
+:::
+::::
+
+::: {.fragment .takeaway}
+Sparse sites borrow information across space
+:::
+
+::: notes
+Each panel is one site's posterior over its two parameters, as 50% and 90% regions: red calibrated site by site, green calibrated spatially; the star is the truth, and the small map shows where the site is. At the tower, the monthly NEE pins both parameters down, and the two posteriors agree: the spatial model changes little where the data are rich. At a nearby sparse site, its annual pools alone leave a long curved ridge, high productivity with fast turnover or low with slow, the classic equifinality. Calibrated spatially, the site borrows from its neighbors, the tower among them, and the ridge is cut down to the part around the truth.
+:::
+
+## Spatial model can predict at any site {.centered-figure}
+
+![](figures/maps_estimate_turnover.png){.nostretch width=100%}
+
+::: notes
+Turnover, the harder parameter. Left, the truth. Middle, site by site: noisy, and nothing at sites without data (crosses). Right, the spatial posterior mean: the map's structure is recovered, including at sites never observed.
+:::
+
+## Challenge: scalability and computation
+
+::: {.compact-list .incremental}
+- MCMC infeasible: high-dimensional and millions of model evaluations
+- Solutions:
+  - Exploit local likelihood structure
+  - Parallelizable, gradient-free algorithms
+    - Ensemble Kalman
+    - Iterated posterior linearization
+:::
+
+:::: {.columns .figure-columns}
+::: {.column width="40%"}
+::: {.fragment}
+![](figures/cost_bars.png){height=295px fig-align="center"}
+:::
+:::
+::: {.column width="60%"}
+::: {.fragment}
+![](figures/ipl_agreement_turnover.png){height=295px fig-align="center"}
+:::
+:::
+::::
+
+::: notes
+The exact spatial posterior needs MCMC over every site's parameters at once: thousands of dimensions here, and in the toy almost two million model runs per site, with gradients SIPNET doesn't have. The way out is the problem's structure: each site's likelihood depends only on that site's parameters, so the model only ever needs to run locally. Ensemble Kalman methods and iterated posterior linearization both run small local ensembles, embarrassingly parallel and gradient-free, and do the spatial part with cheap Gaussian algebra. In the toy, iterated posterior linearization needs about four orders of magnitude fewer runs and gives essentially the same map.
+:::
+
+## Next steps
+
+:::: {.columns .box-row}
+::: {.column width="49%"}
+::: {.step-box .fragment}
+[Scale to real problem]{.box-title}
+
+- Initial target: moderately cheap model (SIPNET), 1000s of North American sites, NEE/AGB/LAI constraints
+- Key practical challenge: efficient spatial field parameterization
+:::
+:::
+::: {.column width="49%"}
+::: {.step-box .fragment}
+[Follow-up applications]{.box-title}
+
+- Integrate with state estimation
+- Active learning to identify promising sites to assimilate
+:::
+:::
+::::
+
+::: {.step-box .software-box .fragment}
+:::: {.columns .centered-columns}
+::: {.column width="40%"}
+[A new useful tool]{.box-title}
+
+**ProbPipe**: a probabilistic workflow language for Python
+
+[github.com/TARPS-group/prob-pipe](https://github.com/TARPS-group/prob-pipe)
+:::
+::: {.column width="60%"}
+![](figures/probpipe_workflow_language.png){.nostretch height=255px fig-align="center"}
+:::
+::::
+:::
+
+::: notes
+Next, the real problem: SIPNET, which is cheap enough to run thousands of times, at thousands of North American sites, constrained by NEE, aboveground biomass and LAI. The practical challenge there is parameterizing the spatial fields efficiently. Beyond calibration, this connects to state estimation, and the posterior map tells us where new observations would help most. And to make all of this easier to build and more robust, we are developing ProbPipe, a probabilistic workflow language for Python.
+:::
+
+# Appendix {.unnumbered .unlisted}
+
+## Error at sites with no data
+
+![](figures/held_out_errors.png){width=80%}
+
+## The scalable method converges in a few iterations
+
+![](figures/ipl_convergence.png){width=90%}
+
+## Toy land surface model {.math-slide}
+
+One carbon pool $C_t$ at each site, run monthly for `{python} config.N_MONTHS // 12` years:
+
+$$
+\begin{aligned}
+C_{t+1} &= C_t + \mathrm{GPP}_t - R_t, && C_0 = c_0 \\[2pt]
+\mathrm{GPP}_t &= a\, L_t\, \sigma\!\left(\frac{T_t - T_{1/2}}{w}\right) && \text{photosynthesis} \\[2pt]
+R_t &= C_t \left(1 - e^{-k_t}\right), \quad k_t = k\, e^{\gamma\,(T_t - T_{\mathrm{ref}})} && \text{respiration} \\[2pt]
+\mathrm{NEE}_t &= R_t - \mathrm{GPP}_t && \text{net ecosystem exchange}
+\end{aligned}
+$$
+
+- Drivers: monthly temperature $T_t$ (the site's climate, a seasonal cycle and weather) and light $L_t$ (a seasonal cycle); $\sigma$ is the logistic function
+- Outputs $\mathcal{G}_s$: monthly NEE, and the pool at the end of each year
+- **Calibrated**: $a$, **productivity**, carbon uptake per unit light when it is warm; $k$, **turnover rate**, the fraction of the pool respired per month at $T_{\mathrm{ref}}$ ($1/k$ is the carbon's residence time)
+- Fixed: $T_{1/2} = `{python} config.TEMPERATURE_HALF_SATURATION`$ °C, $w = `{python} config.TEMPERATURE_SATURATION_WIDTH`$ °C, $\gamma = `{python} config.RESPIRATION_TEMPERATURE_SENSITIVITY`$ /°C, $T_{\mathrm{ref}} = `{python} config.REFERENCE_TEMPERATURE`$ °C, $c_0 = `{python} config.INITIAL_POOL`$
+
+## Toy calibration model {.math-slide}
+
+`{python} n_toy_sites` sites $s$ at locations $x_s$ in a square region, `{python} n_toy_towers` of them towers:
+
+$$
+\begin{aligned}
+y_s &= \mathcal{G}_s\big(\theta(x_s)\big) + \epsilon_s, \qquad \epsilon_s \sim \mathcal{N}(0, \Sigma_s) && \text{data} \\[2pt]
+\theta(x) &= \big(\log a(x),\ \log k(x)\big) && \text{parameters} \\[2pt]
+\theta_p(x) &= \beta_{p0} + \beta_{p1}\, z(x) + \sigma_p\, u_p(x) + \tau_p\, \eta_p(x) && \text{prior, } p = 1, 2 \\[2pt]
+u_p &\sim \mathcal{GP}\big(0,\ c_{\ell_p}\big), \quad \eta_p(x) \overset{\text{iid}}{\sim} \mathcal{N}(0, 1) \\[2pt]
+\pi(\theta_X \mid y) &\propto \textstyle\prod_s p\big(y_s \mid \theta(x_s)\big)\ \pi(\theta_X) && \text{posterior}
+\end{aligned}
+$$
+
+- $y_s$: the pool at the end of each year at every site (`{python} f"{config.POOL_RELATIVE_NOISE:.0%}"` noise), and monthly NEE at towers (`{python} f"{config.NEE_RELATIVE_NOISE:.0%}"` noise); $\Sigma_s$ diagonal and known
+- $z(x)$: a climate covariate (mean annual temperature); $u_p$: smooth spatial variation, with $c_\ell$ the Matérn-3/2 covariance of length scale $\ell$; $\eta_p$: site-to-site noise; the two parameters independent a priori
+- $\theta_X = \big(\theta(x_1), \ldots, \theta(x_S)\big)$: every site's parameters, jointly. Known, not learned: $\beta$, $\sigma_p$, $\ell_p$, $\tau_p$
+
+## Inference algorithms
+
+- **Site by site**: each site alone, with its own prior (its marginal under the spatial prior); the exact posterior, computed on a grid
+- **Spatial, exact**: NUTS (gradient-based MCMC) on every site's parameters jointly; `{python} mcmc_runs` model runs per site, with gradients. The reference
+- **Spatial, scalable**: iterated posterior linearization. Each iteration runs a small ensemble (`{python} ipl_ensemble_size` runs) at every site, fits each site's outputs linearly in its parameters, and makes one Gaussian update over all sites; `{python} ipl_runs` model runs per site in all (`{python} ipl_iterations` iterations), no gradients

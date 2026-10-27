@@ -1,0 +1,66 @@
+# =============================================================================
+# _brand.yml — the single source of truth for the visual style.
+#
+# Read by:
+#   - Quarto (automatically, for every document in this project)
+#   - slides/theme.scss        (palette available as $brand-<name> Sass vars)
+#   - figures/style.py         (matplotlib + plotly defaults)
+#   - tex/macros.tex           (math colors — keep hex values in sync by hand)
+#
+# Change a color or font HERE and everything else follows.
+# Spec: https://posit-dev.github.io/brand-yml/
+# =============================================================================
+
+meta:
+  name: Dissertation
+
+color:
+  # Natural, soft palette chosen to sit comfortably next to IAN symbols.
+  palette:
+    paper:  "#FBF9F4"   # warm off-white background
+    ink:    "#2E3A3F"   # main text (soft charcoal, not pure black)
+    stone:  "#8A949A"   # muted text, gridlines, de-emphasized elements
+    mist:   "#EDF1EA"   # light fill for boxes / callouts
+    forest: "#3F7D58"   # primary accent
+    sky:    "#4A8FB5"   # secondary accent (water, atmosphere)
+    soil:   "#9C6B45"   # earth / soil pools
+    sun:    "#E3A33B"   # highlights, energy, photosynthesis
+    clay:   "#C8604F"   # warnings, emphasis, "the problem"
+    leaf:   "#8DB255"   # light green, vegetation
+
+  background: paper
+  foreground: ink
+  primary: forest
+  secondary: stone
+  tertiary: mist
+  info: sky
+  success: leaf
+  warning: sun
+  danger: clay
+  light: paper
+  dark: ink
+
+typography:
+  fonts:
+    - family: Nunito
+      source: google
+      weight: [400, 600, 700, 800]
+    - family: Source Sans 3
+      source: google
+      weight: [400, 600]
+      style: [normal, italic]
+    - family: JetBrains Mono
+      source: google
+      weight: [400]
+
+  base:
+    family: Source Sans 3
+    line-height: 1.35
+  headings:
+    family: Nunito
+    weight: 700
+    color: ink
+  monospace:
+    family: JetBrains Mono
+  link:
+    color: sky
