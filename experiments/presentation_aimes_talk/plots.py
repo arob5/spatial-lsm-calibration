@@ -10,19 +10,21 @@ sites as markers (``style.SITE_MARKERS``): towers are triangles, sparse
 sites circles, held-out sites crosses.
 """
 
-from dataclasses import dataclass
 
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.colors import Normalize, TwoSlopeNorm, to_rgba
 from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
+from matplotlib.patches import Patch
 
 from sipnet_calibration.plotting.basemap import draw_basemap
 from sipnet_calibration.projection import SITE_PROJECTION
 
 from . import config
-from .results import CalibrationOptions, NorthAmericaPrior, ToyResults, UncertaintyMaps
+from .inference.density import highest_density_levels
+from .results import CalibrationOptions, NorthAmericaPrior, SitePosteriors, ToyResults, UncertaintyMaps
+from .showcase import showcase_sites
 from .style import (
     DEVIATION_COLORMAP,
     FIELD_COLORMAP,
@@ -34,31 +36,28 @@ from .style import (
 )
 
 __all__ = [
-    "ShowcaseSites",
     "cost_bars",
-    "equifinality",
     "held_out_errors",
     "ipl_agreement",
     "ipl_convergence",
     "maps_estimate",
     "maps_uncertainty",
     "north_america_prior_draws",
+    "site_posterior_comparison",
     "option_independent_map",
     "option_pft_map",
     "option_spatial_map",
-    "showcase_sites",
     "site_pool_map",
     "toy_decomposition",
     "toy_world",
     "uncertainty_maps",
 ]
 
-#: The fraction of probability inside each contour of a site's posterior.
-CONTOUR_PROBABILITIES = (0.5, 0.9)
-#: How many reference draws the equifinality figure scatters.
-N_REFERENCE_DRAWS_SHOWN = 1500
 #: The size of one calibration-option map, inches.
 OPTION_MAP_SIZE = (5.2, 4.6)
+#: Text sizes on the estimate maps, which fill a slide's width (points).
+MAP_TITLE_SIZE = 26
+MAP_LABEL_SIZE = 20
 
 # ── North America ───────────────────────────────────────────────────────────
 
@@ -239,37 +238,37 @@ def toy_world(toy: ToyResults, *, parameter: int) -> Figure:
 # ── the toy: what the spatial prior buys ────────────────────────────────────
 
 
-def equifinality(toy: ToyResults, *, stage: str) -> Figure:
-    """One sparse site's posterior: site by site (``"site_by_site"``), then with the spatial one (``"spatial"``)."""
-    site = showcase_sites(toy).sparse
-    axis_0, axis_1 = toy.site_grids.grid_axes[site]
-    density = toy.site_grids.density[site]
+def site_posterior_comparison(site_posteriors: SitePosteriors, *, which: str) -> Figure:
+    """One site's posterior site by site and spatially, as contours, with a map locating the site.
 
-    fig, ax = plt.subplots(figsize=(7.2, 6.0))
-    levels = _highest_density_levels(density, CONTOUR_PROBABILITIES)
-    ax.contourf(axis_0, axis_1, density.T, levels=[levels[-1], levels[0], density.max()],
-                colors=[to_rgba(PALETTE["clay"], 0.18), to_rgba(PALETTE["clay"], 0.4)])
-    ax.contour(axis_0, axis_1, density.T, levels=levels[::-1], colors=PALETTE["clay"], linewidths=1.5)
-    ax.plot([], [], color=PALETTE["clay"], linewidth=6, alpha=0.4, label=METHOD_LABELS["site_by_site"])
-    if stage == "spatial":
-        draws = toy.reference_samples[:, site, :]
-        shown = np.random.default_rng(0).choice(len(draws), size=min(N_REFERENCE_DRAWS_SHOWN, len(draws)), replace=False)
-        ax.scatter(*draws[shown].T, s=5, color=METHOD_COLORS["spatial_reference"], alpha=0.35, linewidth=0,
-                   label="spatial")
-    elif stage != "site_by_site":
-        raise ValueError(f"stage must be 'site_by_site' or 'spatial', not {stage!r}")
-    ax.scatter(*toy.truth.theta_training[site], marker="*", s=380, color=PALETTE["ink"],
-               edgecolor="white", linewidth=1.2, zorder=5, label="truth")
-    limits = _equifinality_limits(toy, site)
-    ax.set_xlim(limits[0])
-    ax.set_ylim(limits[1])
+    ``which`` is ``"tower"`` or ``"sparse"``. The contours hold
+    ``config.CONTOUR_PROBABILITIES``: exact for site by site, a checked KDE
+    for spatial (``run/site_posteriors.py``).
+    """
+    posterior = getattr(site_posteriors, which)
+    fig, ax = plt.subplots(figsize=(6.4, 5.6))
+    for axes, density, color in (
+        (posterior.site_by_site_axes, posterior.site_by_site_density, METHOD_COLORS["site_by_site"]),
+        (posterior.spatial_axes, posterior.spatial_density, METHOD_COLORS["spatial_reference"]),
+    ):
+        _draw_contours(ax, axes, density, color)
+    ax.scatter(*posterior.truth, marker="*", s=380, color=PALETTE["ink"], edgecolor="white", linewidth=1.2,
+               zorder=5)
+    ax.set_xlim(posterior.spatial_axes[0][[0, -1]])
+    ax.set_ylim(posterior.spatial_axes[1][[0, -1]])
     ax.set_xlabel(config.PARAMETER_LABELS[0])
     ax.set_ylabel(config.PARAMETER_LABELS[1])
-    legend = ax.legend(loc="upper left")
-    for handle in legend.legend_handles:
-        if hasattr(handle, "set_sizes"):  # scatter handles: the draws and the star
-            handle.set_sizes([60 if handle.get_label() == "spatial" else 200])
-            handle.set_alpha(1.0)
+    ax.legend(
+        handles=[
+            Patch(facecolor=to_rgba(METHOD_COLORS["site_by_site"], 0.35), edgecolor=METHOD_COLORS["site_by_site"],
+                  label=METHOD_LABELS["site_by_site"]),
+            Patch(facecolor=to_rgba(METHOD_COLORS["spatial_reference"], 0.35),
+                  edgecolor=METHOD_COLORS["spatial_reference"], label="spatial"),
+            Line2D([], [], linestyle="none", marker="*", markersize=16, color=PALETTE["ink"], label="truth"),
+        ],
+        loc="upper left", fontsize=13,
+    )
+    _draw_locator_map(ax.inset_axes((0.66, 0.04, 0.32, 0.32)), site_posteriors, posterior.site)
     return fig
 
 
@@ -277,23 +276,25 @@ def maps_estimate(toy: ToyResults, *, parameter: int) -> Figure:
     """The truth, the site-by-site estimates, and the spatial estimate of one parameter."""
     true_field = toy.truth.trend_map[:, parameter] + toy.truth.smooth_variation_map[:, parameter]
     norm = Normalize(*np.percentile(true_field, [0.5, 99.5]))
-    fig, axes = plt.subplots(1, 3, figsize=(16, 5.0), gridspec_kw={"wspace": 0.08})
+    fig, axes = plt.subplots(1, 3, figsize=(16, 5.6), gridspec_kw={"wspace": 0.05})
 
     image = _image(axes[0], true_field, toy.map_grid_size, cmap=FIELD_COLORMAP, norm=norm)
-    axes[0].set_title("truth")
+    axes[0].set_title("truth", fontsize=MAP_TITLE_SIZE)
 
     site_estimate = toy.site_by_site.posterior_mean[:, parameter]
     axes[1].scatter(*toy.training_locations.T, c=site_estimate, cmap=FIELD_COLORMAP, norm=norm, s=55,
                     edgecolor=PALETTE["stone"], linewidth=0.4)
     axes[1].scatter(*toy.held_out_locations.T, **SITE_MARKERS["held_out"], label="no data: no estimate")
-    axes[1].legend(loc="upper center", bbox_to_anchor=(0.5, -0.02), fontsize=12)
-    axes[1].set_title(METHOD_LABELS["site_by_site"])
+    axes[1].legend(loc="upper center", bbox_to_anchor=(0.5, -0.02), fontsize=MAP_LABEL_SIZE, handletextpad=0.2, markerscale=1.6)
+    axes[1].set_title(METHOD_LABELS["site_by_site"], fontsize=MAP_TITLE_SIZE)
 
     _image(axes[2], toy.spatial_reference.map_mean[:, parameter], toy.map_grid_size, cmap=FIELD_COLORMAP, norm=norm)
-    axes[2].set_title("spatial")
+    axes[2].set_title("spatial", fontsize=MAP_TITLE_SIZE)
     for ax in axes:
         _toy_map_frame(ax)
-    fig.colorbar(image, ax=axes, fraction=0.02, pad=0.015, label=config.PARAMETER_LABELS[parameter])
+    colorbar = fig.colorbar(image, ax=axes, fraction=0.02, pad=0.015)
+    colorbar.set_label(config.PARAMETER_LABELS[parameter], fontsize=MAP_LABEL_SIZE)
+    colorbar.ax.tick_params(labelsize=MAP_LABEL_SIZE - 3)
     return fig
 
 
@@ -391,59 +392,26 @@ def ipl_convergence(toy: ToyResults) -> Figure:
     return fig
 
 
-# ── choices ─────────────────────────────────────────────────────────────────
-
-
-def _equifinality_limits(toy: ToyResults, site: int) -> list[tuple[float, float]]:
-    """Axis limits holding both posteriors of ``site`` (both stages share them)."""
-    axis_0, axis_1 = toy.site_grids.grid_axes[site]
-    density = toy.site_grids.density[site]
-    inside = density >= _highest_density_levels(density, (0.98,))[0]
-    draws = toy.reference_samples[:, site, :]
-    limits = []
-    for axis, grid_axis, other in ((0, axis_0, 1), (1, axis_1, 0)):
-        grid_points = grid_axis[inside.any(axis=other)]
-        low = min(grid_points.min(), np.percentile(draws[:, axis], 0.5))
-        high = max(grid_points.max(), np.percentile(draws[:, axis], 99.5))
-        padding = 0.12 * (high - low)
-        limits.append((low - padding, high + padding))
-    return limits
-
-
-@dataclass(frozen=True)
-class ShowcaseSites:
-    """The training sites the zoomed-in figures show."""
-
-    sparse: int
-    tower: int
-
-
-def showcase_sites(toy: ToyResults) -> ShowcaseSites:
-    """The sparse site and tower the zoomed-in figures show.
-
-    The sparse site is the one at the 90th percentile of how much the
-    spatial posterior narrows turnover compared with site by site (the ratio
-    of their SDs): a site where the effect is clear, without taking the
-    single most extreme one. Only sparse sites whose site-by-site 90% region
-    holds the truth are candidates, so the figure shows the spatial model
-    narrowing an answer that was right, not correcting one that was wrong,
-    which would overstate the point. The tower is the one nearest to it.
-    """
-    sparse_sites = np.array([
-        site for site in np.flatnonzero(~toy.is_tower) if _site_by_site_region_holds_truth(toy, site, 0.9)
-    ])
-    site_by_site_sd = np.sqrt(toy.site_by_site.posterior_site_covariance[sparse_sites, 1, 1])
-    spatial_sd = np.sqrt(toy.spatial_reference.posterior_site_covariance[sparse_sites, 1, 1])
-    narrowing = site_by_site_sd / spatial_sd
-    order = np.argsort(narrowing)
-    sparse = int(sparse_sites[order[int(0.9 * (len(order) - 1))]])
-
-    towers = np.flatnonzero(toy.is_tower)
-    distance = np.linalg.norm(toy.training_locations[towers] - toy.training_locations[sparse], axis=1)
-    return ShowcaseSites(sparse=sparse, tower=int(towers[np.argmin(distance)]))
-
-
 # ── helpers ─────────────────────────────────────────────────────────────────
+
+
+def _draw_contours(ax, axes: np.ndarray, density: np.ndarray, color: str) -> None:
+    """Filled highest-density regions of a grid density, darker for the more probable one, outlined."""
+    levels = highest_density_levels(density, config.CONTOUR_PROBABILITIES)  # one per probability, high to low
+    ax.contourf(*axes, density.T, levels=[levels[-1], levels[0], density.max()],
+                colors=[to_rgba(color, 0.15), to_rgba(color, 0.35)])
+    ax.contour(*axes, density.T, levels=levels[::-1], colors=color, linewidths=1.6)
+
+
+def _draw_locator_map(ax, site_posteriors: SitePosteriors, site: int) -> None:
+    """A small map of the toy region, its true turnover and its sites, with ``site`` ringed."""
+    _image(ax, site_posteriors.true_turnover_map, site_posteriors.map_grid_size, cmap=FIELD_COLORMAP, alpha=0.8)
+    ax.scatter(*site_posteriors.training_locations.T, s=3, color="white", linewidth=0)
+    ax.scatter(*site_posteriors.training_locations[site], s=160, facecolor="none", edgecolor=PALETTE["clay"],
+               linewidth=2.5, zorder=4)
+    _toy_map_frame(ax)
+    for spine in ax.spines.values():
+        spine.set_color(PALETTE["ink"])
 
 
 def _image(ax, values: np.ndarray, grid_size: int, **style):
@@ -514,21 +482,3 @@ def _symbol_between(fig, left_ax, right_ax, symbol: str) -> None:
     left, right = left_ax.get_position(), right_ax.get_position()
     fig.text((left.x1 + right.x0) / 2, (left.y0 + left.y1) / 2, symbol, ha="center", va="center",
              fontsize=34, color=PALETTE["ink"])
-
-
-def _site_by_site_region_holds_truth(toy: ToyResults, site: int, probability: float) -> bool:
-    """Whether the truth lies in the site-by-site posterior's highest-density region."""
-    axis_0, axis_1 = toy.site_grids.grid_axes[site]
-    density = toy.site_grids.density[site]
-    true_0, true_1 = toy.truth.theta_training[site]
-    if not (axis_0[0] <= true_0 <= axis_0[-1] and axis_1[0] <= true_1 <= axis_1[-1]):
-        return False
-    nearest = (np.abs(axis_0 - true_0).argmin(), np.abs(axis_1 - true_1).argmin())
-    return bool(density[nearest] >= _highest_density_levels(density, (probability,))[0])
-
-
-def _highest_density_levels(density: np.ndarray, probabilities) -> list[float]:
-    """Density thresholds whose superlevel sets hold each probability, highest first."""
-    values = np.sort(density.ravel())[::-1]
-    cumulative = np.cumsum(values) / values.sum()
-    return [float(values[np.searchsorted(cumulative, probability)]) for probability in probabilities]

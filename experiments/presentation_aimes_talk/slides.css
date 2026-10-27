@@ -110,6 +110,40 @@
   padding: 0 0.4em;
 }
 
+/* A heading over a column's figure. */
+.reveal .column-heading {
+  display: block;
+  text-align: center;
+  font-family: "Nunito", sans-serif;
+  font-weight: 700;
+  font-size: 1.05em;
+}
+
+/* Figures in columns as blocks, without the line space an inline image
+   leaves below it. */
+.reveal .figure-columns img {
+  display: block;
+  margin: 0 auto;
+}
+
+/* A slide whose one figure sits centered in the space under the title. */
+.reveal section.centered-figure img {
+  margin-top: 70px;
+}
+
+/* A takeaway that appears under a slide's figures, large. */
+.reveal .takeaway {
+  text-align: center;
+  font-family: "Nunito", sans-serif;
+  font-weight: 700;
+  font-size: 1.25em;
+  color: #3F7D58;
+  margin-top: 0.3em;
+}
+.reveal .takeaway p {
+  margin: 0;
+}
+
 /* The prior model under the prior draws. */
 .reveal .prior-model {
   text-align: center;

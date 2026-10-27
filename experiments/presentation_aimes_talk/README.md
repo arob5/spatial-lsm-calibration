@@ -21,6 +21,8 @@ be traced back to every assumption behind it.
 | `inference/spatial_mcmc.py` | algorithm: the exact spatial posterior by NUTS (the reference) |
 | `inference/ipl.py` | algorithm: iterated posterior linearization (the scalable method) |
 | `inference/moments.py`, `inference/evaluation.py` | the common form of a result; predictions and scores |
+| `inference/density.py` | 2D posterior densities on grids: contours, the KDE and its checks |
+| `showcase.py` | which tower and sparse site the zoomed-in figures show |
 | `illustrations/` | pictures that are not experiments: prior draws and uncertainty over North America, the calibration options |
 | `results.py` | the schema of each results file, shared by writer and reader |
 | `run/` | the scripts: each a short, high-level workflow over the pieces above |
@@ -35,6 +37,7 @@ From the repository root, in the worktree's environment:
 
 ```bash
 uv run python -m experiments.presentation_aimes_talk.run.toy_experiment   # about 10 minutes (NUTS)
+uv run python -m experiments.presentation_aimes_talk.run.site_posteriors  # seconds; after the toy experiment
 uv run python -m experiments.presentation_aimes_talk.run.illustrations    # seconds
 uv run python -m experiments.presentation_aimes_talk.run.draw_figures
 export QUARTO_PYTHON=$(git rev-parse --show-toplevel)/.venv/bin/python
@@ -89,7 +92,7 @@ results it reads and the function that draws it):
 |---|---|
 | `toy_decomposition` | the true turnover field split into the prior's three terms |
 | `toy_world` | the true turnover map with the sites; a tower's NEE and a sparse site's pools |
-| `equifinality_*` | one sparse site's posterior: alone (contours, 50% and 90%), then spatial (reference draws) |
+| `posterior_tower`, `posterior_sparse` | one site's posterior, 50% and 90% regions, site by site (exact) and spatial (KDE of the reference draws), with a map locating the site |
 | `maps_estimate_*` | truth, site-by-site posterior means, spatial posterior mean of the smooth field |
 | `maps_uncertainty_turnover` | posterior SDs: site by site at each site, spatial everywhere |
 | `held_out_errors` | RMSE at the held-out sites, per parameter and method |
@@ -98,9 +101,19 @@ results it reads and the function that draws it):
 | `ipl_convergence` | IPL's median distance from the exact posterior after each iteration |
 
 **Choices made in the figures.** The zoomed-in sparse site
-(`plots.showcase_sites`) is the 90th percentile of how much the spatial
-posterior narrows turnover over site by site: a clear case, not the most
-extreme one. The aggregate figures (maps, held-out errors) show every site.
+(`showcase.showcase_sites`) is the 90th percentile of how much the spatial
+posterior narrows turnover over site by site, among sparse sites whose
+site-by-site posterior holds the truth: a clear case, not the most extreme
+one. The tower is the one nearest it. The aggregate figures (maps,
+held-out errors) show every site.
+
+**The spatial posterior's contours** come from a Gaussian KDE of the MCMC
+draws (`run/site_posteriors.py`), checked two ways and printed when it
+runs: the same KDE applied to as many draws from the exact site-by-site
+posterior must reproduce its regions, and the spatial KDE's regions must
+hold their share of the MCMC draws. With Scott's rule both come within a
+few percent, on the side of regions slightly too wide, which can only
+understate how much the spatial posterior narrows.
 
 **Caveats to keep in mind when quoting it.** One synthetic dataset, one seed;
 the prior is the truth's own distribution with every hyperparameter known;

@@ -8,7 +8,8 @@ computed yet is skipped, with the script that computes them named.
 
 Input data
 ----------
-``config.TOY_RESULTS_FILE``, written by ``run/toy_experiment.py``; and
+``config.TOY_RESULTS_FILE``, written by ``run/toy_experiment.py``;
+``config.SITE_POSTERIORS_FILE``, written by ``run/site_posteriors.py``; and
 ``config.NORTH_AMERICA_FILE``,
 ``config.UNCERTAINTY_FILE`` and ``config.CALIBRATION_OPTIONS_FILE``, written
 by ``run/illustrations.py``.
@@ -52,6 +53,7 @@ class FigureSpec:
 #: Which results file each results type lives in, and the script that writes it.
 RESULT_TYPES = {
     config.TOY_RESULTS_FILE: (results.ToyResults, "run/toy_experiment.py"),
+    config.SITE_POSTERIORS_FILE: (results.SitePosteriors, "run/site_posteriors.py"),
     config.NORTH_AMERICA_FILE: (results.NorthAmericaPrior, "run/illustrations.py"),
     config.CALIBRATION_OPTIONS_FILE: (results.CalibrationOptions, "run/illustrations.py"),
     config.UNCERTAINTY_FILE: (results.UncertaintyMaps, "run/illustrations.py"),
@@ -68,9 +70,10 @@ FIGURES = (
     FigureSpec("uncertainty_maps.png", config.UNCERTAINTY_FILE, plots.uncertainty_maps),
     FigureSpec("toy_decomposition.png", config.TOY_RESULTS_FILE, plots.toy_decomposition, {"parameter": TURNOVER}),
     FigureSpec("toy_world.png", config.TOY_RESULTS_FILE, plots.toy_world, {"parameter": TURNOVER}),
-    FigureSpec("equifinality_site_by_site.png", config.TOY_RESULTS_FILE, plots.equifinality,
-               {"stage": "site_by_site"}),
-    FigureSpec("equifinality_spatial.png", config.TOY_RESULTS_FILE, plots.equifinality, {"stage": "spatial"}),
+    FigureSpec("posterior_tower.png", config.SITE_POSTERIORS_FILE, plots.site_posterior_comparison,
+               {"which": "tower"}),
+    FigureSpec("posterior_sparse.png", config.SITE_POSTERIORS_FILE, plots.site_posterior_comparison,
+               {"which": "sparse"}),
     FigureSpec("maps_estimate_turnover.png", config.TOY_RESULTS_FILE, plots.maps_estimate, {"parameter": TURNOVER}),
     FigureSpec("maps_estimate_productivity.png", config.TOY_RESULTS_FILE, plots.maps_estimate,
                {"parameter": PRODUCTIVITY}),

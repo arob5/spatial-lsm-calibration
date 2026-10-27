@@ -9,10 +9,11 @@ The package is organized by role, so each kind of choice has one home:
   (``observations``).
 - ``inference``: the *algorithms* that calibrate the toy: site by site,
   the exact spatial posterior by MCMC, and the scalable method (IPL); and
-  the summaries that compare them.
+  the summaries that compare them, posterior densities among them.
 - ``illustrations``: computations that are pictures, not experiments: prior
   draws and uncertainty over North America, and the calibration options.
 - ``results``: the files the computations write and the figures read.
+- ``showcase``: which sites the zoomed-in figures show.
 - ``run``: the scripts, each a short workflow over the pieces above.
 - ``plots`` and ``style``: the figures, which read results and compute
   nothing.

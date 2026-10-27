@@ -21,6 +21,8 @@ __all__ = [
     "MethodResults",
     "NorthAmericaPrior",
     "SiteGrids",
+    "SitePosterior",
+    "SitePosteriors",
     "ToyResults",
     "UncertaintyMaps",
     "TruthResults",
@@ -123,6 +125,44 @@ class ToyResults:
     reference_model_runs_per_site: int
     reference_max_r_hat: float
     reference_min_effective_sample_size: float
+
+
+@dataclass(frozen=True)
+class SitePosterior:
+    """One site's posterior two ways, as densities on grids (``run/site_posteriors.py``).
+
+    Densities are as ``inference.density`` defines them: ``(n_0, n_1)``
+    along the two axes, normalized on the grid.
+    """
+
+    #: The site's position among the training sites, and its true parameters (P,).
+    site: int
+    truth: np.ndarray
+    #: (P, n) and (n, n): the exact site-by-site posterior on its own grid.
+    site_by_site_axes: np.ndarray
+    site_by_site_density: np.ndarray
+    #: (P, m) and (m, m): a Gaussian KDE of the spatial posterior's MCMC draws.
+    spatial_axes: np.ndarray
+    spatial_density: np.ndarray
+    #: (k,), one per ``config.CONTOUR_PROBABILITIES``: the checks of the KDE
+    #: (``inference.density``). The exact site-by-site probability inside
+    #: the regions a KDE of draws from it gives, and the fraction of the
+    #: spatial MCMC draws inside the spatial KDE's regions.
+    kde_reproduction_mass: np.ndarray
+    spatial_draw_coverage: np.ndarray
+
+
+@dataclass(frozen=True)
+class SitePosteriors:
+    """The showcase tower and sparse site, and what their locator maps draw."""
+
+    tower: SitePosterior
+    sparse: SitePosterior
+    training_locations: np.ndarray  # (S, 2)
+    is_tower: np.ndarray  # (S,)
+    map_grid_size: int
+    #: (G,): the true turnover field on the map grid.
+    true_turnover_map: np.ndarray
 
 
 # ── the illustrations ───────────────────────────────────────────────────────

@@ -11,4 +11,6 @@ of them.
   runs at each site, combined by a Gaussian update over all sites.
 - ``evaluation``: maps and held-out predictions from any method's moments,
   and the error summaries the slides quote.
+- ``density``: a site's 2D posterior as a density on a grid: its contours,
+  the KDE of draws, and the checks of that KDE.
 """

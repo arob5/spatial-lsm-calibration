@@ -55,11 +55,6 @@ mcmc_runs = f"{toy.reference_model_runs_per_site:,}"
 ipl_runs = int(toy.ipl_history.runs_per_site[-1])
 ipl_ensemble_size = config.IPL_ENSEMBLE_SIZE
 ipl_iterations = len(toy.ipl_history.runs_per_site)
-
-TURNOVER = 1
-site_by_site_error = toy.site_by_site.held_out_root_mean_square_error[TURNOVER]
-spatial_error = toy.spatial_reference.held_out_root_mean_square_error[TURNOVER]
-error_reduction = f"{100 * (1 - spatial_error / site_by_site_error):.0f}%"
 ```
 
 ## Spatial structure
@@ -170,37 +165,36 @@ Left: before any data, the parameter is equally uncertain everywhere. Right: aft
 A synthetic world where we know the answer. The model has GPP and temperature-dependent respiration of one carbon pool. Towers see monthly NEE; every other site sees only its carbon pool once a year, like an inventory.
 :::
 
-## Alone, a sparse site suffers from equifinality
+## Posterior comparison: spatial vs. site-by-site
 
-:::: {.columns}
-::: {.column width="52%"}
-::: {.r-stack}
-![](figures/equifinality_site_by_site.png){.fragment .fade-out fragment-index=1 width=100%}
+:::: {.columns .figure-columns}
+::: {.column width="50%"}
+::: {.fragment}
+[Tower Site]{.column-heading}
 
-![](figures/equifinality_spatial.png){.fragment fragment-index=1 width=100%}
+![](figures/posterior_tower.png){height=410px fig-align="center"}
 :::
 :::
-::: {.column width="48%"}
-- From annual pools alone, high productivity with fast turnover looks like low productivity with slow turnover
-- Calibrated **site by site**, the answer is a long ridge
+::: {.column width="50%"}
+::: {.fragment}
+[Sparse Site]{.column-heading}
 
-::: {.fragment fragment-index=1}
-- Calibrated **spatially**, nearby sites (and the tower) cut the ridge down
+![](figures/posterior_sparse.png){height=410px fig-align="center"}
 :::
 :::
 ::::
 
+::: {.fragment .takeaway}
+Sparse sites borrow information across space
+:::
+
 ::: notes
-This is one sparse site. In red, its posterior on its own: a curved ridge, the classic equifinality. In green, the same site under the spatial model: neighbors that do see NEE resolve the ambiguity, and the truth (star) is inside.
+Each panel is one site's posterior over its two parameters, as 50% and 90% regions: red calibrated site by site, green calibrated spatially; the star is the truth, and the small map shows where the site is. At the tower, the monthly NEE pins both parameters down, and the two posteriors agree: the spatial model changes little where the data are rich. At a nearby sparse site, its annual pools alone leave a long curved ridge, high productivity with fast turnover or low with slow, the classic equifinality. Calibrated spatially, the site borrows from its neighbors, the tower among them, and the ridge is cut down to the part around the truth.
 :::
 
-## The result: a map, not a scatter of guesses
+## Spatial model can predict at any site {.centered-figure}
 
-![](figures/maps_estimate_turnover.png){width=100%}
-
-::: {.fragment .box .center-text}
-At sites with **no data**, the spatial model's error in turnover is `{python} error_reduction` lower than the site-by-site answer (which there is just the prior).
-:::
+![](figures/maps_estimate_turnover.png){.nostretch width=100%}
 
 ::: notes
 Turnover, the harder parameter. Left, the truth. Middle, site by site: noisy, and nothing at sites without data (crosses). Right, the spatial posterior mean: the map's structure is recovered, including at sites never observed.

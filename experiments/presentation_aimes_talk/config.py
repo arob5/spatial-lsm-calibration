@@ -39,6 +39,7 @@ FIGURE_DIRECTORY = TALK_DIRECTORY / "figures"
 BRAND_FILE = TALK_DIRECTORY / "theme" / "_brand.yml"
 
 TOY_RESULTS_FILE = OUTPUT_DIRECTORY / "toy_results.npz"
+SITE_POSTERIORS_FILE = OUTPUT_DIRECTORY / "site_posteriors.npz"
 CALIBRATION_OPTIONS_FILE = OUTPUT_DIRECTORY / "calibration_options.npz"
 UNCERTAINTY_FILE = OUTPUT_DIRECTORY / "uncertainty.npz"
 NORTH_AMERICA_FILE = OUTPUT_DIRECTORY / "north_america_prior.npz"
@@ -165,6 +166,23 @@ IPL_SEED = 2
 IPL_ENSEMBLE_SIZE = 30
 IPL_MAX_ITERATIONS = 15
 IPL_CONVERGENCE_TOLERANCE = 0.01
+
+# ── the site posteriors ─────────────────────────────────────────────────────
+# Two sites' posteriors as contours (run/site_posteriors.py): the exact
+# site-by-site density, and a Gaussian KDE of the spatial posterior's MCMC
+# draws on a KDE_GRID_SIZE x KDE_GRID_SIZE grid, checked as
+# inference/density.py describes.
+
+#: The probability inside each contour drawn.
+CONTOUR_PROBABILITIES = (0.5, 0.9)
+KDE_GRID_SIZE = 200
+#: The KDE's bandwidth as a multiple of Scott's rule. At 1 (Scott's rule)
+#: the contours are smooth, and the reproduction check shows its regions
+#: holding a few percent more than they should: slightly too wide, which can
+#: only understate how much the spatial posterior narrows. Smaller factors
+#: shrink that bias but draw the MCMC draws' noise as wiggly contours.
+KDE_BANDWIDTH_FACTOR = 1.0
+KDE_CHECK_SEED = 5
 
 # ── the illustrations ───────────────────────────────────────────────────────
 
