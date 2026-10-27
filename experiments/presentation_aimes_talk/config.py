@@ -16,7 +16,8 @@ Sections, in order:
 - **site-by-site calibration**: the grid each site's posterior is computed on;
 - **the spatial reference posterior**: the MCMC settings;
 - **the scalable method (IPL)**: ensemble size and iterations;
-- **the illustrations**: the 1D transect and the North America prior draws.
+- **the illustrations**: the North America prior draws and uncertainty, and
+  the calibration options.
 
 Units in the toy are deliberately generic (carbon in "units of C", time in
 months); it is a stand-in for SIPNET, not a model of a real ecosystem.
@@ -38,8 +39,8 @@ FIGURE_DIRECTORY = TALK_DIRECTORY / "figures"
 BRAND_FILE = TALK_DIRECTORY / "theme" / "_brand.yml"
 
 TOY_RESULTS_FILE = OUTPUT_DIRECTORY / "toy_results.npz"
-TRANSECT_FILE = OUTPUT_DIRECTORY / "transect.npz"
 CALIBRATION_OPTIONS_FILE = OUTPUT_DIRECTORY / "calibration_options.npz"
+UNCERTAINTY_FILE = OUTPUT_DIRECTORY / "uncertainty.npz"
 NORTH_AMERICA_FILE = OUTPUT_DIRECTORY / "north_america_prior.npz"
 
 # ── the toy region ──────────────────────────────────────────────────────────
@@ -167,16 +168,6 @@ IPL_CONVERGENCE_TOLERANCE = 0.01
 
 # ── the illustrations ───────────────────────────────────────────────────────
 
-#: The 1D transect: a parameter along a line through the region, the prior
-#: and the posterior after a few direct, noisy measurements of it.
-TRANSECT_SEED = 7
-TRANSECT_LENGTH_SCALE = 0.15
-TRANSECT_FIELD_SD = 1.0
-TRANSECT_MEASUREMENT_LOCATIONS = np.array([0.12, 0.18, 0.47, 0.81])
-TRANSECT_MEASUREMENT_SD = 0.15
-TRANSECT_GRID_SIZE = 400
-TRANSECT_N_DRAWS = 5
-
 #: Prior draws of one parameter over North America, as continuous maps: a
 #: climate trend in mean annual temperature plus a Matern-3/2 Gaussian
 #: process in the chordal distance through the Earth
@@ -203,3 +194,15 @@ NORTH_AMERICA_MAX_HOLE_AREA = 3e10
 CALIBRATION_OPTIONS_SEED = 4
 CALIBRATION_OPTIONS_PARAMETER_SD = 0.6
 CALIBRATION_OPTIONS_SITE_LABELS = "pft_16class"
+
+#: The prior and posterior uncertainty of the North America field
+#: (illustrations/uncertainty.py), with its prior's length scale and SD: every
+#: site measures the parameter with noise SD UNCERTAINTY_SITE_NOISE_SD (weak
+#: data), and UNCERTAINTY_N_TOWERS spread-out tower sites with
+#: UNCERTAINTY_TOWER_NOISE_SD (strong data). The site noise is large because
+#: thousands of sites fall within one length scale and their data pool: at
+#: 3 the posterior is low everywhere and the towers' effect is lost; at 10
+#: the drop away from towers is modest and the towers stand out.
+UNCERTAINTY_N_TOWERS = 20
+UNCERTAINTY_TOWER_NOISE_SD = 0.05
+UNCERTAINTY_SITE_NOISE_SD = 10.0

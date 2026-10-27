@@ -21,7 +21,7 @@ be traced back to every assumption behind it.
 | `inference/spatial_mcmc.py` | algorithm: the exact spatial posterior by NUTS (the reference) |
 | `inference/ipl.py` | algorithm: iterated posterior linearization (the scalable method) |
 | `inference/moments.py`, `inference/evaluation.py` | the common form of a result; predictions and scores |
-| `illustrations/` | pictures that are not experiments: the 1D transect, prior draws over North America |
+| `illustrations/` | pictures that are not experiments: prior draws and uncertainty over North America, the calibration options |
 | `results.py` | the schema of each results file, shared by writer and reader |
 | `run/` | the scripts: each a short, high-level workflow over the pieces above |
 | `plots.py`, `style.py` | the figures (reading results, computing nothing) and their brand style |
@@ -109,8 +109,6 @@ scaling, not the size of the benefit on real data.
 
 ## The illustrations
 
-- `transect`: a 1D Gaussian process, four direct noisy measurements of the
-  parameter, exact posterior. A schematic of how information spreads.
 - `north_america`: three prior draws of one generic parameter over North
   America, as continuous maps: a trend in standardized mean annual
   temperature (the site covariate table's `MAT`, carried to each grid point
@@ -118,6 +116,13 @@ scaling, not the size of the benefit on real data.
   chordal distance. The field is drawn exactly on a 60 km grid in the
   display projection and shown on a 15 km raster interpolated from it,
   within 90 km of a site (small enclosed gaps filled), which traces the land
-  the 8000-site pool covers; the sites are drawn over it. The tower sites (for the site map) are the
-  tower table's primary towers. The numbers are chosen to look plausible,
-  not fitted.
+  the 8000-site pool covers (`continent`); the sites are drawn over it. The
+  tower sites (for the site map) are the tower table's primary towers. The
+  numbers are chosen to look plausible, not fitted.
+- `uncertainty`: the same field's prior and posterior standard deviation,
+  exact Gaussian process regression given a weak, noisy measurement of the
+  parameter at every site and a strong one at 20 spread-out flux towers. The
+  posterior SD does not depend on the measured values, so no data are drawn.
+- `calibration_options`: one parameter at every site drawn independently,
+  and drawn once per PFT (the 16-class site labels) and shared by its sites;
+  the spatial option's map is the first North America draw.

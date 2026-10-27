@@ -9,8 +9,9 @@ computed yet is skipped, with the script that computes them named.
 Input data
 ----------
 ``config.TOY_RESULTS_FILE``, written by ``run/toy_experiment.py``; and
-``config.TRANSECT_FILE``, ``config.NORTH_AMERICA_FILE`` and
-``config.CALIBRATION_OPTIONS_FILE``, written by ``run/illustrations.py``.
+``config.NORTH_AMERICA_FILE``,
+``config.UNCERTAINTY_FILE`` and ``config.CALIBRATION_OPTIONS_FILE``, written
+by ``run/illustrations.py``.
 
 Output data
 -----------
@@ -51,9 +52,9 @@ class FigureSpec:
 #: Which results file each results type lives in, and the script that writes it.
 RESULT_TYPES = {
     config.TOY_RESULTS_FILE: (results.ToyResults, "run/toy_experiment.py"),
-    config.TRANSECT_FILE: (results.Transect, "run/illustrations.py"),
     config.NORTH_AMERICA_FILE: (results.NorthAmericaPrior, "run/illustrations.py"),
     config.CALIBRATION_OPTIONS_FILE: (results.CalibrationOptions, "run/illustrations.py"),
+    config.UNCERTAINTY_FILE: (results.UncertaintyMaps, "run/illustrations.py"),
 }
 
 PRODUCTIVITY, TURNOVER = 0, 1
@@ -64,8 +65,7 @@ FIGURES = (
     FigureSpec("option_pft.png", config.CALIBRATION_OPTIONS_FILE, plots.option_pft_map),
     FigureSpec("option_spatial.png", config.NORTH_AMERICA_FILE, plots.option_spatial_map),
     FigureSpec("north_america_prior_draws.png", config.NORTH_AMERICA_FILE, plots.north_america_prior_draws),
-    FigureSpec("transect_prior.png", config.TRANSECT_FILE, plots.transect, {"stage": "prior"}),
-    FigureSpec("transect_posterior.png", config.TRANSECT_FILE, plots.transect, {"stage": "posterior"}),
+    FigureSpec("uncertainty_maps.png", config.UNCERTAINTY_FILE, plots.uncertainty_maps),
     FigureSpec("toy_decomposition.png", config.TOY_RESULTS_FILE, plots.toy_decomposition, {"parameter": TURNOVER}),
     FigureSpec("toy_world.png", config.TOY_RESULTS_FILE, plots.toy_world, {"parameter": TURNOVER}),
     FigureSpec("equifinality_site_by_site.png", config.TOY_RESULTS_FILE, plots.equifinality,

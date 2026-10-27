@@ -13,7 +13,9 @@ looks the same everywhere:
 """
 
 import matplotlib as mpl
+import numpy as np
 import yaml
+from matplotlib.colors import LinearSegmentedColormap
 from cycler import cycler
 
 from . import config
@@ -59,7 +61,11 @@ SITE_MARKERS = {
 }
 
 FIELD_COLORMAP = "viridis"
-UNCERTAINTY_COLORMAP = "YlOrBr"
+#: YlOrBr without its darkest fifth, so the most uncertain areas read as a
+#: deep orange rather than near-black.
+UNCERTAINTY_COLORMAP = LinearSegmentedColormap.from_list(
+    "uncertainty", mpl.colormaps["YlOrBr"](np.linspace(0.0, 0.8, 256))
+)
 DEVIATION_COLORMAP = "PuOr_r"
 
 

@@ -54,6 +54,16 @@
   color: #8A949A;
 }
 
+/* A one-line box under a large figure. */
+.reveal .box.compact-box {
+  font-size: 0.85em;
+  padding: 0.3em 0.9em;
+  margin-top: 0.2em;
+}
+.reveal .box.compact-box p {
+  margin: 0;
+}
+
 .reveal .center-text {
   text-align: center;
 }

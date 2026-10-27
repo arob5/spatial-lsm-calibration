@@ -22,7 +22,7 @@ __all__ = [
     "NorthAmericaPrior",
     "SiteGrids",
     "ToyResults",
-    "Transect",
+    "UncertaintyMaps",
     "TruthResults",
     "load",
     "save",
@@ -129,21 +129,6 @@ class ToyResults:
 
 
 @dataclass(frozen=True)
-class Transect:
-    """The 1D illustration (``illustrations.transect``)."""
-
-    locations: np.ndarray  # (n,)
-    true_field: np.ndarray  # (n,)
-    prior_draws: np.ndarray  # (draws, n)
-    prior_sd: float
-    measurement_locations: np.ndarray  # (m,)
-    measurements: np.ndarray  # (m,)
-    posterior_mean: np.ndarray  # (n,)
-    posterior_sd: np.ndarray  # (n,)
-    posterior_draws: np.ndarray  # (draws, n)
-
-
-@dataclass(frozen=True)
 class NorthAmericaPrior:
     """Prior draws over North America (``illustrations.north_america``)."""
 
@@ -176,6 +161,23 @@ class CalibrationOptions:
     #: PFT and shared by its sites.
     independent: np.ndarray
     by_pft: np.ndarray
+
+
+@dataclass(frozen=True)
+class UncertaintyMaps:
+    """A field's prior and posterior SD over North America (``illustrations.uncertainty``)."""
+
+    #: (sites,): the site pool, and (towers,) the tower sites with strong data.
+    site_lon: np.ndarray
+    site_lat: np.ndarray
+    tower_lon: np.ndarray
+    tower_lat: np.ndarray
+    #: (nx,) and (ny,): the display raster's cell centers, projected meters.
+    grid_x: np.ndarray
+    grid_y: np.ndarray
+    #: (ny, nx): the SDs on the raster; NaN where the map is not drawn.
+    prior_sd: np.ndarray
+    posterior_sd: np.ndarray
 
 
 # ── reading and writing ─────────────────────────────────────────────────────

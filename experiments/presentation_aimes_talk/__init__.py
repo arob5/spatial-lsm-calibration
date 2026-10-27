@@ -10,8 +10,8 @@ The package is organized by role, so each kind of choice has one home:
 - ``inference``: the *algorithms* that calibrate the toy: site by site,
   the exact spatial posterior by MCMC, and the scalable method (IPL); and
   the summaries that compare them.
-- ``illustrations``: computations that are pictures, not experiments: the
-  1D transect and prior draws over the real North American site pool.
+- ``illustrations``: computations that are pictures, not experiments: prior
+  draws and uncertainty over North America, and the calibration options.
 - ``results``: the files the computations write and the figures read.
 - ``run``: the scripts, each a short workflow over the pieces above.
 - ``plots`` and ``style``: the figures, which read results and compute

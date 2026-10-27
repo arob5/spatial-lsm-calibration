@@ -143,20 +143,16 @@ prior model: $\theta(x) = \underbrace{z(x)^\top \beta}_{\text{spatial covariates
 Three draws from a spatial prior over one parameter at the real sites: each is a possible map of the parameter before we see any data. The prior model: a trend in spatial covariates such as mean annual temperature, plus a Gaussian process for the smooth variation the covariates miss. Calibrating means learning this map, not 8000 separate numbers.
 :::
 
-## How data at one site informs its neighbors
+## Borrowing strength across space
 
-::: {.r-stack}
-![](figures/transect_prior.png){.fragment .fade-out fragment-index=1 height=400px}
+![](figures/uncertainty_maps.png){height=470px fig-align="center"}
 
-![](figures/transect_posterior.png){.fragment fragment-index=1 height=400px}
-:::
-
-::: {.fragment .box .center-text fragment-index=2}
-Close to a measured site the parameter is pinned down; far away, we honestly don't know.
+::: {.fragment .box .center-text .compact-box}
+Uncertainty drops everywhere, and most around the flux towers.
 :::
 
 ::: notes
-A one-dimensional picture. Before data, any of these curves is plausible. After a few sites measure the parameter, the posterior is tight near those sites and widens away from them. How far information travels is set by the spatial correlation length, which is itself learned from data in the full method.
+Left: before any data, the parameter is equally uncertain everywhere. Right: after conditioning on the data. Every site has weak data, think remote sensing, and a handful of flux towers have strong data. Uncertainty drops everywhere, because each site's weak data are pooled with its neighbors', and it drops most around the towers, whose information spreads to the sites near them. This is what a site-by-site calibration cannot do: a site with weak data would stay uncertain however close it is to a tower.
 :::
 
 ## A toy world to test the idea

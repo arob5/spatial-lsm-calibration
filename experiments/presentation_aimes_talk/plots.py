@@ -16,12 +16,13 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.colors import Normalize, TwoSlopeNorm, to_rgba
 from matplotlib.figure import Figure
+from matplotlib.lines import Line2D
 
 from sipnet_calibration.plotting.basemap import draw_basemap
 from sipnet_calibration.projection import SITE_PROJECTION
 
 from . import config
-from .results import CalibrationOptions, NorthAmericaPrior, ToyResults, Transect
+from .results import CalibrationOptions, NorthAmericaPrior, ToyResults, UncertaintyMaps
 from .style import (
     DEVIATION_COLORMAP,
     FIELD_COLORMAP,
@@ -49,7 +50,7 @@ __all__ = [
     "site_pool_map",
     "toy_decomposition",
     "toy_world",
-    "transect",
+    "uncertainty_maps",
 ]
 
 #: The fraction of probability inside each contour of a site's posterior.
@@ -95,6 +96,44 @@ def north_america_prior_draws(north_america: NorthAmericaPrior) -> Figure:
     return fig
 
 
+def uncertainty_maps(uncertainty: UncertaintyMaps) -> Figure:
+    """The field's prior and posterior SD side by side, with the sites and the strong-data towers.
+
+    Both maps share one color scale, from 0 to the prior SD, labeled only
+    low to high: the parameter is generic, and only the change matters.
+    """
+    fig, axes = plt.subplots(1, 2, figsize=(11.5, 5.4), gridspec_kw={"wspace": 0.04})
+    site_x, site_y = SITE_PROJECTION.forward(uncertainty.site_lon, uncertainty.site_lat)
+    tower_x, tower_y = SITE_PROJECTION.forward(uncertainty.tower_lon, uncertainty.tower_lat)
+    norm = Normalize(0.0, float(np.nanmax(uncertainty.prior_sd)))
+    for ax, sd, title in (
+        (axes[0], uncertainty.prior_sd, "prior parameter uncertainty"),
+        (axes[1], uncertainty.posterior_sd, "posterior parameter uncertainty"),
+    ):
+        _north_america_frame(ax, site_x, site_y)
+        image = ax.imshow(sd, origin="lower", extent=_raster_extent(uncertainty.grid_x, uncertainty.grid_y),
+                          cmap=UNCERTAINTY_COLORMAP, norm=norm, interpolation="nearest")
+        ax.scatter(site_x, site_y, s=0.4, color=PALETTE["ink"], alpha=0.3, linewidth=0, zorder=3)
+        # Hollow, so the dip in uncertainty around each tower shows through.
+        ax.scatter(tower_x, tower_y, marker="^", s=55, facecolor="none", edgecolor=PALETTE["ink"],
+                   linewidth=1.3, zorder=4)
+        ax.set_title(title, pad=8)
+    axes[0].legend(
+        handles=[
+            Line2D([], [], linestyle="none", marker="o", markersize=3, color=PALETTE["ink"], alpha=0.6,
+                   label="site (weak data)"),
+            Line2D([], [], linestyle="none", marker="^", markersize=8, markerfacecolor="none",
+                   markeredgecolor=PALETTE["ink"], markeredgewidth=1.3, label="flux tower (strong data)"),
+        ],
+        loc="lower left", fontsize=12, handletextpad=0.3,
+    )
+    colorbar = fig.colorbar(image, ax=axes, orientation="horizontal", fraction=0.05, pad=0.02, aspect=40,
+                            ticks=[norm.vmin, norm.vmax])
+    colorbar.ax.set_xticklabels(["low", "high"])
+    colorbar.outline.set_visible(False)
+    return fig
+
+
 # ── the calibration options ─────────────────────────────────────────────────
 # One map each, a parameter at every site under one option, drawn alike:
 # no colorbar (the parameter is generic), each on its own 1-99% color range.
@@ -115,45 +154,6 @@ def option_spatial_map(north_america: NorthAmericaPrior) -> Figure:
     fig, ax = plt.subplots(figsize=OPTION_MAP_SIZE)
     draw = north_america.draws[0]
     _draw_field_map(ax, north_america, draw, Normalize(*np.nanpercentile(draw, [1, 99])))
-    return fig
-
-
-# ── the 1D transect ─────────────────────────────────────────────────────────
-
-
-def transect(transect_result: Transect, *, stage: str) -> Figure:
-    """The transect's prior (``stage="prior"``) or posterior (``"posterior"``).
-
-    Both stages share axes, so the slides can step from one to the other.
-    """
-    fig, ax = plt.subplots(figsize=(11, 4.2))
-    x = transect_result.locations
-    two_sd = 2.0 * transect_result.prior_sd
-    if stage == "prior":
-        ax.fill_between(x, -two_sd, two_sd, color=PALETTE["mist"], label="prior: 95% range")
-        for draw in transect_result.prior_draws:
-            ax.plot(x, draw, color=PALETTE["stone"], linewidth=1.3, alpha=0.9)
-        ax.plot([], [], color=PALETTE["stone"], linewidth=1.3, label="possible parameter fields")
-    elif stage == "posterior":
-        mean, sd = transect_result.posterior_mean, transect_result.posterior_sd
-        ax.fill_between(x, mean - 2 * sd, mean + 2 * sd, color=PALETTE["forest"], alpha=0.18,
-                        label="posterior: 95% range", linewidth=0)
-        for draw in transect_result.posterior_draws:
-            ax.plot(x, draw, color=PALETTE["forest"], linewidth=1.1, alpha=0.6)
-        ax.plot(x, transect_result.true_field, color=PALETTE["ink"], linewidth=1.6, linestyle="--", label="truth")
-        ax.scatter(
-            transect_result.measurement_locations, transect_result.measurements,
-            **SITE_MARKERS["tower"], label="sites that measure it",
-        )
-    else:
-        raise ValueError(f"stage must be 'prior' or 'posterior', not {stage!r}")
-    ax.set_xlim(0, 1)
-    ax.set_ylim(-1.6 * two_sd, 1.6 * two_sd)
-    ax.set_xlabel("position along a transect")
-    ax.set_ylabel("parameter")
-    ax.set_xticks([])
-    ax.set_yticks([])
-    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.12), ncols=3)
     return fig
 
 
@@ -488,14 +488,16 @@ def _site_values_map(options: CalibrationOptions, values: np.ndarray) -> Figure:
 def _draw_field_map(ax, north_america: NorthAmericaPrior, draw: np.ndarray, norm: Normalize) -> None:
     """One prior draw as a continuous map on ``ax``, with the sites over it."""
     site_x, site_y = SITE_PROJECTION.forward(north_america.lon, north_america.lat)
-    half_cell = (north_america.grid_x[1] - north_america.grid_x[0]) / 2
-    extent = (
-        north_america.grid_x[0] - half_cell, north_america.grid_x[-1] + half_cell,
-        north_america.grid_y[0] - half_cell, north_america.grid_y[-1] + half_cell,
-    )
     _north_america_frame(ax, site_x, site_y)
-    ax.imshow(draw, origin="lower", extent=extent, cmap=FIELD_COLORMAP, norm=norm, interpolation="nearest")
+    ax.imshow(draw, origin="lower", extent=_raster_extent(north_america.grid_x, north_america.grid_y),
+              cmap=FIELD_COLORMAP, norm=norm, interpolation="nearest")
     ax.scatter(site_x, site_y, s=0.4, color=PALETTE["ink"], alpha=0.35, linewidth=0, zorder=3)
+
+
+def _raster_extent(grid_x: np.ndarray, grid_y: np.ndarray) -> tuple[float, float, float, float]:
+    """``imshow``'s extent for a raster with these cell centers: its outer cell edges."""
+    half_cell = (grid_x[1] - grid_x[0]) / 2
+    return (grid_x[0] - half_cell, grid_x[-1] + half_cell, grid_y[0] - half_cell, grid_y[-1] + half_cell)
 
 
 def _north_america_frame(ax, x: np.ndarray, y: np.ndarray) -> None:
