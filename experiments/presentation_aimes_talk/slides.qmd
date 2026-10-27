@@ -200,34 +200,32 @@ Each panel is one site's posterior over its two parameters, as 50% and 90% regio
 Turnover, the harder parameter. Left, the truth. Middle, site by site: noisy, and nothing at sites without data (crosses). Right, the spatial posterior mean: the map's structure is recovered, including at sites never observed.
 :::
 
-## Scaling it up: no gradients, few model runs
+## Challenge: scalability and computation
 
-:::: {.columns}
-::: {.column width="45%"}
-::: {.pipeline}
-::: {.step}
-**1. Run locally.** A small ensemble (`{python} ipl_ensemble_size` runs) of the model at every site, all in parallel
+::: {.compact-list .incremental}
+- MCMC infeasible: high-dimensional and millions of model evaluations
+- Solutions:
+  - Exploit local likelihood structure
+  - Parallelizable, gradient-free algorithms
+    - Ensemble Kalman
+    - Iterated posterior linearization
 :::
-::: {.step}
-**2. Summarize locally.** Fit how each site's outputs respond to its parameters
-:::
-::: {.step}
-**3. Combine globally.** One fast spatial update shares information across sites
-:::
-:::
-[Repeat until it settles (here `{python} ipl_iterations` times): iterated posterior linearization]{.caption}
-:::
-::: {.column width="55%"}
-![](figures/cost_bars.png){width=100%}
 
+:::: {.columns .figure-columns}
+::: {.column width="40%"}
 ::: {.fragment}
-![](figures/ipl_agreement_turnover.png){width=100%}
+![](figures/cost_bars.png){height=295px fig-align="center"}
+:::
+:::
+::: {.column width="60%"}
+::: {.fragment}
+![](figures/ipl_agreement_turnover.png){height=295px fig-align="center"}
 :::
 :::
 ::::
 
 ::: notes
-The exact spatial posterior needs MCMC with gradients of the model, which SIPNET doesn't have, and millions of runs per site. Our approach only ever runs the model in small local ensembles that are embarrassingly parallel, and does the spatial part with cheap Gaussian algebra. Here it needs about four orders of magnitude fewer runs and gives essentially the same map.
+The exact spatial posterior needs MCMC over every site's parameters at once: thousands of dimensions here, and in the toy almost two million model runs per site, with gradients SIPNET doesn't have. The way out is the problem's structure: each site's likelihood depends only on that site's parameters, so the model only ever needs to run locally. Ensemble Kalman methods and iterated posterior linearization both run small local ensembles, embarrassingly parallel and gradient-free, and do the spatial part with cheap Gaussian algebra. In the toy, iterated posterior linearization needs about four orders of magnitude fewer runs and gives essentially the same map.
 :::
 
 ## Where this goes next

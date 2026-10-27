@@ -343,33 +343,34 @@ def ipl_agreement(toy: ToyResults, *, parameter: int) -> Figure:
     """The exact and the scalable spatial estimates of one parameter, side by side."""
     reference_map = toy.spatial_reference.map_mean[:, parameter]
     norm = Normalize(*np.percentile(reference_map, [0.5, 99.5]))
-    fig, axes = plt.subplots(1, 2, figsize=(11.5, 5.0), gridspec_kw={"wspace": 0.08})
+    fig, axes = plt.subplots(1, 2, figsize=(11.5, 5.4), gridspec_kw={"wspace": 0.06})
     for ax, method in zip(axes, ("spatial_reference", "ipl")):
         image = _image(ax, getattr(toy, method).map_mean[:, parameter], toy.map_grid_size,
                        cmap=FIELD_COLORMAP, norm=norm)
         _toy_map_frame(ax)
-        ax.set_title(METHOD_LABELS[method])
-    fig.colorbar(image, ax=axes, fraction=0.03, pad=0.02, label=config.PARAMETER_LABELS[parameter])
+        ax.set_title(METHOD_LABELS[method], fontsize=MAP_TITLE_SIZE)
+    colorbar = fig.colorbar(image, ax=axes, fraction=0.03, pad=0.02)
+    colorbar.set_label(config.PARAMETER_LABELS[parameter], fontsize=MAP_LABEL_SIZE)
+    colorbar.ax.tick_params(labelsize=MAP_LABEL_SIZE - 3)
     return fig
 
 
 def cost_bars(toy: ToyResults) -> Figure:
     """Model runs per site: the exact spatial posterior by MCMC against IPL."""
     runs = {
-        "exact (MCMC)\nneeds model gradients": toy.reference_model_runs_per_site,
+        "exact (MCMC)\nwith gradients": toy.reference_model_runs_per_site,
         "scalable (IPL)\nno gradients": int(toy.ipl_history.runs_per_site[-1]),
     }
     colors = [METHOD_COLORS["spatial_reference"], METHOD_COLORS["ipl"]]
-    fig, ax = plt.subplots(figsize=(10, 3.2))
-    bars = ax.barh(range(len(runs)), list(runs.values()), color=colors, height=0.55)
-    ax.bar_label(bars, labels=[f"{value:,}" for value in runs.values()], padding=6, fontsize=14)
-    ax.set_yticks(range(len(runs)), list(runs.keys()))
-    ax.invert_yaxis()
-    ax.set_xscale("log")
-    ax.set_xlim(10, 20 * max(runs.values()))
-    ax.set_xlabel("model runs per site (log scale)")
-    ax.spines["left"].set_visible(False)
-    ax.tick_params(axis="y", length=0)
+    fig, ax = plt.subplots(figsize=(6.4, 5.4))
+    bars = ax.bar(range(len(runs)), list(runs.values()), color=colors, width=0.6)
+    ax.bar_label(bars, labels=[f"{value:,}" for value in runs.values()], padding=6, fontsize=MAP_LABEL_SIZE)
+    ax.set_xticks(range(len(runs)), list(runs.keys()), fontsize=MAP_LABEL_SIZE - 2)
+    ax.set_yscale("log")
+    ax.set_ylim(10, 30 * max(runs.values()))
+    ax.set_ylabel("model runs per site (log scale)", fontsize=MAP_LABEL_SIZE - 2)
+    ax.tick_params(axis="y", labelsize=MAP_LABEL_SIZE - 4)
+    ax.tick_params(axis="x", length=0)
     return fig
 
 

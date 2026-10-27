@@ -70,6 +70,10 @@
   font-size: 0.78em;
   margin-bottom: 0.1em;
 }
+/* Nested items keep their parent's size, rather than shrinking again. */
+.reveal .compact-list li li {
+  font-size: 0.95em;
+}
 
 /* A one-line box under a large figure. */
 .reveal .box.compact-box {
@@ -153,23 +157,4 @@
 /* The options beside the site map, spaced out. */
 .reveal .options-list li {
   margin-bottom: 1.1em;
-}
-
-/* The scalable method's three steps, stacked with arrows between. */
-.reveal .pipeline .step {
-  background: #EDF1EA;
-  border-left: 8px solid #4A8FB5;
-  border-radius: 10px;
-  padding: 0.35em 0.6em;
-  margin: 0 0 1.1em 0;
-  font-size: 0.68em;
-  position: relative;
-}
-.reveal .pipeline .step:not(:last-child)::after {
-  content: "\2193";
-  position: absolute;
-  left: 50%;
-  bottom: -1.15em;
-  color: #8A949A;
-  font-size: 1.1em;
 }
