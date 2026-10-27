@@ -48,6 +48,25 @@ export QUARTO_PYTHON=$(git rev-parse --show-toplevel)/.venv/bin/python
 quarto render experiments/presentation_aimes_talk/slides.qmd
 ```
 
+### Sharing the deck
+
+`slides.html` needs the `slides_files/` folder beside it. To send the deck,
+make one self-contained file instead (figures, styles and fonts embedded),
+and a PDF (one page per slide, every click-in shown), from this directory:
+
+```bash
+quarto render slides.qmd -M embed-resources:true -o slides_standalone.html
+mv slides_standalone.html output/
+python3 -m http.server 8765 --bind 127.0.0.1 &
+"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new \
+    --no-pdf-header-footer --virtual-time-budget=20000 \
+    --print-to-pdf="$PWD/output/slides.pdf" \
+    "http://127.0.0.1:8765/output/slides_standalone.html?print-pdf"
+```
+
+The standalone HTML loads MathJax from a CDN, so its equations need an
+internet connection; the PDF needs nothing.
+
 The North America illustration needs the processed site table
 (`uv run scripts/ingest_sites.py`, which runs from tracked inputs).
 
