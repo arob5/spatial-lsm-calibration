@@ -257,10 +257,44 @@ The exact spatial posterior needs MCMC with gradients of the model, which SIPNET
 
 ![](figures/ipl_convergence.png){width=90%}
 
-## The toy problem in full
+## Toy land surface model {.math-slide}
 
-- Region: unit square; `{python} n_toy_sites` training and `{python} len(toy.held_out_locations)` held-out sites, uniform at random
-- Model: monthly, one pool; GPP $= a\,L_t\,\sigma\!\big((T_t-5)/3\big)$; respiration $= C_t\,(1-e^{-k_t})$, $k_t = k\,e^{0.09 (T_t-10)}$; 5 years
-- Prior on $\theta = (\log a, \log k)$: climate trend + Matérn-3/2 Gaussian process + site noise; all hyperparameters known
-- Data: annual pool at every site (10% noise); monthly NEE at towers (15% noise)
-- Methods: site by site (exact, on a grid); spatial reference (NUTS, `{python} mcmc_runs` runs with gradients per site); IPL (`{python} ipl_runs` runs per site, no gradients)
+One carbon pool $C_t$ at each site, run monthly for `{python} config.N_MONTHS // 12` years:
+
+$$
+\begin{aligned}
+C_{t+1} &= C_t + \mathrm{GPP}_t - R_t, && C_0 = c_0 \\[2pt]
+\mathrm{GPP}_t &= a\, L_t\, \sigma\!\left(\frac{T_t - T_{1/2}}{w}\right) && \text{photosynthesis} \\[2pt]
+R_t &= C_t \left(1 - e^{-k_t}\right), \quad k_t = k\, e^{\gamma\,(T_t - T_{\mathrm{ref}})} && \text{respiration} \\[2pt]
+\mathrm{NEE}_t &= R_t - \mathrm{GPP}_t && \text{net ecosystem exchange}
+\end{aligned}
+$$
+
+- Drivers: monthly temperature $T_t$ (the site's climate, a seasonal cycle and weather) and light $L_t$ (a seasonal cycle); $\sigma$ is the logistic function
+- Outputs $\mathcal{G}_s$: monthly NEE, and the pool at the end of each year
+- **Calibrated**: $a$, **productivity**, carbon uptake per unit light when it is warm; $k$, **turnover rate**, the fraction of the pool respired per month at $T_{\mathrm{ref}}$ ($1/k$ is the carbon's residence time)
+- Fixed: $T_{1/2} = `{python} config.TEMPERATURE_HALF_SATURATION`$ °C, $w = `{python} config.TEMPERATURE_SATURATION_WIDTH`$ °C, $\gamma = `{python} config.RESPIRATION_TEMPERATURE_SENSITIVITY`$ /°C, $T_{\mathrm{ref}} = `{python} config.REFERENCE_TEMPERATURE`$ °C, $c_0 = `{python} config.INITIAL_POOL`$
+
+## Toy calibration model {.math-slide}
+
+`{python} n_toy_sites` sites $s$ at locations $x_s$ in a square region, `{python} n_toy_towers` of them towers:
+
+$$
+\begin{aligned}
+y_s &= \mathcal{G}_s\big(\theta(x_s)\big) + \epsilon_s, \qquad \epsilon_s \sim \mathcal{N}(0, \Sigma_s) && \text{data} \\[2pt]
+\theta(x) &= \big(\log a(x),\ \log k(x)\big) && \text{parameters} \\[2pt]
+\theta_p(x) &= \beta_{p0} + \beta_{p1}\, z(x) + \sigma_p\, u_p(x) + \tau_p\, \eta_p(x) && \text{prior, } p = 1, 2 \\[2pt]
+u_p &\sim \mathcal{GP}\big(0,\ c_{\ell_p}\big), \quad \eta_p(x) \overset{\text{iid}}{\sim} \mathcal{N}(0, 1) \\[2pt]
+\pi(\theta_X \mid y) &\propto \textstyle\prod_s p\big(y_s \mid \theta(x_s)\big)\ \pi(\theta_X) && \text{posterior}
+\end{aligned}
+$$
+
+- $y_s$: the pool at the end of each year at every site (`{python} f"{config.POOL_RELATIVE_NOISE:.0%}"` noise), and monthly NEE at towers (`{python} f"{config.NEE_RELATIVE_NOISE:.0%}"` noise); $\Sigma_s$ diagonal and known
+- $z(x)$: a climate covariate (mean annual temperature); $u_p$: smooth spatial variation, with $c_\ell$ the Matérn-3/2 covariance of length scale $\ell$; $\eta_p$: site-to-site noise; the two parameters independent a priori
+- $\theta_X = \big(\theta(x_1), \ldots, \theta(x_S)\big)$: every site's parameters, jointly. Known, not learned: $\beta$, $\sigma_p$, $\ell_p$, $\tau_p$
+
+## Inference algorithms
+
+- **Site by site**: each site alone, with its own prior (its marginal under the spatial prior); the exact posterior, computed on a grid
+- **Spatial, exact**: NUTS (gradient-based MCMC) on every site's parameters jointly; `{python} mcmc_runs` model runs per site, with gradients. The reference
+- **Spatial, scalable**: iterated posterior linearization. Each iteration runs a small ensemble (`{python} ipl_ensemble_size` runs) at every site, fits each site's outputs linearly in its parameters, and makes one Gaussian update over all sites; `{python} ipl_runs` model runs per site in all (`{python} ipl_iterations` iterations), no gradients
