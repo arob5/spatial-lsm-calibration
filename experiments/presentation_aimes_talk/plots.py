@@ -190,33 +190,25 @@ def toy_decomposition(toy: ToyResults, *, parameter: int) -> Figure:
 
 
 def toy_world(toy: ToyResults, *, parameter: int) -> Figure:
-    """The toy problem: the true field with the sites, and what a tower and a sparse site observe."""
+    """The toy problem: the true field with the sites, and what a tower and a sparse site observe.
+
+    The map has no colorbar: only the field's pattern matters here. The tower
+    and sparse site shown are ``showcase_sites``'.
+    """
     sites = showcase_sites(toy)
-    fig = plt.figure(figsize=(13.5, 5.0))
-    grid = fig.add_gridspec(2, 4, width_ratios=(1.0, 0.045, 0.42, 1.35), hspace=0.75, wspace=0.05)
+    fig = plt.figure(figsize=(16, 3.6))
+    # Column widths in inches: a square map as tall as the panels, room for the
+    # panels' axis labels, the panels.
+    grid = fig.add_gridspec(2, 3, width_ratios=(3.0, 1.0, 12.0), hspace=0.55, wspace=0.05)
     map_ax = fig.add_subplot(grid[:, 0])
-    colorbar_ax = fig.add_subplot(grid[:, 1])
-    nee_ax = fig.add_subplot(grid[0, 3])
-    pool_ax = fig.add_subplot(grid[1, 3])
+    nee_ax = fig.add_subplot(grid[0, 2])
+    pool_ax = fig.add_subplot(grid[1, 2])
 
     true_field = toy.truth.trend_map[:, parameter] + toy.truth.smooth_variation_map[:, parameter]
-    image = _image(map_ax, true_field, toy.map_grid_size, cmap=FIELD_COLORMAP)
+    _image(map_ax, true_field, toy.map_grid_size, cmap=FIELD_COLORMAP)
     _draw_sites(map_ax, toy)
-    # Label the two sites the right-hand panels show. The two are close
-    # together, so the labels go toward the map's center (never clipped) at
-    # different distances (never overlapping).
-    for site, label, distance in ((sites.tower, "tower", 0.04), (sites.sparse, "sparse site", 0.16)):
-        location = toy.training_locations[site]
-        toward_center = np.where(location > 0.5, -1.0, 1.0)
-        label_location = location + toward_center * [0.25, distance]
-        map_ax.annotate(
-            label, xy=location, xytext=label_location, ha="center", va="center",
-            color="white", fontsize=13, fontweight="bold",
-            arrowprops=dict(arrowstyle="->", color="white", linewidth=2.0),
-        )
     _toy_map_frame(map_ax)
     map_ax.set_title(f"true {config.PARAMETER_NAMES[parameter]}", pad=10)
-    fig.colorbar(image, cax=colorbar_ax, label=config.PARAMETER_LABELS[parameter])
 
     month_in_years = (np.arange(config.N_MONTHS) + 1) / 12
     nee = slice(0, config.N_MONTHS)
@@ -235,7 +227,8 @@ def toy_world(toy: ToyResults, *, parameter: int) -> Figure:
     pool_ax.set_ylabel("carbon")
     for ax in (nee_ax, pool_ax):
         ax.set_xlim(0, config.N_MONTHS / 12 + 0.2)
-        ax.set_xlabel("year")
+    # The panels share their years, so only the lower one is labeled.
+    pool_ax.set_xlabel("year")
     # One legend, in the pool panel's empty upper left, covers both panels.
     pool_ax.scatter([], [], color=PALETTE["sun"], edgecolor=PALETTE["ink"], s=28, label="observed")
     pool_ax.plot([], [], color=PALETTE["ink"], linewidth=1.5, label="model at the truth")

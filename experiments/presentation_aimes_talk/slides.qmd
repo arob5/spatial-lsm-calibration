@@ -155,12 +155,16 @@ Uncertainty drops everywhere, and most around the flux towers.
 Left: before any data, the parameter is equally uncertain everywhere. Right: after conditioning on the data. Every site has weak data, think remote sensing, and a handful of flux towers have strong data. Uncertainty drops everywhere, because each site's weak data are pooled with its neighbors', and it drops most around the towers, whose information spreads to the sites near them. This is what a site-by-site calibration cannot do: a site with weak data would stay uncertain however close it is to a tower.
 :::
 
-## A toy world to test the idea
+## A toy model
 
-![](figures/toy_world.png){width=100%}
+![](figures/toy_world.png){.nostretch width=100%}
 
-- `{python} n_toy_sites` sites, `{python} n_toy_towers` with a "tower"; a one-pool carbon model stands in for SIPNET
-- Two parameters, **productivity** and **turnover**, each a spatial field; we know the truth
+::: {.compact-list}
+- Toy single-pool carbon model
+- Two parameters: **productivity** and **turnover**
+- `{python} n_toy_sites` sites, `{python} n_toy_towers` with a "tower"
+- Try to recover true parameters (each a spatial field)
+:::
 
 ::: notes
 A synthetic world where we know the answer. The model has GPP and temperature-dependent respiration of one carbon pool. Towers see monthly NEE; every other site sees only its carbon pool once a year, like an inventory.
