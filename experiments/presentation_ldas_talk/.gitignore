@@ -1,0 +1,5 @@
+output/
+slides.html
+slides_files/
+.quarto/
+__pycache__/

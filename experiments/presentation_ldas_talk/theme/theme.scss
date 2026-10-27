@@ -1,0 +1,118 @@
+/*-- scss:defaults --*/
+
+// Colors and fonts come from ../_brand.yml.
+// NOTE: $brand-<name> palette variables are only defined in the scss:rules
+// section below (Quarto loads brand defaults after this section), so
+// don't reference them here.
+
+$presentation-font-size-root: 38px;
+$presentation-h1-font-size: 2.2em;
+$presentation-h2-font-size: 1.5em;
+$presentation-h3-font-size: 1.15em;
+$presentation-heading-text-transform: none;
+$presentation-heading-letter-spacing: -0.01em;
+$presentation-title-slide-text-align: left;
+
+/*-- scss:rules --*/
+
+// Quoted font stacks. Quarto 1.6 writes brand font names unquoted, which is
+// invalid CSS for names like "Source Sans 3" (browser falls back to Times).
+// Keep the names in sync with _brand.yml.
+:root {
+  --r-main-font: "Source Sans 3", "Helvetica Neue", Arial, sans-serif;
+  --r-heading-font: "Nunito", "Helvetica Neue", Arial, sans-serif;
+  --r-code-font: "JetBrains Mono", Menlo, monospace;
+  --r-inline-code-font: "JetBrains Mono", Menlo, monospace;
+  --r-block-code-font: "JetBrains Mono", Menlo, monospace;
+}
+
+// Soft corners used on images, boxes and callouts
+$corner-radius: 14px;
+
+.reveal code:not(pre code) {
+  color: $brand-soil;
+  background: $brand-mist;
+  border-radius: 0.25em;
+  padding: 0 0.2em;
+}
+
+::selection { background: rgba($brand-sun, 0.35); }
+
+.reveal {
+  // Slide titles: forest green with a small hand-drawn-ish underline accent
+  h2 {
+    color: $brand-forest;
+    padding-bottom: 0.15em;
+    background: linear-gradient($brand-sun, $brand-sun) no-repeat left bottom / 2.5em 4px;
+  }
+
+  // Images: gentle rounding; opt out with {.square}
+  img:not(.square) {
+    border-radius: $corner-radius;
+  }
+
+  .slide-number {
+    color: $brand-stone;
+    background: transparent;
+    font-family: "Nunito", sans-serif;
+  }
+
+  .footer {
+    color: $brand-stone;
+  }
+}
+
+// ---- Text utility classes: [text]{.forest}, [text]{.muted}, etc. ------------
+@each $name, $color in (
+  "forest": $brand-forest,
+  "sky": $brand-sky,
+  "soil": $brand-soil,
+  "sun": $brand-sun,
+  "clay": $brand-clay,
+  "leaf": $brand-leaf,
+  "stone": $brand-stone
+) {
+  .reveal .#{$name} { color: $color; }
+  .reveal .bg-#{$name} {
+    background-color: rgba($color, 0.15);
+    border-radius: 0.3em;
+    padding: 0 0.2em;
+  }
+}
+
+.reveal .muted { color: $brand-stone; }
+.reveal .small { font-size: 0.7em; }
+.reveal .big   { font-size: 1.4em; }
+
+// Big-number slides (e.g. computational cost): ::: {.stat} 10,000 CPU hours :::
+.reveal .stat {
+  font-family: "Nunito", sans-serif;
+  font-weight: 800;
+  font-size: 2.6em;
+  line-height: 1.1;
+  color: $brand-forest;
+}
+
+// Soft box: ::: {.box} ... :::
+.reveal .box {
+  background: $brand-mist;
+  border-radius: $corner-radius;
+  padding: 0.6em 0.9em;
+}
+
+// Fragment that highlights text with a sun-colored marker when revealed
+.reveal .fragment.marker {
+  opacity: 1;
+  visibility: inherit;
+  background: linear-gradient(transparent 60%, transparent 60%);
+  transition: background 0.4s ease;
+  &.visible {
+    background: linear-gradient(transparent 60%, rgba($brand-sun, 0.45) 60%);
+  }
+}
+
+// Figure captions / image credits (e.g. IAN attribution)
+.reveal .credit {
+  font-size: 0.45em;
+  color: $brand-stone;
+}

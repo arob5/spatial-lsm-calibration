@@ -1,0 +1,38 @@
+/* Additions to theme/theme.scss for this deck. */
+
+/* A one-line caption under a figure. */
+.reveal .caption {
+  display: block;
+  text-align: center;
+  font-size: 0.55em;
+  color: #8A949A;
+}
+
+.reveal .center-text {
+  text-align: center;
+}
+
+/* Bullets beside a figure, set a little smaller. */
+.reveal .smaller-list li {
+  font-size: 0.8em;
+  margin-bottom: 0.4em;
+}
+
+/* The scalable method's three steps, stacked with arrows between. */
+.reveal .pipeline .step {
+  background: #EDF1EA;
+  border-left: 8px solid #4A8FB5;
+  border-radius: 10px;
+  padding: 0.35em 0.6em;
+  margin: 0 0 1.1em 0;
+  font-size: 0.68em;
+  position: relative;
+}
+.reveal .pipeline .step:not(:last-child)::after {
+  content: "\2193";
+  position: absolute;
+  left: 50%;
+  bottom: -1.15em;
+  color: #8A949A;
+  font-size: 1.1em;
+}
