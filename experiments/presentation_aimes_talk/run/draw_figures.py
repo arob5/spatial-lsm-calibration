@@ -21,7 +21,7 @@ Usage
 -----
 ::
 
-    uv run python -m experiments.presentation_ldas_talk.run.draw_figures
+    uv run python -m experiments.presentation_aimes_talk.run.draw_figures
 """
 
 from dataclasses import dataclass, field

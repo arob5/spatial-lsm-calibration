@@ -1,4 +1,4 @@
-"""The LDAS talk: slides on spatial calibration, and the toy experiment behind them.
+"""The AIMES talk: slides on spatial calibration, and the toy experiment behind them.
 
 The package is organized by role, so each kind of choice has one home:
 

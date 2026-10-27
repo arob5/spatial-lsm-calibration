@@ -1,4 +1,4 @@
-"""The LDAS talk: every number behind its figures.
+"""The AIMES talk: every number behind its figures.
 
 The one source of truth for the talk's computations. The modules under
 ``toy/``, ``inference/`` and ``illustrations/`` define *how* things are

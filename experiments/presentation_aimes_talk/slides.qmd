@@ -34,7 +34,7 @@ from pathlib import Path
 REPOSITORY = Path.cwd().resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY))
 
-from experiments.presentation_ldas_talk import config, results
+from experiments.presentation_aimes_talk import config, results
 
 toy = results.load(results.ToyResults, config.TOY_RESULTS_FILE)
 north_america = results.load(results.NorthAmericaPrior, config.NORTH_AMERICA_FILE)

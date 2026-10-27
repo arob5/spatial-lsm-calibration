@@ -1,4 +1,4 @@
-# LDAS talk: calibrating land surface models as maps
+# AIMES talk: calibrating land surface models as maps
 
 An eight-minute talk for a land data assimilation audience (ecologists, not
 statisticians): why calibrate parameters spatially rather than site by site,
@@ -34,11 +34,11 @@ Results go to `output/` (untracked); figures to `figures/`.
 From the repository root, in the worktree's environment:
 
 ```bash
-uv run python -m experiments.presentation_ldas_talk.run.toy_experiment   # about 10 minutes (NUTS)
-uv run python -m experiments.presentation_ldas_talk.run.illustrations    # seconds
-uv run python -m experiments.presentation_ldas_talk.run.draw_figures
+uv run python -m experiments.presentation_aimes_talk.run.toy_experiment   # about 10 minutes (NUTS)
+uv run python -m experiments.presentation_aimes_talk.run.illustrations    # seconds
+uv run python -m experiments.presentation_aimes_talk.run.draw_figures
 export QUARTO_PYTHON=$(git rev-parse --show-toplevel)/.venv/bin/python
-quarto render experiments/presentation_ldas_talk/slides.qmd
+quarto render experiments/presentation_aimes_talk/slides.qmd
 ```
 
 The North America illustration needs the processed site table

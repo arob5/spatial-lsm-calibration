@@ -25,7 +25,7 @@ Usage
 -----
 ::
 
-    uv run python -m experiments.presentation_ldas_talk.run.illustrations
+    uv run python -m experiments.presentation_aimes_talk.run.illustrations
 """
 
 import numpy as np

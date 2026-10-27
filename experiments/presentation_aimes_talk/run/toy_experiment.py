@@ -25,7 +25,7 @@ Usage
 -----
 ::
 
-    uv run python -m experiments.presentation_ldas_talk.run.toy_experiment
+    uv run python -m experiments.presentation_aimes_talk.run.toy_experiment
 """
 
 import time
